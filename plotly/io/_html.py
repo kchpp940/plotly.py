@@ -116,7 +116,7 @@ def to_html(
     default_height="100%",
     validate=True,
     div_id=None,
-    plotlyjs_path="plotly.min.js",
+    _plotlyjs_path="plotly.min.js",
 ):
     """
     Convert a figure to an HTML string representation.
@@ -200,10 +200,6 @@ def to_html(
     div_id: str (default None)
         If provided, this is the value of the id attribute of the div tag. If None, the
         id attribute is a UUID.
-    plotlyjs_path: str (default "plotly.min.js")
-        Path to use for the plotly.js script src when include_plotlyjs='directory'.
-        This is used internally to support nested output directories where the relative
-        path to plotly.min.js may need to be adjusted.
 
     Returns
     -------
@@ -347,7 +343,7 @@ def to_html(
         load_plotlyjs = """\
         {win_config}
         <script charset="utf-8" src="{src}"></script>\
-    """.format(win_config=_window_plotly_config, src=plotlyjs_path)
+    """.format(win_config=_window_plotly_config, src=_plotlyjs_path)
 
     elif isinstance(include_plotlyjs, str) and include_plotlyjs.endswith(".js"):
         load_plotlyjs = """\
@@ -440,7 +436,6 @@ def write_html(
     default_height="100%",
     auto_open=False,
     div_id=None,
-    plotlyjs_path=None,
 ):
     """
     Write a figure to an HTML file representation
@@ -540,12 +535,6 @@ def write_html(
     div_id: str (default None)
         If provided, this is the value of the id attribute of the div tag. If None, the
         id attribute is a UUID.
-    plotlyjs_path: str or None (default None)
-        Optional path to use for the plotly.js script src when include_plotlyjs='directory'.
-        When None (default), the path is computed automatically based on the output file
-        location. When provided, this value overrides the automatic computation and is
-        used directly as the src attribute of the plotly.js script tag. This is useful
-        for custom CDN setups or non-standard directory layouts.
 
     Returns
     -------
@@ -558,13 +547,12 @@ def write_html(
         include_plotlyjs_normalized = include_plotlyjs_normalized.lower()
 
     # 对于 include_plotlyjs="directory"，先统一处理路径和 bundle 复制
-    # 用户显式提供的 plotlyjs_path 优先于自动计算
+    # 通过内部 helper _prepare_plotlyjs_bundle 计算正确的引用路径
     plotlyjs_src = "plotly.min.js"
     path = None
 
     if include_plotlyjs_normalized == "directory" and full_html:
-        path, auto_plotlyjs_src = _prepare_plotlyjs_bundle(file)
-        plotlyjs_src = plotlyjs_path if plotlyjs_path is not None else auto_plotlyjs_src
+        path, plotlyjs_src = _prepare_plotlyjs_bundle(file)
     else:
         # 非 directory 模式，仍然需要解析路径以进行写入和 auto_open
         if isinstance(file, str):
@@ -573,9 +561,6 @@ def write_html(
             path = file
         else:
             path = None
-        # 如果用户显式提供了 plotlyjs_path，也使用它
-        if plotlyjs_path is not None:
-            plotlyjs_src = plotlyjs_path
 
     # Build HTML string
     html_str = to_html(
@@ -591,7 +576,7 @@ def write_html(
         default_height=default_height,
         validate=validate,
         div_id=div_id,
-        plotlyjs_path=plotlyjs_src,
+        _plotlyjs_path=plotlyjs_src,
     )
 
     # 对于非 directory 模式且是文件路径的情况，确保目录存在

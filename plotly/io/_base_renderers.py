@@ -251,7 +251,6 @@ class HtmlRenderer(MimetypeRenderer):
         post_script=None,
         animation_opts=None,
         include_plotlyjs=True,
-        plotlyjs_path="plotly.min.js",
     ):
         self.config = dict(config) if config else {}
         self.auto_play = auto_play
@@ -261,7 +260,6 @@ class HtmlRenderer(MimetypeRenderer):
         self.animation_opts = animation_opts
         self.post_script = post_script
         self.include_plotlyjs = "cdn" if self.connected else include_plotlyjs
-        self.plotlyjs_path = plotlyjs_path
 
     def activate(self):
         if self.global_init:
@@ -353,7 +351,6 @@ if (outputEl) {{
             default_width="100%",
             default_height=525,
             validate=False,
-            plotlyjs_path=self.plotlyjs_path,
         )
 
         return {"text/html": html}
@@ -380,7 +377,6 @@ class NotebookRenderer(HtmlRenderer):
         post_script=None,
         animation_opts=None,
         include_plotlyjs=False,
-        plotlyjs_path="plotly.min.js",
     ):
         super(NotebookRenderer, self).__init__(
             connected=connected,
@@ -391,7 +387,6 @@ class NotebookRenderer(HtmlRenderer):
             post_script=post_script,
             animation_opts=animation_opts,
             include_plotlyjs=include_plotlyjs,
-            plotlyjs_path=plotlyjs_path,
         )
 
 
@@ -408,8 +403,7 @@ class KaggleRenderer(HtmlRenderer):
     """
 
     def __init__(
-        self, config=None, auto_play=False, post_script=None, animation_opts=None,
-        plotlyjs_path="plotly.min.js",
+        self, config=None, auto_play=False, post_script=None, animation_opts=None
     ):
         super(KaggleRenderer, self).__init__(
             connected=True,
@@ -420,7 +414,6 @@ class KaggleRenderer(HtmlRenderer):
             post_script=post_script,
             animation_opts=animation_opts,
             include_plotlyjs=False,
-            plotlyjs_path=plotlyjs_path,
         )
 
 
@@ -437,8 +430,7 @@ class AzureRenderer(HtmlRenderer):
     """
 
     def __init__(
-        self, config=None, auto_play=False, post_script=None, animation_opts=None,
-        plotlyjs_path="plotly.min.js",
+        self, config=None, auto_play=False, post_script=None, animation_opts=None
     ):
         super(AzureRenderer, self).__init__(
             connected=True,
@@ -449,7 +441,6 @@ class AzureRenderer(HtmlRenderer):
             post_script=post_script,
             animation_opts=animation_opts,
             include_plotlyjs=False,
-            plotlyjs_path=plotlyjs_path,
         )
 
 
@@ -463,8 +454,7 @@ class ColabRenderer(HtmlRenderer):
     """
 
     def __init__(
-        self, config=None, auto_play=False, post_script=None, animation_opts=None,
-        plotlyjs_path="plotly.min.js",
+        self, config=None, auto_play=False, post_script=None, animation_opts=None
     ):
         super(ColabRenderer, self).__init__(
             connected=True,
@@ -474,7 +464,6 @@ class ColabRenderer(HtmlRenderer):
             auto_play=auto_play,
             post_script=post_script,
             animation_opts=animation_opts,
-            plotlyjs_path=plotlyjs_path,
         )
 
 
@@ -510,7 +499,6 @@ class IFrameRenderer(MimetypeRenderer):
         animation_opts=None,
         include_plotlyjs=True,
         html_directory="iframe_figures",
-        plotlyjs_path="plotly.min.js",
     ):
         self.config = config
         self.auto_play = auto_play
@@ -518,7 +506,6 @@ class IFrameRenderer(MimetypeRenderer):
         self.animation_opts = animation_opts
         self.include_plotlyjs = include_plotlyjs
         self.html_directory = html_directory
-        self.plotlyjs_path = plotlyjs_path
 
     def to_mimebundle(self, fig_dict):
         from plotly.io import write_html
@@ -555,7 +542,6 @@ class IFrameRenderer(MimetypeRenderer):
             default_width="100%",
             default_height=525,
             validate=False,
-            plotlyjs_path=self.plotlyjs_path,
         )
 
         # Build IFrame
@@ -792,7 +778,6 @@ class SphinxGalleryHtmlRenderer(HtmlRenderer):
         post_script=None,
         animation_opts=None,
         include_plotlyjs=None,
-        plotlyjs_path="plotly.min.js",
     ):
         if include_plotlyjs is None:
             include_plotlyjs = "cdn" if connected else True
@@ -805,7 +790,6 @@ class SphinxGalleryHtmlRenderer(HtmlRenderer):
             post_script=post_script,
             animation_opts=animation_opts,
             include_plotlyjs=include_plotlyjs,
-            plotlyjs_path=plotlyjs_path,
         )
         self._connected = connected
 
@@ -830,7 +814,6 @@ class SphinxGalleryHtmlRenderer(HtmlRenderer):
             default_width="100%",
             default_height=525,
             validate=False,
-            plotlyjs_path=self.plotlyjs_path,
         )
 
         return {"text/html": html}
@@ -840,10 +823,8 @@ class SphinxGalleryOrcaRenderer(ExternalRenderer):
     def __init__(
         self,
         include_plotlyjs="cdn",
-        plotlyjs_path="plotly.min.js",
     ):
         self.include_plotlyjs = include_plotlyjs
-        self.plotlyjs_path = plotlyjs_path
 
     def render(self, fig_dict):
         from plotly.io import write_html
@@ -863,7 +844,6 @@ class SphinxGalleryOrcaRenderer(ExternalRenderer):
             fig_dict,
             file=filename_html,
             include_plotlyjs=self.include_plotlyjs,
-            plotlyjs_path=self.plotlyjs_path,
         )
         try:
             write_image(figure, filename_png)

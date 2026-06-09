@@ -414,7 +414,6 @@ def plot(
     include_mathjax=False,
     auto_play=True,
     animation_opts=None,
-    plotlyjs_path="plotly.min.js",
 ):
     """Create a plotly graph locally as an HTML document or string.
 
@@ -534,10 +533,6 @@ def plot(
         https://github.com/plotly/plotly.js/blob/master/src/plots/animation_attributes.js
         for available options. Has no effect if the figure
         does not contain frames, or auto_play is False.
-    plotlyjs_path (default "plotly.min.js") -- Path to use for the plotly.js
-        script src when include_plotlyjs='directory'. This is used internally
-        to support nested output directories where the relative path to
-        plotly.min.js may need to be adjusted.
 
     Example:
     ```
@@ -598,7 +593,6 @@ def plot(
             validate=validate,
             animation_opts=animation_opts,
             auto_open=auto_open,
-            plotlyjs_path=plotlyjs_path,
         )
         return filename
     else:
@@ -612,7 +606,6 @@ def plot(
             full_html=False,
             validate=validate,
             animation_opts=animation_opts,
-            plotlyjs_path=plotlyjs_path,
         )
 
 
