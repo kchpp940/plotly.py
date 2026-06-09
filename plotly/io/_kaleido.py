@@ -248,31 +248,63 @@ except ImportError:
     scope = None
 
 
-def _handle_engine_and_deprecations(
-    engine: Union[str, None], stacklevel: int = 2
-) -> str:
+def _validate_engine_param(engine: Union[str, None]) -> str:
     """
-    Handle engine argument resolution and deprecation warnings in a unified way.
+    Stage 1: Validate and normalize the engine parameter WITHOUT checking
+    external dependencies or emitting warnings. This ensures pure argument
+    validation errors surface before any dependency checks.
 
     Parameters
     ----------
     engine: str or None
         The engine argument passed by the user
+
+    Returns
+    -------
+    str
+        Normalized engine name: 'auto', 'kaleido', or 'orca'
+
+    Raises
+    ------
+    ValueError
+        If the engine value is not in the allowed set.
+    """
+    if engine is None:
+        return "auto"
+
+    if not isinstance(engine, str) or engine not in {"auto", "kaleido", "orca"}:
+        raise ValueError(f"Invalid image export engine specified: {repr(engine)}")
+
+    return engine
+
+
+def _resolve_engine_and_warn(
+    engine: str, original_engine: Union[str, None], stacklevel: int = 2
+) -> str:
+    """
+    Stage 2: Resolve 'auto' to a concrete engine and emit all deprecation
+    warnings. This should be called AFTER format and other pure argument
+    validation has completed.
+
+    Parameters
+    ----------
+    engine: str
+        Normalized engine name from _validate_engine_param
+    original_engine: str or None
+        The original engine argument as passed by the user (before normalization),
+        used to determine if the engine parameter was explicitly provided.
     stacklevel: int
         Stack level for warnings (passed through to warnings.warn)
 
     Returns
     -------
     str
-        The resolved engine name: 'kaleido' or 'orca'
+        The resolved concrete engine name: 'kaleido' or 'orca'
     """
-    if engine is not None:
-        if ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS:
-            warnings.warn(
-                ENGINE_PARAM_DEPRECATION_MSG, DeprecationWarning, stacklevel=stacklevel
-            )
-    else:
-        engine = "auto"
+    if original_engine is not None and ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS:
+        warnings.warn(
+            ENGINE_PARAM_DEPRECATION_MSG, DeprecationWarning, stacklevel=stacklevel
+        )
 
     if engine == "auto":
         if kaleido_available():
@@ -286,14 +318,11 @@ def _handle_engine_and_deprecations(
             except Exception:
                 engine = "kaleido"
 
-    if engine == "orca":
-        if ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS:
-            warnings.warn(ORCA_DEPRECATION_MSG, DeprecationWarning, stacklevel=stacklevel)
-    elif engine != "kaleido":
-        raise ValueError(f"Invalid image export engine specified: {repr(engine)}")
+    if engine == "orca" and ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS:
+        warnings.warn(ORCA_DEPRECATION_MSG, DeprecationWarning, stacklevel=stacklevel)
 
     if (
-        engine in {"auto", "kaleido"}
+        engine == "kaleido"
         and kaleido_available()
         and kaleido_major() < 1
         and ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS
@@ -469,7 +498,13 @@ def to_image(
         The image data
     """
 
-    engine = _handle_engine_and_deprecations(engine, stacklevel=2)
+    original_engine = engine
+
+    engine = _validate_engine_param(engine)
+
+    format = validate_coerce_format(format)
+
+    engine = _resolve_engine_and_warn(engine, original_engine, stacklevel=2)
 
     if engine == "orca":
         from ._orca import to_image as to_image_orca
@@ -482,8 +517,6 @@ def to_image(
             scale=scale,
             validate=validate,
         )
-
-    format = validate_coerce_format(format)
 
     _require_kaleido('Image export using the "kaleido" engine')
 
