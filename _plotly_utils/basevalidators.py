@@ -153,10 +153,22 @@ def array_to_list_with_none(arr):
 def clean_missing_value(v):
     """
     Convert any missing/null value to None.
-    Returns the original value if it's not a missing value.
+    Also converts datetime-like values to string (ISO format) to ensure
+    JSON serializability. Returns the cleaned value.
     """
+    import datetime as _datetime
+
     if is_missing_value(v):
         return None
+    
+    pd = get_module("pandas", should_load=False)
+    
+    # Convert datetime-like scalars to ISO strings
+    if pd is not None and isinstance(v, (pd.Timestamp, pd.Timedelta)):
+        return str(v)
+    if isinstance(v, (_datetime.datetime, _datetime.date, _datetime.timedelta)):
+        return v.isoformat() if hasattr(v, "isoformat") else str(v)
+    
     return v
 
 
@@ -170,29 +182,50 @@ def to_scalar_or_list(v):
     # Python native scalar type ('float' in the example above).
     # We explicitly check if is has the 'item' method, which conventionally
     # converts these types to native scalars.
+    import datetime as _datetime
+
     np = get_module("numpy", should_load=False)
     pd = get_module("pandas", should_load=False)
     
     # Check for missing values first
     if is_missing_value(v):
         return None
+
+    # Handle datetime-like scalars -> str (ISO format)
+    if pd is not None and isinstance(v, (pd.Timestamp, pd.Timedelta)):
+        return str(v)
+    if isinstance(v, (_datetime.datetime, _datetime.date, _datetime.timedelta)):
+        return v.isoformat() if hasattr(v, "isoformat") else str(v)
         
     if np and np.isscalar(v) and hasattr(v, "item"):
         result = to_non_numpy_type(np, v)
-        return clean_missing_value(result)
+        # The result could still be a datetime-like, clean it
+        if is_missing_value(result):
+            return None
+        if pd is not None and isinstance(result, (pd.Timestamp, pd.Timedelta)):
+            return str(result)
+        if isinstance(result, (_datetime.datetime, _datetime.date, _datetime.timedelta)):
+            return result.isoformat() if hasattr(result, "isoformat") else str(result)
+        return result
     if isinstance(v, (list, tuple)):
         return [to_scalar_or_list(e) for e in v]
     elif np and isinstance(v, np.ndarray):
         if v.ndim == 0:
             result = to_non_numpy_type(np, v)
             return clean_missing_value(result)
+        # Recurse into each element (handles 1D and nested lists properly)
         return [to_scalar_or_list(e) for e in v]
     elif pd and isinstance(v, (pd.Series, pd.Index)):
         return [to_scalar_or_list(e) for e in v]
     elif is_numpy_convertable(v):
         return to_scalar_or_list(np.array(v))
     else:
-        return v
+        # Final catch-all: clean any remaining missing values or datetime types
+        if pd is not None and isinstance(v, (pd.Timestamp, pd.Timedelta)):
+            return str(v)
+        if isinstance(v, (_datetime.datetime, _datetime.date, _datetime.timedelta)):
+            return v.isoformat() if hasattr(v, "isoformat") else str(v)
+        return clean_missing_value(v)
 
 
 def copy_to_readonly_numpy_array(v, kind=None, force_numeric=False):
