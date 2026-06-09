@@ -422,6 +422,60 @@ For example:
     return validate_coerce_format(format)
 
 
+def resolve_format(
+    path: Union[Path, None] = None, format: Union[str, None] = None
+) -> str:
+    """
+    Fully resolve and validate the image format in a unified order, BEFORE
+    any engine warnings or dependency checks are emitted.
+
+    Resolution order (each step is validated via validate_coerce_format):
+      1. Explicit `format` argument if provided
+      2. File extension inference from `path` if available and format is None
+      3. Fallback to defaults.default_format
+
+    Parameters
+    ----------
+    path: Path or None
+        Optional output file path, used for extension inference.
+    format: str or None
+        Explicit format argument.
+
+    Returns
+    -------
+    str
+        The fully resolved, validated, and normalized format string
+        (e.g. 'jpeg', not 'jpg' or '.JPG').
+
+    Raises
+    ------
+    ValueError
+        If any step of the resolution produces an invalid format value,
+        including if defaults.default_format is misconfigured.
+    """
+    if format is not None or (path is not None and path.suffix):
+        return infer_format(path, format)
+
+    try:
+        fmt = validate_coerce_format(defaults.default_format)
+    except ValueError as e:
+        raise ValueError(
+            f"""
+Invalid default image format configured in plotly.io.defaults.default_format: {repr(defaults.default_format)}.
+Please set it to one of the supported formats: 'png', 'jpeg', 'jpg', 'webp', 'svg', 'pdf', 'eps'.
+"""
+        ) from e
+
+    if fmt is None:
+        raise ValueError(
+            f"""
+Invalid default image format configured in plotly.io.defaults.default_format: {repr(defaults.default_format)}.
+Please set it to one of the supported formats: 'png', 'jpeg', 'jpg', 'webp', 'svg', 'pdf', 'eps'.
+"""
+        )
+    return fmt
+
+
 def to_image(
     fig: Union[dict, plotly.graph_objects.Figure],
     format: Union[str, None] = None,
@@ -502,7 +556,7 @@ def to_image(
 
     engine = _validate_engine_param(engine)
 
-    format = validate_coerce_format(format)
+    format = resolve_format(None, format)
 
     engine = _resolve_engine_and_warn(engine, original_engine, stacklevel=2)
 
@@ -522,7 +576,7 @@ def to_image(
 
     fig_dict = validate_coerce_fig_to_dict(fig, validate)
 
-    format, width, height, scale = _resolve_image_defaults(
+    _, width, height, scale = _resolve_image_defaults(
         fig_dict, format, width, height, scale
     )
 
@@ -653,7 +707,7 @@ def write_image(
     """
     path = as_path_object(file)
 
-    format = infer_format(path, format)
+    format = resolve_format(path, format)
 
     img_data = to_image(
         fig,
@@ -792,8 +846,8 @@ def write_images(
 
     kaleido_specs = []
     for d in arg_dicts:
-        fmt = infer_format(d["file"], d["format"])
-        fmt, width, height, scale = _resolve_image_defaults(
+        fmt = resolve_format(d["file"], d["format"])
+        _, width, height, scale = _resolve_image_defaults(
             d["fig"], fmt, d["width"], d["height"], d["scale"]
         )
         if fmt == "eps":
