@@ -236,35 +236,88 @@ def copy_to_readonly_numpy_array(v, kind=None, force_numeric=False):
         "O": "object",
     }
 
+    pd = get_module("pandas", should_load=False)
+
+    # Pre-process pandas objects to preserve extension dtype semantics
+    # BEFORE Narwhals converts them (which loses nullable int->int type info)
+    if pd is not None and isinstance(v, (pd.Series, pd.Index, pd.DataFrame)):
+        if isinstance(v, (pd.Series, pd.Index)):
+            if pd.api.types.is_extension_array_dtype(v.dtype):
+                # Pandas extension dtype (Int64, Float64, boolean, string, etc.)
+                # Use to_list() which preserves original scalar types, then convert
+                # to object array, replacing pd.NA with None
+                raw_list = v.tolist()
+                cleaned_list = [None if is_missing_value(x) else x for x in raw_list]
+                v = np.array(cleaned_list, dtype=object)
+            elif v.dtype.kind == "M":
+                # Datetime - keep as is for now, will process NaT later
+                v = np.asarray(v.values)
+            else:
+                # Standard pandas dtype, go through Narwhals for normal handling
+                pass
+        elif isinstance(v, pd.DataFrame):
+            # DataFrame - check each column for extension dtypes
+            has_ext = any(
+                pd.api.types.is_extension_array_dtype(v[col].dtype)
+                for col in v.columns
+            )
+            if has_ext:
+                # Convert via to_numpy(dtype=object), but we need to handle per-element
+                # First get object array from pandas
+                obj_data = v.to_numpy(dtype=object)
+                # Clean missing values
+                it = np.nditer(obj_data, flags=["multi_index", "refs_ok"], op_flags=["readwrite"])
+                for val in it:
+                    idx = it.multi_index
+                    if is_missing_value(val.item()):
+                        obj_data[idx] = None
+                v = obj_data
+            else:
+                pass  # go through Narwhals
+
     # With `pass_through=True`, the original object will be returned if unable to convert
     # to a Narwhals DataFrame or Series.
-    v = nw.from_native(v, allow_series=True, pass_through=True)
+    if not isinstance(v, np.ndarray):
+        v_nw = nw.from_native(v, allow_series=True, pass_through=True)
 
-    if isinstance(v, nw.Series):
-        if v.dtype == nw.Datetime and v.dtype.time_zone is not None:
-            # Remove time zone so that local time is displayed
-            v = v.dt.replace_time_zone(None).to_numpy()
-        else:
-            v = v.to_numpy()
-    elif isinstance(v, nw.DataFrame):
-        schema = v.schema
-        overrides = {}
-        for key, val in schema.items():
-            if val == nw.Datetime and val.time_zone is not None:
+        if isinstance(v_nw, nw.Series):
+            if v_nw.dtype == nw.Datetime and v_nw.dtype.time_zone is not None:
                 # Remove time zone so that local time is displayed
-                overrides[key] = nw.col(key).dt.replace_time_zone(None)
-        if overrides:
-            v = v.with_columns(**overrides)
-        v = v.to_numpy()
+                v = v_nw.dt.replace_time_zone(None).to_numpy()
+            else:
+                v = v_nw.to_numpy()
+        elif isinstance(v_nw, nw.DataFrame):
+            schema = v_nw.schema
+            overrides = {}
+            for key, val in schema.items():
+                if val == nw.Datetime and val.time_zone is not None:
+                    # Remove time zone so that local time is displayed
+                    overrides[key] = nw.col(key).dt.replace_time_zone(None)
+            if overrides:
+                v_nw = v_nw.with_columns(**overrides)
+            v = v_nw.to_numpy()
+        else:
+            v = v_nw
 
-    # Handle numpy masked arrays - ALWAYS convert to object array with None for masked values
+    # Handle numpy masked arrays - preserve original scalar types, only set masked to None
     if isinstance(v, np.ma.MaskedArray):
         data = np.asarray(v.data)
         mask = np.asarray(v.mask)
-        # Convert to object array and set masked values to None
-        new_data = np.array(data, dtype=object)
-        new_data[mask] = None
-        v = new_data
+        # Convert to object array to preserve original types (int stays int, float stays float)
+        obj_arr = np.empty(data.shape, dtype=object)
+        # Copy non-masked values preserving their original Python/numpy types
+        it = np.nditer(data, flags=["multi_index", "refs_ok"])
+        for _ in it:
+            idx = it.multi_index
+            if not mask[idx]:
+                val = data[idx]
+                # Convert numpy scalar to native Python type if possible
+                if isinstance(val, np.generic):
+                    val = val.item()
+                obj_arr[idx] = val
+            else:
+                obj_arr[idx] = None
+        v = obj_arr
 
     if not isinstance(v, np.ndarray):
         # v has its own logic on how to convert itself into a numpy array
@@ -318,25 +371,45 @@ def copy_to_readonly_numpy_array(v, kind=None, force_numeric=False):
     # to an object array where missing values become None. This ensures
     # consistent JSON serialization and prevents typed-array binary
     # encoding from obscuring null semantics.
+    # Non-missing values preserve their original scalar types.
     if array_has_missing(new_v):
+        obj_arr = np.empty(new_v.shape, dtype=object)
         if new_v.dtype.kind == "f":
-            # Floating array with NaN -> object array with None
-            obj_arr = np.empty(new_v.shape, dtype=object)
+            # Floating array with NaN -> object array, preserve float values, NaN->None
             mask_nan = np.isnan(new_v)
-            obj_arr[~mask_nan] = new_v[~mask_nan]
-            obj_arr[mask_nan] = None
-            new_v = obj_arr
+            it = np.nditer(new_v, flags=["multi_index", "refs_ok"])
+            for _ in it:
+                idx = it.multi_index
+                if mask_nan[idx]:
+                    obj_arr[idx] = None
+                else:
+                    # Preserve Python float (not numpy scalar)
+                    obj_arr[idx] = float(new_v[idx])
         elif new_v.dtype.kind == "M":
-            # Datetime array with NaT -> object array with None
-            obj_arr = np.empty(new_v.shape, dtype=object)
+            # Datetime array with NaT -> object array, valid dates->str, NaT->None
             mask_nat = np.isnat(new_v)
             for idx in np.ndindex(new_v.shape):
                 if mask_nat[idx]:
                     obj_arr[idx] = None
                 else:
                     obj_arr[idx] = str(new_v[idx])
-            new_v = obj_arr
-        # For object arrays, missing values are already handled by clean_missing_value
+        elif new_v.dtype.kind in ("u", "i"):
+            # Integer arrays can't have NaN, so this shouldn't happen
+            # but just in case, preserve int type
+            for idx in np.ndindex(new_v.shape):
+                val = new_v[idx]
+                if isinstance(val, np.generic):
+                    val = val.item()
+                obj_arr[idx] = val
+        elif new_v.dtype.kind == "O":
+            # Object array - clean each element with clean_missing_value
+            for idx in np.ndindex(new_v.shape):
+                obj_arr[idx] = clean_missing_value(new_v[idx])
+        else:
+            # Other types - just copy, apply clean_missing_value
+            for idx in np.ndindex(new_v.shape):
+                obj_arr[idx] = clean_missing_value(new_v[idx])
+        new_v = obj_arr
 
     # Set new array to be read-only
     # -----------------------------
