@@ -4182,14 +4182,22 @@ because subplot does not have a secondary y-axis""".format(
                 )
             rows_cols = [(row, col)]
 
-        seen = set()
-        deduped = []
-        for rc in rows_cols:
-            key = (rc[0], rc[1], bool(secondary_y))
-            if key not in seen:
-                seen.add(key)
-                deduped.append(rc)
-        rows_cols = deduped
+        resolved = []
+        seen_refs = set()
+        for r, c in rows_cols:
+            xr, yr = self._resolve_subplot_axis_refs(
+                r, c, secondary_y, prop_singular="shape"
+            )
+            ref_key = (xr, yr)
+            if ref_key in seen_refs:
+                continue
+            seen_refs.add(ref_key)
+            if exclude_empty_subplots and not (r is None and c is None):
+                if not self._subplot_not_empty(
+                    xr, yr, selector=bool(exclude_empty_subplots)
+                ):
+                    continue
+            resolved.append((r, c, xr, yr))
 
         n_shapes_before = len(self.layout["shapes"])
         n_annotations_before = len(self.layout["annotations"])
@@ -4209,16 +4217,7 @@ because subplot does not have a secondary y-axis""".format(
                 yref = user_yref
             return xref, yref
 
-        for r, c in rows_cols:
-            xref, yref = self._resolve_subplot_axis_refs(
-                r, c, secondary_y, prop_singular="shape"
-            )
-            if exclude_empty_subplots and not (r is None and c is None):
-                if not self._subplot_not_empty(
-                    xref, yref, selector=bool(exclude_empty_subplots)
-                ):
-                    continue
-
+        for _r, _c, xref, yref in resolved:
             shape_dict = _combine_dicts([shape_args, shape_kwargs])
             s_xref, s_yref = _apply_user_ref_overrides(shape_dict, xref, yref)
             shape_dict.setdefault("xref", s_xref)
