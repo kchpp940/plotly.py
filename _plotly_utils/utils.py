@@ -285,16 +285,31 @@ class PlotlyJSONEncoder(_json.JSONEncoder):
 
     @staticmethod
     def encode_as_numpy(obj):
-        """Attempt to convert numpy.ma.core.masked"""
+        """Attempt to convert numpy.ma.core.masked and numpy datetime64 NaT"""
         numpy = get_module("numpy", should_load=False)
         if not numpy:
             raise NotEncodable
 
         if obj is numpy.ma.core.masked:
-            return float("nan")
+            return None
+        elif isinstance(obj, numpy.datetime64):
+            if numpy.isnat(obj):
+                return None
+            try:
+                return str(obj)
+            except TypeError:
+                pass
         elif isinstance(obj, numpy.ndarray) and obj.dtype.kind == "M":
             try:
-                return numpy.datetime_as_string(obj).tolist()
+                arr = numpy.asarray(obj)
+                # Convert NaT to None in the result
+                result = []
+                for val in arr:
+                    if numpy.isnat(val):
+                        result.append(None)
+                    else:
+                        result.append(str(val))
+                return result
             except TypeError:
                 pass
 

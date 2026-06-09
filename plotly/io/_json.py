@@ -510,19 +510,27 @@ def clean_to_json_compatible(obj, **kwargs):
     # numpy
     if np is not None:
         if obj is np.ma.core.masked:
-            return float("nan")
+            return None
         elif isinstance(obj, np.ndarray):
             if numpy_allowed and obj.dtype.kind in ("b", "i", "u", "f"):
                 return np.ascontiguousarray(obj)
             elif obj.dtype.kind == "M":
-                # datetime64 array
-                return np.datetime_as_string(obj).tolist()
+                # datetime64 array - convert NaT to None
+                result = []
+                for val in np.asarray(obj):
+                    if np.isnat(val):
+                        result.append(None)
+                    else:
+                        result.append(str(val))
+                return result
             elif obj.dtype.kind == "U":
                 return obj.tolist()
             elif obj.dtype.kind == "O":
                 # Treat object array as a lists, continue processing
                 obj = obj.tolist()
         elif isinstance(obj, np.datetime64):
+            if np.isnat(obj):
+                return None
             return str(obj)
 
     # pandas
@@ -542,11 +550,14 @@ def clean_to_json_compatible(obj, **kwargs):
                 else:  # DatetimeIndex
                     dt_values = obj.to_pydatetime().tolist()
 
-                if not datetime_allowed:
-                    # Note: We don't need to handle dropping timezones here because
-                    # numpy's datetime64 doesn't support them and pandas's tz_localize
-                    # above drops them.
-                    for i in range(len(dt_values)):
+                # Convert NaT values to None
+                for i in range(len(dt_values)):
+                    if dt_values[i] is pd.NaT:
+                        dt_values[i] = None
+                    elif not datetime_allowed and dt_values[i] is not None:
+                        # Note: We don't need to handle dropping timezones here because
+                        # numpy's datetime64 doesn't support them and pandas's tz_localize
+                        # above drops them.
                         dt_values[i] = dt_values[i].isoformat()
 
                 return dt_values

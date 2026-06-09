@@ -24,118 +24,6 @@ import narwhals.stable.v1 as nw
 NO_COLOR = "px_no_color_constant"
 
 
-class _ColumnDisplayMapper:
-    """Unified helper for managing the 3-layer mapping for wide-form duplicate columns:
-
-    1. internal key (e.g. 'a', 'a_1', 'b') - unique identifier used for grouping,
-       offsetgroup, color assignment keys
-    2. display name (e.g. 'a', 'a', 'b') - the original column name, produced by
-       renamed_to_original mapping
-    3. final label (e.g. 'Column A', 'Column A', 'Column B') - the user-facing label
-       produced by applying the labels={"a": "Column A"} mapping on top of display names
-
-    The helper provides consistent accessors used by legend generation, hovertemplate,
-    color assignment, category ordering, and bar offsetgroup logic.
-    """
-
-    __slots__ = ("_renamed_to_original", "_labels_dict")
-
-    def __init__(self, renamed_to_original, labels):
-        self._renamed_to_original = renamed_to_original or {}
-        self._labels_dict = labels if isinstance(labels, dict) else {}
-
-    @classmethod
-    def from_args(cls, args):
-        return cls(
-            renamed_to_original=args.get("_renamed_to_original"),
-            labels=args.get("labels"),
-        )
-
-    @property
-    def has_renames(self):
-        return bool(self._renamed_to_original)
-
-    def internal_to_display(self, internal_key):
-        """Map internal key ('a_1') → display name ('a')."""
-        key_str = str(internal_key)
-        return self._renamed_to_original.get(key_str, key_str)
-
-    def display_to_label(self, display_name):
-        """Map display name ('a') → final label ('Column A') via labels dict."""
-        return self._labels_dict.get(str(display_name), display_name)
-
-    def internal_to_label(self, internal_key):
-        """Map internal key → final label (full chain)."""
-        display = self.internal_to_display(internal_key)
-        label = self.display_to_label(display)
-        # Also check if the raw internal_key has a label entry (for non-renamed columns)
-        key_str = str(internal_key)
-        if (
-            label == display
-            and key_str not in self._renamed_to_original
-            and key_str in self._labels_dict
-        ):
-            label = self._labels_dict[key_str]
-        return label
-
-    def group_display_to_internal(self, uniques):
-        """Given a list of internal keys (uniques), return a mapping from display name
-        to a list of internal keys (preserving the order in uniques)."""
-        result = OrderedDict()
-        for internal_key in uniques:
-            display = self.internal_to_display(internal_key)
-            if display not in result:
-                result[display] = []
-            result[display].append(internal_key)
-        return result
-
-    def expand_display_order(self, display_order, uniques):
-        """Expand a user-specified category_orders list of display names into the
-        corresponding list of internal keys, preserving the order in uniques for
-        internal keys that share a display name and appending any unmentioned keys."""
-        display_to_internal = self.group_display_to_internal(uniques)
-        expanded = []
-        seen = set()
-        for user_val in display_order:
-            user_str = str(user_val)
-            if user_str in display_to_internal:
-                for internal_key in display_to_internal[user_str]:
-                    if internal_key not in seen:
-                        expanded.append(internal_key)
-                        seen.add(internal_key)
-            else:
-                if user_val not in seen:
-                    expanded.append(user_val)
-                    seen.add(user_val)
-        for internal_key in uniques:
-            if internal_key not in seen:
-                expanded.append(internal_key)
-        # De-duplicate while preserving order
-        return list(OrderedDict.fromkeys(expanded))
-
-    def assign_colors(
-        self, sorted_internal_keys, color_sequence, existing_val_map=None
-    ):
-        """Assign colors to internal keys such that keys sharing the same display name
-        receive the same color. If existing_val_map is provided and mutable, updates it
-        in place; otherwise returns a new dict."""
-        val_map = existing_val_map if existing_val_map is not None else {}
-        is_identity = isinstance(existing_val_map, IdentityMap)
-        display_to_color = {}
-        for internal_key in sorted_internal_keys:
-            if is_identity:
-                continue
-            if internal_key in val_map:
-                continue
-            display = self.internal_to_display(internal_key)
-            if display not in display_to_color:
-                display_to_color[display] = color_sequence[
-                    len(display_to_color) % len(color_sequence)
-                ]
-            val_map[internal_key] = display_to_color[display]
-        return val_map
-
-
 trendline_functions = dict(
     lowess=lowess, rolling=rolling, ewm=ewm, expanding=expanding, ols=ols
 )
@@ -1632,89 +1520,10 @@ def build_dataframe(args, constructor):
 
     # If data_frame is provided, we parse it into a narwhals DataFrame, while accounting
     # for compatibility with pandas specific paths (e.g. Index/MultiIndex case).
-    renamed_to_original = None
     if df_provided:
         # data_frame is pandas-like DataFrame (pandas, modin.pandas, cudf)
         if nw.dependencies.is_pandas_like_dataframe(args["data_frame"]):
             columns = args["data_frame"].columns  # This can be multi index
-            # Handle duplicate column names before converting to Narwhals
-            # since Narwhals requires unique column names
-            if len(set(columns)) != len(columns):
-                import pandas as pd
-                seen = {}
-                col_rename_map = {}  # Maps (old_name, occurrence_index) -> new_name
-                new_columns = []
-                for idx, col in enumerate(columns):
-                    if col in seen:
-                        seen[col] += 1
-                        new_name = f"{col}_{seen[col]}"
-                        new_columns.append(new_name)
-                    else:
-                        seen[col] = 0
-                        new_name = col
-                        new_columns.append(new_name)
-                    col_rename_map[(col, seen[col])] = new_name
-
-                # Build a simple list-based mapping for sequential column references:
-                # For each old column name, store a list of new names in order of occurrence
-                old_to_new_list = {}
-                # Also build a reverse mapping from renamed column to original name
-                renamed_to_original = {}
-                for (old_name, occ_idx), new_name in col_rename_map.items():
-                    if old_name not in old_to_new_list:
-                        old_to_new_list[old_name] = []
-                    # Insert at the correct position
-                    while len(old_to_new_list[old_name]) <= occ_idx:
-                        old_to_new_list[old_name].append(None)
-                    old_to_new_list[old_name][occ_idx] = new_name
-                    if new_name != old_name:
-                        renamed_to_original[new_name] = str(old_name)
-
-                args["data_frame"] = args["data_frame"].copy()
-                args["data_frame"].columns = new_columns
-
-                # Update labels mapping for renamed columns
-                has_renamed = any(old != new for old, new in zip(columns, new_columns))
-                if has_renamed:
-                    for old_col, new_col in zip(columns, new_columns):
-                        if old_col != new_col:
-                            if args.get("labels") is None:
-                                args["labels"] = {}
-                            # Preserve user-specified labels: if user set a label for the
-                            # original column name, copy it to the new name.
-                            # Otherwise create a label with the original column name.
-                            if old_col in args["labels"]:
-                                args["labels"][new_col] = args["labels"][old_col]
-                            else:
-                                args["labels"][new_col] = str(old_col)
-
-                # Update user-provided column references in args to use new names
-                # This handles cases like y=["a", "a", "b"] where columns were renamed
-                def _update_col_refs(value, occurrence_counters):
-                    """Recursively update column references in args values."""
-                    if value is None:
-                        return value
-                    if isinstance(value, str):
-                        if value in old_to_new_list:
-                            counter = occurrence_counters.get(value, 0)
-                            if counter < len(old_to_new_list[value]):
-                                occurrence_counters[value] = counter + 1
-                                return old_to_new_list[value][counter]
-                        return value
-                    if isinstance(value, list):
-                        return [_update_col_refs(v, occurrence_counters) for v in value]
-                    if isinstance(value, tuple):
-                        return tuple(_update_col_refs(v, occurrence_counters) for v in value)
-                    if isinstance(value, dict):
-                        return {k: _update_col_refs(v, occurrence_counters) for k, v in value.items()}
-                    return value
-
-                for field in args:
-                    if field in all_attrables and field not in ["wide_variable", "wide_cross"]:
-                        occurrence_counters = {}
-                        args[field] = _update_col_refs(args[field], occurrence_counters)
-
-                columns = args["data_frame"].columns
             args["data_frame"] = nw.from_native(args["data_frame"], eager_only=True)
             is_pd_like = True
 
@@ -2016,15 +1825,6 @@ def build_dataframe(args, constructor):
         df_output = df_output.with_columns(nw.col(var_name).cast(nw.String))
         orient_v = wide_orientation == "v"
 
-        # Update labels mapping for the new column names created by unpivot
-        # Map user-specified labels for "variable" and "value" to actual var_name/value_name
-        # This ensures labels={"variable": "My Series", "value": "My Values"} work
-        if args.get("labels") is not None:
-            if "variable" in args["labels"] and var_name not in args["labels"]:
-                args["labels"][var_name] = args["labels"]["variable"]
-            if "value" in args["labels"] and value_name not in args["labels"]:
-                args["labels"][value_name] = args["labels"]["value"]
-
         if hist1d_orientation:
             args["x" if orient_v else "y"] = value_name
             args["y" if orient_v else "x"] = wide_cross_name
@@ -2067,9 +1867,6 @@ def build_dataframe(args, constructor):
     if no_color:
         args["color"] = None
     args["data_frame"] = df_output
-    # Save renamed_to_original mapping so trace name generation can use original names
-    if renamed_to_original is not None:
-        args["_renamed_to_original"] = renamed_to_original
     return args
 
 
@@ -2650,7 +2447,6 @@ def get_groups_and_orders(args, grouper):
     of a single dimension-group
     """
     orders = {} if "category_orders" not in args else args["category_orders"].copy()
-    display_mapper = _ColumnDisplayMapper.from_args(args)
     df: nw.DataFrame = args["data_frame"]
     # figure out orders and what the single group name would be if there were one
     single_group_name = []
@@ -2670,18 +2466,7 @@ def get_groups_and_orders(args, grouper):
             if col not in orders:
                 orders[col] = uniques
             else:
-                # User provided category_orders for this column.
-                # Expand display names in the user's order to their internal unique keys,
-                # preserving the order in which internal keys appear in uniques.
-                user_order = orders[col]
-                if display_mapper.has_renames:
-                    orders[col] = display_mapper.expand_display_order(
-                        user_order, uniques
-                    )
-                else:
-                    orders[col] = list(
-                        OrderedDict.fromkeys(list(orders[col]) + uniques)
-                    )
+                orders[col] = list(OrderedDict.fromkeys(list(orders[col]) + uniques))
 
     if len(single_group_name) == len(grouper):
         # we have a single group, so we can skip all group-by operations!
@@ -2746,8 +2531,6 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
     grouper = [x.grouper or one_group for x in grouped_mappings] or [one_group]
     groups, orders = get_groups_and_orders(args, grouper)
 
-    display_mapper = _ColumnDisplayMapper.from_args(args)
-
     col_labels = []
     row_labels = []
     nrows = ncols = 1
@@ -2764,16 +2547,9 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
                 prefix = get_label(args, args["facet_row"]) + "="
                 row_labels = [prefix + str(s) for s in sorted_values]
                 nrows = len(row_labels)
-            # Assign colors: when duplicate columns were renamed, group by
-            # display name so same original column name gets the same color.
-            if display_mapper.has_renames and not isinstance(m.val_map, IdentityMap):
-                display_mapper.assign_colors(
-                    sorted_values, m.sequence, existing_val_map=m.val_map
-                )
-            else:
-                for val in sorted_values:
-                    if val not in m.val_map:  # always False if it's an IdentityMap
-                        m.val_map[val] = m.sequence[len(m.val_map) % len(m.sequence)]
+            for val in sorted_values:
+                if val not in m.val_map:  # always False if it's an IdentityMap
+                    m.val_map[val] = m.sequence[len(m.val_map) % len(m.sequence)]
 
     subplot_type = _subplot_type_for_trace_type(constructor().type)
 
@@ -2785,24 +2561,17 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
     for group_name, group in groups.items():
         mapping_labels = OrderedDict()
         trace_name_labels = OrderedDict()
-        internal_key_parts = []
         frame_name = ""
         for col, val, m in zip(grouper, group_name, grouped_mappings):
             if col != one_group:
                 key = get_label(args, col)
                 if not isinstance(m.val_map, IdentityMap):
-                    # Use the unified mapper to get the final display label
-                    # (internal → display name → user labels mapping).
-                    final_label = display_mapper.internal_to_label(val)
-                    mapping_labels[key] = final_label
+                    mapping_labels[key] = str(val)
                     if m.show_in_trace_name:
-                        trace_name_labels[key] = final_label
-                    # Track internal key for offsetgroup etc.
-                    internal_key_parts.append(str(val))
+                        trace_name_labels[key] = str(val)
                 if m.variable == "animation_frame":
                     frame_name = val
         trace_name = ", ".join(trace_name_labels.values())
-        internal_group_key = ", ".join(internal_key_parts) if internal_key_parts else trace_name
         if frame_name not in trace_names_by_frame:
             trace_names_by_frame[frame_name] = set()
         trace_names = trace_names_by_frame[frame_name]
@@ -2828,14 +2597,12 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
                     showlegend=(trace_name != "" and trace_name not in trace_names),
                 )
 
-            # Set 'offsetgroup' only in group barmode (or if no barmode is set).
-            # Use internal_group_key (unique per internal group) rather than trace_name
-            # (which may be shared by groups with the same display name).
+            # Set 'offsetgroup' only in group barmode (or if no barmode is set)
             barmode = layout_patch.get("barmode")
             if trace_spec.constructor in [go.Bar, go.Box, go.Violin, go.Histogram] and (
                 barmode == "group" or barmode is None
             ):
-                trace.update(alignmentgroup=True, offsetgroup=internal_group_key)
+                trace.update(alignmentgroup=True, offsetgroup=trace_name)
             trace_names.add(trace_name)
 
             # Init subplot row/col

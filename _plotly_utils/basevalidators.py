@@ -36,6 +36,59 @@ def to_non_numpy_type(np, v):
     return v.item()
 
 
+def is_missing_value(v):
+    """
+    Check if a value is a missing/null value from pandas, numpy, or pyarrow.
+    
+    Returns True for:
+    - None
+    - pandas.NA (pd.NA)
+    - pandas.NaT (pd.NaT)
+    - numpy.ma.core.masked
+    - numpy.datetime64('NaT')
+    - numpy floating NaN values
+    - pyarrow null values (via pandas.NA proxy)
+    """
+    if v is None:
+        return True
+
+    np = get_module("numpy", should_load=False)
+    pd = get_module("pandas", should_load=False)
+
+    # pandas NA and NaT
+    if pd is not None:
+        if v is pd.NA:
+            return True
+        if v is pd.NaT:
+            return True
+
+    # numpy masked value
+    if np is not None:
+        if v is np.ma.core.masked:
+            return True
+        # numpy datetime64 NaT
+        if isinstance(v, np.datetime64):
+            return np.isnat(v)
+        # numpy floating NaN
+        if isinstance(v, np.floating):
+            return np.isnan(v)
+        if isinstance(v, float):
+            import math
+            return math.isnan(v)
+
+    return False
+
+
+def clean_missing_value(v):
+    """
+    Convert any missing/null value to None.
+    Returns the original value if it's not a missing value.
+    """
+    if is_missing_value(v):
+        return None
+    return v
+
+
 # Utility functions
 # -----------------
 def to_scalar_or_list(v):
@@ -48,13 +101,20 @@ def to_scalar_or_list(v):
     # converts these types to native scalars.
     np = get_module("numpy", should_load=False)
     pd = get_module("pandas", should_load=False)
+    
+    # Check for missing values first
+    if is_missing_value(v):
+        return None
+        
     if np and np.isscalar(v) and hasattr(v, "item"):
-        return to_non_numpy_type(np, v)
+        result = to_non_numpy_type(np, v)
+        return clean_missing_value(result)
     if isinstance(v, (list, tuple)):
         return [to_scalar_or_list(e) for e in v]
     elif np and isinstance(v, np.ndarray):
         if v.ndim == 0:
-            return to_non_numpy_type(np, v)
+            result = to_non_numpy_type(np, v)
+            return clean_missing_value(result)
         return [to_scalar_or_list(e) for e in v]
     elif pd and isinstance(v, (pd.Series, pd.Index)):
         return [to_scalar_or_list(e) for e in v]
@@ -125,6 +185,28 @@ def copy_to_readonly_numpy_array(v, kind=None, force_numeric=False):
         if overrides:
             v = v.with_columns(**overrides)
         v = v.to_numpy()
+
+    # Handle numpy masked arrays - convert masked values to NaN/None
+    if isinstance(v, np.ma.MaskedArray):
+        # Get the underlying data
+        data = np.asarray(v.data)
+        mask = np.asarray(v.mask)
+        
+        if data.dtype.kind in numeric_kinds:
+            # For numeric arrays, set masked values to NaN
+            new_data = data.astype(np.float64)
+            new_data[mask] = np.nan
+            v = new_data
+        elif data.dtype.kind == "M":
+            # For datetime arrays, set masked values to NaT
+            new_data = data.copy()
+            new_data[mask] = np.datetime64("NaT")
+            v = new_data
+        else:
+            # For other types (object, string, etc.), set masked values to None
+            new_data = np.array(data, dtype=object)
+            new_data[mask] = None
+            v = new_data
 
     if not isinstance(v, np.ndarray):
         # v has its own logic on how to convert itself into a numpy array
