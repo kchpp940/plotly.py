@@ -348,6 +348,9 @@ col: None, int or 'all'
     Subplot column for shape indexed starting at 1. If 'all', addresses all rows in
     the specified column(s). If both row and col are None, addresses the
     first subplot if subplots exist, or the only plot. By default is "all".
+secondary_y: Boolean or None
+    Whether to add shape and annotation to the secondary y-axis. Only valid for
+    subplots created with the secondary_y spec property set to True.
 annotation: dict or plotly.graph_objects.layout.Annotation. If dict(),
     it is interpreted as describing an annotation. The annotation is
     placed relative to the shape based on annotation_position (see
@@ -4060,6 +4063,7 @@ Invalid property path '{key_path_str}' for layout
         shape_type,
         exclude_empty_subplots=True,
         annotation=None,
+        secondary_y=None,
         **kwargs,
     ):
         """
@@ -4096,6 +4100,7 @@ Invalid property path '{key_path_str}' for layout
         self.add_shape(
             row=row,
             col=col,
+            secondary_y=secondary_y,
             exclude_empty_subplots=exclude_empty_subplots,
             **_combine_dicts([shape_args, shape_kwargs]),
         )
@@ -4104,8 +4109,8 @@ Invalid property path '{key_path_str}' for layout
                 augmented_annotation,
                 row=row,
                 col=col,
+                secondary_y=secondary_y,
                 exclude_empty_subplots=exclude_empty_subplots,
-                yref=shape_kwargs.get("yref", "y"),
             )
         # update xref and yref for the new shapes and annotations
         for layout_obj, n_layout_objs_before in zip(
@@ -4147,6 +4152,7 @@ Invalid property path '{key_path_str}' for layout
         col="all",
         exclude_empty_subplots=True,
         annotation=None,
+        secondary_y=None,
         **kwargs,
     ):
         self._process_multiple_axis_spanning_shapes(
@@ -4156,6 +4162,7 @@ Invalid property path '{key_path_str}' for layout
             "vline",
             exclude_empty_subplots=exclude_empty_subplots,
             annotation=annotation,
+            secondary_y=secondary_y,
             **kwargs,
         )
         return self
@@ -4169,6 +4176,7 @@ Invalid property path '{key_path_str}' for layout
         col="all",
         exclude_empty_subplots=True,
         annotation=None,
+        secondary_y=None,
         **kwargs,
     ):
         self._process_multiple_axis_spanning_shapes(
@@ -4184,6 +4192,7 @@ Invalid property path '{key_path_str}' for layout
             "hline",
             exclude_empty_subplots=exclude_empty_subplots,
             annotation=annotation,
+            secondary_y=secondary_y,
             **kwargs,
         )
         return self
@@ -4198,6 +4207,7 @@ Invalid property path '{key_path_str}' for layout
         col="all",
         exclude_empty_subplots=True,
         annotation=None,
+        secondary_y=None,
         **kwargs,
     ):
         self._process_multiple_axis_spanning_shapes(
@@ -4207,6 +4217,7 @@ Invalid property path '{key_path_str}' for layout
             "vrect",
             exclude_empty_subplots=exclude_empty_subplots,
             annotation=annotation,
+            secondary_y=secondary_y,
             **kwargs,
         )
         return self
@@ -4221,6 +4232,7 @@ Invalid property path '{key_path_str}' for layout
         col="all",
         exclude_empty_subplots=True,
         annotation=None,
+        secondary_y=None,
         **kwargs,
     ):
         self._process_multiple_axis_spanning_shapes(
@@ -4230,6 +4242,7 @@ Invalid property path '{key_path_str}' for layout
             "hrect",
             exclude_empty_subplots=exclude_empty_subplots,
             annotation=annotation,
+            secondary_y=secondary_y,
             **kwargs,
         )
         return self

@@ -3,6 +3,7 @@ import json
 import webbrowser
 import inspect
 import os
+from os.path import isdir
 
 from plotly import optional_imports
 from plotly.io import to_json, to_image, write_image, write_html
@@ -528,7 +529,13 @@ class IFrameRenderer(MimetypeRenderer):
         # Build filename using ipython cell number
         filename = self.build_filename()
 
-        # 目录创建和 plotly.js bundle 复制统一由 write_html 内部处理
+        # Make directory for
+        try:
+            os.makedirs(self.html_directory)
+        except OSError:
+            if not isdir(self.html_directory):
+                raise
+
         write_html(
             fig_dict,
             filename,
@@ -777,89 +784,58 @@ class SphinxGalleryHtmlRenderer(HtmlRenderer):
         auto_play=False,
         post_script=None,
         animation_opts=None,
-        include_plotlyjs=None,
     ):
-        if include_plotlyjs is None:
-            include_plotlyjs = "cdn" if connected else True
         super(SphinxGalleryHtmlRenderer, self).__init__(
             connected=connected,
-            full_html=True,
+            full_html=False,
             global_init=False,
             config=config,
             auto_play=auto_play,
             post_script=post_script,
             animation_opts=animation_opts,
-            include_plotlyjs=include_plotlyjs,
         )
-        self._connected = connected
 
     def to_mimebundle(self, fig_dict):
         from plotly.io import to_html
-        from plotly.io._sg_scraper import _enqueue_fig
 
-        # 规范化 include_plotlyjs
-        if self._connected:
-            include_plotlyjs = self.include_plotlyjs if self.include_plotlyjs != True else "cdn"
+        if self.connected:
+            include_plotlyjs = "cdn"
             include_mathjax = "cdn"
         else:
-            include_plotlyjs = self.include_plotlyjs
+            include_plotlyjs = True
             include_mathjax = "cdn"
 
-        # Renderer 只负责生成 HTML 字符串，不猜路径、不写文件
         html = to_html(
             fig_dict,
             config=self.config,
             auto_play=self.auto_play,
             include_plotlyjs=include_plotlyjs,
             include_mathjax=include_mathjax,
-            full_html=True,
+            full_html=self.full_html,
             animation_opts=self.animation_opts,
             default_width="100%",
             default_height=525,
             validate=False,
         )
 
-        # 将内容 push 到模块级 buffer，由 scraper 统一负责落盘和路径处理
-        _enqueue_fig(
-            html_content=html,
-            png_bytes=None,
-            include_plotlyjs=include_plotlyjs,
-        )
-
-        # 同时返回 HTML 字符串用于 Jupyter 等环境的预览
         return {"text/html": html}
 
 
 class SphinxGalleryOrcaRenderer(ExternalRenderer):
-    def __init__(
-        self,
-        include_plotlyjs="cdn",
-    ):
-        self.include_plotlyjs = include_plotlyjs
-
     def render(self, fig_dict):
-        from plotly.io import to_html
-        from plotly.io._sg_scraper import _enqueue_fig
-        import io
-
-        figure = return_figure_from_figure_or_data(fig_dict, True)
-
-        # Renderer 只负责生成内容：HTML 字符串 + PNG 字节
-        # 不猜路径、不写文件
-        html = to_html(
-            fig_dict,
-            include_plotlyjs=self.include_plotlyjs,
-            include_mathjax="cdn",
-            full_html=True,
-            validate=False,
-        )
-
-        # 生成 PNG 字节（写入内存缓冲区，不写到磁盘）
-        png_bytes = None
+        stack = inspect.stack()
+        # Name of script from which plot function was called is retrieved
         try:
-            png_buffer = io.BytesIO()
-            write_image(figure, png_buffer, format="png")
-            png_bytes = png_buffer.getvalue()
+            filename = stack[3].filename  # let's hope this is robust...
+        except Exception:  # python 2
+            filename = stack[3][1]
+        filename_root, _ = os.path.splitext(filename)
+        filename_html = filename_root + ".html"
+        filename_png = filename_root + ".png"
+        figure = return_figure_from_figure_or_data(fig_dict, True)
+        _ = write_html(fig_dict, file=filename_html, include_plotlyjs="cdn")
+        try:
+            write_image(figure, filename_png)
         except (ValueError, ImportError):
             raise ImportError(
                 "orca and psutil are required to use the `sphinx-gallery-orca` renderer. "
@@ -868,10 +844,3 @@ class SphinxGalleryOrcaRenderer(ExternalRenderer):
                 "renderer (note that png thumbnails can only be generated with "
                 "the `sphinx-gallery-orca` renderer)."
             )
-
-        # 将内容 push 到模块级 buffer，由 scraper 统一负责落盘和路径处理
-        _enqueue_fig(
-            html_content=html,
-            png_bytes=png_bytes,
-            include_plotlyjs=self.include_plotlyjs,
-        )
