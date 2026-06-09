@@ -3595,6 +3595,10 @@ Invalid property path '{key_path_str}' for layout
         div_id: str (default None)
             If provided, this is the value of the id attribute of the div tag. If None, the
             id attribute is a UUID.
+        plotlyjs_path: str (default "plotly.min.js")
+            Path to use for the plotly.js script src when include_plotlyjs='directory'.
+            This is used internally to support nested output directories where the relative
+            path to plotly.min.js may need to be adjusted.
 
         Returns
         -------
@@ -3702,6 +3706,10 @@ Invalid property path '{key_path_str}' for layout
         div_id: str (default None)
             If provided, this is the value of the id attribute of the div tag. If None, the
             id attribute is a UUID.
+        plotlyjs_path: str (default "plotly.min.js")
+            Path to use for the plotly.js script src when include_plotlyjs='directory'.
+            This is used internally to support nested output directories where the relative
+            path to plotly.min.js may need to be adjusted.
 
         Returns
         -------
