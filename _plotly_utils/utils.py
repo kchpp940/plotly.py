@@ -10,6 +10,7 @@ from _plotly_utils.basevalidators import (
     ImageUriValidator,
     copy_to_readonly_numpy_array,
     is_homogeneous_array,
+    array_has_missing,
 )
 
 
@@ -39,7 +40,9 @@ plotlyjsShortTypes = {
 def to_typed_array_spec(v):
     """
     Convert numpy array to plotly.js typed array spec
-    If not possible return the original value
+    If not possible return the original value.
+    Arrays containing missing values (NaN, NaT, None, etc.) are NOT encoded
+    as typed arrays, to preserve null semantics in JSON.
     """
     v = copy_to_readonly_numpy_array(v)
 
@@ -47,6 +50,11 @@ def to_typed_array_spec(v):
     # or if v is not a numpy array, or if v is empty
     np = get_module("numpy", should_load=False)
     if not np or not isinstance(v, np.ndarray) or v.size == 0:
+        return v
+
+    # Skip b64 encoding if array contains missing values
+    # to preserve null semantics in JSON output
+    if array_has_missing(v):
         return v
 
     dtype = str(v.dtype)

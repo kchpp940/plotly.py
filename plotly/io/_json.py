@@ -513,6 +513,14 @@ def clean_to_json_compatible(obj, **kwargs):
             return None
         elif isinstance(obj, np.ndarray):
             if numpy_allowed and obj.dtype.kind in ("b", "i", "u", "f"):
+                # Even if numpy_allowed, skip typed encoding if array has NaN
+                # to preserve null semantics in JSON
+                if obj.dtype.kind == "f" and bool(np.isnan(obj).any()):
+                    # Floating array with NaN -> convert to list with None
+                    if obj.ndim == 1:
+                        return [None if np.isnan(x) else x for x in obj]
+                    else:
+                        return [[None if np.isnan(x) else x for x in row] for row in obj]
                 return np.ascontiguousarray(obj)
             elif obj.dtype.kind == "M":
                 # datetime64 array - convert NaT to None
@@ -539,7 +547,15 @@ def clean_to_json_compatible(obj, **kwargs):
             return None
         elif isinstance(obj, (pd.Series, pd.DatetimeIndex)):
             if numpy_allowed and obj.dtype.kind in ("b", "i", "u", "f"):
-                return np.ascontiguousarray(obj.values)
+                # Even if numpy_allowed, skip typed encoding if array has NaN
+                # to preserve null semantics in JSON
+                arr = obj.values
+                if arr.dtype.kind == "f" and bool(np.isnan(arr).any()):
+                    if arr.ndim == 1:
+                        return [None if np.isnan(x) else x for x in arr]
+                    else:
+                        return [[None if np.isnan(x) else x for x in row] for row in arr]
+                return np.ascontiguousarray(arr)
             elif obj.dtype.kind == "M":
                 if isinstance(obj, pd.Series):
                     with warnings.catch_warnings():

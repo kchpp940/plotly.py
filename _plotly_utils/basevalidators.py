@@ -79,6 +79,77 @@ def is_missing_value(v):
     return False
 
 
+def array_has_missing(arr):
+    """
+    Check if a numpy array contains any missing values (NaN, NaT, etc.)
+    
+    Parameters
+    ----------
+    arr : np.ndarray
+    
+    Returns
+    -------
+    bool
+    """
+    np = get_module("numpy", should_load=False)
+    if np is None:
+        return False
+    
+    if not isinstance(arr, np.ndarray):
+        return False
+    
+    if arr.dtype.kind == "f":
+        # Floating point arrays: check for NaN
+        return bool(np.isnan(arr).any())
+    elif arr.dtype.kind == "M":
+        # Datetime arrays: check for NaT
+        return bool(np.isnat(arr).any())
+    elif arr.dtype.kind == "O":
+        # Object arrays: check each element
+        for elem in arr.flat:
+            if is_missing_value(elem):
+                return True
+        return False
+    return False
+
+
+def array_to_list_with_none(arr):
+    """
+    Convert a numpy array to a (optionally nested) list where missing values
+    (NaN, NaT, masked, etc.) are replaced with None.
+    
+    Parameters
+    ----------
+    arr : np.ndarray
+    
+    Returns
+    -------
+    list
+    """
+    np = get_module("numpy", should_load=False)
+    
+    if arr.ndim == 0:
+        return clean_missing_value(arr.item())
+    
+    if arr.dtype.kind == "f":
+        if arr.ndim == 1:
+            return [None if np.isnan(x) else x for x in arr]
+        else:
+            return [[None if np.isnan(x) else x for x in row] for row in arr]
+    elif arr.dtype.kind == "M":
+        if arr.ndim == 1:
+            return [None if np.isnat(x) else str(x) for x in arr]
+        else:
+            return [[None if np.isnat(x) else str(x) for x in row] for row in arr]
+    elif arr.dtype.kind == "O":
+        if arr.ndim == 1:
+            return [clean_missing_value(x) for x in arr]
+        else:
+            return [[clean_missing_value(x) for x in row] for row in arr]
+    else:
+        return arr.tolist()
+
+
 def clean_missing_value(v):
     """
     Convert any missing/null value to None.
@@ -186,27 +257,14 @@ def copy_to_readonly_numpy_array(v, kind=None, force_numeric=False):
             v = v.with_columns(**overrides)
         v = v.to_numpy()
 
-    # Handle numpy masked arrays - convert masked values to NaN/None
+    # Handle numpy masked arrays - ALWAYS convert to object array with None for masked values
     if isinstance(v, np.ma.MaskedArray):
-        # Get the underlying data
         data = np.asarray(v.data)
         mask = np.asarray(v.mask)
-        
-        if data.dtype.kind in numeric_kinds:
-            # For numeric arrays, set masked values to NaN
-            new_data = data.astype(np.float64)
-            new_data[mask] = np.nan
-            v = new_data
-        elif data.dtype.kind == "M":
-            # For datetime arrays, set masked values to NaT
-            new_data = data.copy()
-            new_data[mask] = np.datetime64("NaT")
-            v = new_data
-        else:
-            # For other types (object, string, etc.), set masked values to None
-            new_data = np.array(data, dtype=object)
-            new_data[mask] = None
-            v = new_data
+        # Convert to object array and set masked values to None
+        new_data = np.array(data, dtype=object)
+        new_data[mask] = None
+        v = new_data
 
     if not isinstance(v, np.ndarray):
         # v has its own logic on how to convert itself into a numpy array
@@ -253,6 +311,32 @@ def copy_to_readonly_numpy_array(v, kind=None, force_numeric=False):
         # '<U21'
         if new_v.dtype.kind not in ["u", "i", "f", "O", "M"]:
             new_v = np.array(v, dtype="object")
+
+    # Check for missing values and convert to object array with None
+    # --------------------------------------------------------------
+    # If an array contains NaN, NaT, or other missing values, convert
+    # to an object array where missing values become None. This ensures
+    # consistent JSON serialization and prevents typed-array binary
+    # encoding from obscuring null semantics.
+    if array_has_missing(new_v):
+        if new_v.dtype.kind == "f":
+            # Floating array with NaN -> object array with None
+            obj_arr = np.empty(new_v.shape, dtype=object)
+            mask_nan = np.isnan(new_v)
+            obj_arr[~mask_nan] = new_v[~mask_nan]
+            obj_arr[mask_nan] = None
+            new_v = obj_arr
+        elif new_v.dtype.kind == "M":
+            # Datetime array with NaT -> object array with None
+            obj_arr = np.empty(new_v.shape, dtype=object)
+            mask_nat = np.isnat(new_v)
+            for idx in np.ndindex(new_v.shape):
+                if mask_nat[idx]:
+                    obj_arr[idx] = None
+                else:
+                    obj_arr[idx] = str(new_v[idx])
+            new_v = obj_arr
+        # For object arrays, missing values are already handled by clean_missing_value
 
     # Set new array to be read-only
     # -----------------------------
