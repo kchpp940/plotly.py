@@ -1,7 +1,7 @@
 import os
 import json
 from pathlib import Path
-from typing import Union, List
+from typing import Union, List, NamedTuple, Optional
 import importlib.metadata as importlib_metadata
 from packaging.version import Version
 import warnings
@@ -476,6 +476,80 @@ Please set it to one of the supported formats: 'png', 'jpeg', 'jpg', 'webp', 'sv
     return fmt
 
 
+class ImageExportOptions(NamedTuple):
+    """
+    Container for fully or partially resolved image export options.
+    This is passed between write_image -> to_image and write_images to
+    avoid duplicate parsing, validation, and warnings.
+
+    Fields:
+        format:  Always resolved and validated (never None).
+        width:   May be None if fig_dict was not available during resolution;
+                 layout/template fallback happens later in to_image.
+        height:  Same as width.
+        scale:   May be None; default applied in _resolve_image_defaults.
+    """
+    format: str
+    width: Optional[int] = None
+    height: Optional[int] = None
+    scale: Optional[Union[int, float]] = None
+
+
+def resolve_export_options(
+    fig_dict: Optional[dict],
+    path: Optional[Path] = None,
+    format: Optional[str] = None,
+    width: Optional[int] = None,
+    height: Optional[int] = None,
+    scale: Optional[Union[int, float]] = None,
+) -> ImageExportOptions:
+    """
+    Resolve image export options into an ImageExportOptions object.
+
+    Resolution is done in two layers:
+      1. format: Always fully resolved (explicit arg -> extension -> default_format)
+         and validated. This happens BEFORE any engine warnings or dependency checks.
+      2. width/height/scale: If fig_dict is provided, layout/template fallback is
+         applied now; otherwise values are preserved as-is and resolved later.
+
+    Parameters
+    ----------
+    fig_dict: dict or None
+        The figure dictionary for layout/template fallback. None if not yet available.
+    path: Path or None
+        Optional output path for extension inference.
+    format: str or None
+        Explicit format argument.
+    width: int or None
+    height: int or None
+    scale: int, float, or None
+
+    Returns
+    -------
+    ImageExportOptions
+        Resolved options object. format is always a validated string.
+    """
+    fmt = resolve_format(path, format)
+
+    if fig_dict is not None:
+        _, resolved_width, resolved_height, resolved_scale = _resolve_image_defaults(
+            fig_dict, fmt, width, height, scale
+        )
+        return ImageExportOptions(
+            format=fmt,
+            width=resolved_width,
+            height=resolved_height,
+            scale=resolved_scale,
+        )
+
+    return ImageExportOptions(
+        format=fmt,
+        width=width,
+        height=height,
+        scale=scale,
+    )
+
+
 def to_image(
     fig: Union[dict, plotly.graph_objects.Figure],
     format: Union[str, None] = None,
@@ -485,6 +559,8 @@ def to_image(
     validate: bool = True,
     # Deprecated
     engine: Union[str, None] = None,
+    # Internal: pre-resolved options to avoid duplicate parsing
+    _options: Optional[ImageExportOptions] = None,
 ) -> bytes:
     """
     Convert a figure to a static image bytes string
@@ -556,7 +632,16 @@ def to_image(
 
     engine = _validate_engine_param(engine)
 
-    format = resolve_format(None, format)
+    if _options is not None:
+        format = _options.format
+        if _options.width is not None:
+            width = _options.width
+        if _options.height is not None:
+            height = _options.height
+        if _options.scale is not None:
+            scale = _options.scale
+    else:
+        format = resolve_format(None, format)
 
     engine = _resolve_engine_and_warn(engine, original_engine, stacklevel=2)
 
@@ -576,9 +661,10 @@ def to_image(
 
     fig_dict = validate_coerce_fig_to_dict(fig, validate)
 
-    _, width, height, scale = _resolve_image_defaults(
-        fig_dict, format, width, height, scale
-    )
+    if _options is None or _options.width is None or _options.height is None:
+        _, width, height, scale = _resolve_image_defaults(
+            fig_dict, format, width, height, scale
+        )
 
     if kaleido_major() > 0:
         if format == "eps":
@@ -707,16 +793,20 @@ def write_image(
     """
     path = as_path_object(file)
 
-    format = resolve_format(path, format)
+    options = resolve_export_options(
+        fig_dict=None,
+        path=path,
+        format=format,
+        width=width,
+        height=height,
+        scale=scale,
+    )
 
     img_data = to_image(
         fig,
-        format=format,
-        scale=scale,
-        width=width,
-        height=height,
         validate=validate,
         engine=engine,
+        _options=options,
     )
 
     # Open file
@@ -846,11 +936,15 @@ def write_images(
 
     kaleido_specs = []
     for d in arg_dicts:
-        fmt = resolve_format(d["file"], d["format"])
-        _, width, height, scale = _resolve_image_defaults(
-            d["fig"], fmt, d["width"], d["height"], d["scale"]
+        options = resolve_export_options(
+            fig_dict=d["fig"],
+            path=d["file"],
+            format=d["format"],
+            width=d["width"],
+            height=d["height"],
+            scale=d["scale"],
         )
-        if fmt == "eps":
+        if options.format == "eps":
             raise ValueError(
                 f"""
 EPS export is not supported by Kaleido v1. Please use SVG or PDF instead.
@@ -864,10 +958,10 @@ To downgrade to Kaleido v0, run:
                 fig=d["fig"],
                 path=d["file"],
                 opts=dict(
-                    format=fmt,
-                    width=width,
-                    height=height,
-                    scale=scale,
+                    format=options.format,
+                    width=options.width,
+                    height=options.height,
+                    scale=options.scale,
                 ),
                 topojson=defaults.topojson,
             )
