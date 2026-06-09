@@ -92,6 +92,66 @@ def kaleido_major() -> int:
     return _KALEIDO_MAJOR
 
 
+KALEIDO_NOT_INSTALLED_MSG = """
+The Kaleido package is required for this operation,
+which can be installed using pip:
+
+    $ pip install --upgrade kaleido
+"""
+
+KALEIDO_V1_REQUIRED_MSG = """
+This operation requires Kaleido version 1.0.0 or greater.
+Install it using `pip install 'kaleido>=1.0.0'` or `pip install 'plotly[kaleido]'`.
+"""
+
+
+def _require_kaleido(operation: str = "This operation") -> None:
+    """
+    Check that Kaleido is installed, raising a unified ValueError if not.
+
+    Parameters
+    ----------
+    operation: str
+        A short description of the operation being performed, used in the error message.
+    """
+    if not kaleido_available():
+        raise ValueError(
+            f"""
+{operation} requires the Kaleido package,
+which can be installed using pip:
+
+    $ pip install --upgrade kaleido
+"""
+        )
+
+
+def _require_kaleido_v1(operation: str = "This operation") -> None:
+    """
+    Check that Kaleido v1.0.0+ is installed, raising a unified ValueError if not.
+
+    Parameters
+    ----------
+    operation: str
+        A short description of the operation being performed, used in the error message.
+    """
+    if not kaleido_available():
+        raise ValueError(
+            f"""
+{operation} requires the Kaleido package,
+which can be installed using pip:
+
+    $ pip install --upgrade kaleido
+"""
+        )
+    if kaleido_major() < 1:
+        raise ValueError(
+            f"""
+{operation} requires Kaleido version 1.0.0 or greater.
+Install it using `pip install 'kaleido>=1.0.0'` or `pip install 'plotly[kaleido]'`.
+"""
+        )
+
+
 try:
     if kaleido_available() and kaleido_major() < 1:
         # Kaleido v0
@@ -423,23 +483,17 @@ def to_image(
             validate=validate,
         )
 
-    if not kaleido_available():
-        raise ValueError(
-            """
-Image export using the "kaleido" engine requires the Kaleido package,
-which can be installed using pip:
+    format = validate_coerce_format(format)
 
-    $ pip install --upgrade kaleido
-"""
-        )
+    _require_kaleido('Image export using the "kaleido" engine')
 
     fig_dict = validate_coerce_fig_to_dict(fig, validate)
 
-    if kaleido_major() > 0:
-        format, width, height, scale = _resolve_image_defaults(
-            fig_dict, format, width, height, scale
-        )
+    format, width, height, scale = _resolve_image_defaults(
+        fig_dict, format, width, height, scale
+    )
 
+    if kaleido_major() > 0:
         if format == "eps":
             raise ValueError(
                 f"""
@@ -475,9 +529,6 @@ To downgrade to Kaleido v0, run:
             raise RuntimeError(PLOTLY_GET_CHROME_ERROR_MSG)
 
     else:
-        format, width, height, scale = _resolve_image_defaults(
-            fig_dict, format, width, height, scale
-        )
         img_bytes = scope.transform(
             fig_dict, format=format, width=width, height=height, scale=scale
         )
@@ -692,28 +743,6 @@ def write_images(
     None
     """
 
-    # Raise informative error message if Kaleido v1 is not installed
-    if not kaleido_available():
-        raise ValueError(
-            """
-The `write_images()` function requires the Kaleido package,
-which can be installed using pip:
-
-    $ pip install --upgrade kaleido
-"""
-        )
-    elif kaleido_major() < 1:
-        raise ValueError(
-            f"""
-You have Kaleido version {Version(importlib_metadata.version("kaleido"))} installed.
-The `write_images()` function requires the Kaleido package version 1.0.0 or greater,
-which can be installed using pip:
-
-    $ pip install 'kaleido>=1.0.0'
-"""
-        )
-
-    # Broadcast arguments into correct format for passing to Kaleido
     arg_dicts = broadcast_args_to_dicts(
         fig=fig,
         file=file,
@@ -724,9 +753,6 @@ which can be installed using pip:
         validate=validate,
     )
 
-    # For each dict:
-    #   - convert figures to dicts (and validate if requested)
-    #   - try to cast `file` as a Path object
     for d in arg_dicts:
         d["fig"] = validate_coerce_fig_to_dict(d["fig"], d["validate"])
         d["file"] = as_path_object(d["file"])
@@ -759,6 +785,8 @@ To downgrade to Kaleido v0, run:
                 topojson=defaults.topojson,
             )
         )
+
+    _require_kaleido_v1("The `write_images()` function")
 
     from kaleido.errors import ChromeNotFoundError
 
@@ -808,16 +836,7 @@ def full_figure_for_development(
         The full figure
     """
 
-    # Raise informative error message if Kaleido is not installed
-    if not kaleido_available():
-        raise ValueError(
-            """
-Full figure generation requires the Kaleido package,
-which can be installed using pip:
-
-    $ pip install --upgrade kaleido
-"""
-        )
+    _require_kaleido("Full figure generation")
 
     if warn:
         warnings.warn(
@@ -867,13 +886,7 @@ Options:
   --help  Show this message and exit.
 """
 
-    if not kaleido_available() or kaleido_major() < 1:
-        raise ValueError(
-            """
-This command requires Kaleido v1.0.0 or greater.
-Install it using `pip install 'kaleido>=1.0.0'` or `pip install 'plotly[kaleido]'`."
-"""
-        )
+    _require_kaleido_v1("This command")
 
     # Handle command line arguments
     import sys
@@ -927,13 +940,7 @@ def get_chrome(path: Union[str, Path, None] = None) -> Path:
         The path to the directory where Chrome should be installed.
         If None, the default download path will be used.
     """
-    if not kaleido_available() or kaleido_major() < 1:
-        raise ValueError(
-            """
-This command requires Kaleido v1.0.0 or greater.
-Install it using `pip install 'kaleido>=1.0.0'` or `pip install 'plotly[kaleido]'`."
-"""
-        )
+    _require_kaleido_v1("This command")
 
     # Use default download path if no path was specified
     if path:
