@@ -1520,6 +1520,7 @@ def build_dataframe(args, constructor):
 
     # If data_frame is provided, we parse it into a narwhals DataFrame, while accounting
     # for compatibility with pandas specific paths (e.g. Index/MultiIndex case).
+    renamed_to_original = None
     if df_provided:
         # data_frame is pandas-like DataFrame (pandas, modin.pandas, cudf)
         if nw.dependencies.is_pandas_like_dataframe(args["data_frame"]):
@@ -1545,6 +1546,8 @@ def build_dataframe(args, constructor):
                 # Build a simple list-based mapping for sequential column references:
                 # For each old column name, store a list of new names in order of occurrence
                 old_to_new_list = {}
+                # Also build a reverse mapping from renamed column to original name
+                renamed_to_original = {}
                 for (old_name, occ_idx), new_name in col_rename_map.items():
                     if old_name not in old_to_new_list:
                         old_to_new_list[old_name] = []
@@ -1552,13 +1555,15 @@ def build_dataframe(args, constructor):
                     while len(old_to_new_list[old_name]) <= occ_idx:
                         old_to_new_list[old_name].append(None)
                     old_to_new_list[old_name][occ_idx] = new_name
+                    if new_name != old_name:
+                        renamed_to_original[new_name] = str(old_name)
 
+                args["data_frame"] = args["data_frame"].copy()
                 args["data_frame"].columns = new_columns
 
                 # Update labels mapping for renamed columns
                 has_renamed = any(old != new for old, new in zip(columns, new_columns))
                 if has_renamed:
-                    labels_modified = False
                     for old_col, new_col in zip(columns, new_columns):
                         if old_col != new_col:
                             if args.get("labels") is None:
@@ -1570,7 +1575,6 @@ def build_dataframe(args, constructor):
                                 args["labels"][new_col] = args["labels"][old_col]
                             else:
                                 args["labels"][new_col] = str(old_col)
-                            labels_modified = True
 
                 # Update user-provided column references in args to use new names
                 # This handles cases like y=["a", "a", "b"] where columns were renamed
@@ -1951,6 +1955,9 @@ def build_dataframe(args, constructor):
     if no_color:
         args["color"] = None
     args["data_frame"] = df_output
+    # Save renamed_to_original mapping so trace name generation can use original names
+    if renamed_to_original is not None:
+        args["_renamed_to_original"] = renamed_to_original
     return args
 
 
@@ -2642,6 +2649,7 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
     trendline_rows = []
     trace_name_labels = None
     facet_col_wrap = args.get("facet_col_wrap", 0)
+    renamed_to_original = args.get("_renamed_to_original")
     for group_name, group in groups.items():
         mapping_labels = OrderedDict()
         trace_name_labels = OrderedDict()
@@ -2650,9 +2658,14 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
             if col != one_group:
                 key = get_label(args, col)
                 if not isinstance(m.val_map, IdentityMap):
-                    mapping_labels[key] = str(val)
+                    # Apply renamed_to_original mapping to display original column names
+                    # even when duplicate columns had to be renamed internally
+                    display_val = str(val)
+                    if renamed_to_original is not None and display_val in renamed_to_original:
+                        display_val = renamed_to_original[display_val]
+                    mapping_labels[key] = display_val
                     if m.show_in_trace_name:
-                        trace_name_labels[key] = str(val)
+                        trace_name_labels[key] = display_val
                 if m.variable == "animation_frame":
                     frame_name = val
         trace_name = ", ".join(trace_name_labels.values())
