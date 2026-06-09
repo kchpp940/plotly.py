@@ -938,15 +938,19 @@ def test_wide_mode_labels_and_duplicate_columns():
     assert fig.layout.legend.title.text == "MySeries"
     assert fig.layout.yaxis.title.text == "MyValue"
     trace_names = [t.name for t in fig.data]
-    # Trace names still show original column names (a, a, b), not labels
-    assert trace_names == ["a", "a", "b"]
-    # Hovertemplate should show "MySeries" as the key label
+    # Trace names should apply labels mapping, consistent with non-duplicate case
+    assert trace_names == ["LabelA", "LabelA", "b"]
+    # Hovertemplate should show "MySeries" as the key label, and values should use labels
+    for t in fig.data[:2]:
+        assert "MySeries=LabelA" in str(t.hovertemplate)
+    assert "MySeries=b" in str(fig.data[2].hovertemplate)
     for t in fig.data:
-        assert "MySeries=" in str(t.hovertemplate)
         assert "MyValue=" in str(t.hovertemplate)
         # Internal names should not appear
         assert "wide_variable" not in str(t.hovertemplate)
         assert "wide_cross" not in str(t.hovertemplate)
+        # Internal renamed names should not appear
+        assert "a_1" not in str(t.hovertemplate)
 
 
 def test_wide_mode_named_index():

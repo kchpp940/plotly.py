@@ -2538,6 +2538,7 @@ def get_groups_and_orders(args, grouper):
     of a single dimension-group
     """
     orders = {} if "category_orders" not in args else args["category_orders"].copy()
+    renamed_to_original = args.get("_renamed_to_original")
     df: nw.DataFrame = args["data_frame"]
     # figure out orders and what the single group name would be if there were one
     single_group_name = []
@@ -2557,7 +2558,42 @@ def get_groups_and_orders(args, grouper):
             if col not in orders:
                 orders[col] = uniques
             else:
-                orders[col] = list(OrderedDict.fromkeys(list(orders[col]) + uniques))
+                # User provided category_orders for this column.
+                # Expand display names in the user's order to their internal unique keys,
+                # preserving the order in which internal keys appear in uniques.
+                user_order = orders[col]
+                if renamed_to_original is not None:
+                    # Build display -> [internal keys] from uniques, preserving order
+                    display_to_internal = {}
+                    for internal_key in uniques:
+                        display_name = renamed_to_original.get(
+                            str(internal_key), str(internal_key)
+                        )
+                        if display_name not in display_to_internal:
+                            display_to_internal[display_name] = []
+                        display_to_internal[display_name].append(internal_key)
+
+                    expanded_order = []
+                    seen_internal = set()
+                    for user_val in user_order:
+                        user_val_str = str(user_val)
+                        if user_val_str in display_to_internal:
+                            for internal_key in display_to_internal[user_val_str]:
+                                if internal_key not in seen_internal:
+                                    expanded_order.append(internal_key)
+                                    seen_internal.add(internal_key)
+                        else:
+                            # User value doesn't match any display name; treat as a literal value
+                            if user_val not in seen_internal:
+                                expanded_order.append(user_val)
+                                seen_internal.add(user_val)
+                    # Append any remaining uniques not in user's order
+                    for internal_key in uniques:
+                        if internal_key not in seen_internal:
+                            expanded_order.append(internal_key)
+                    orders[col] = list(OrderedDict.fromkeys(expanded_order))
+                else:
+                    orders[col] = list(OrderedDict.fromkeys(list(orders[col]) + uniques))
 
     if len(single_group_name) == len(grouper):
         # we have a single group, so we can skip all group-by operations!
@@ -2622,6 +2658,8 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
     grouper = [x.grouper or one_group for x in grouped_mappings] or [one_group]
     groups, orders = get_groups_and_orders(args, grouper)
 
+    renamed_to_original = args.get("_renamed_to_original")
+
     col_labels = []
     row_labels = []
     nrows = ncols = 1
@@ -2638,9 +2676,23 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
                 prefix = get_label(args, args["facet_row"]) + "="
                 row_labels = [prefix + str(s) for s in sorted_values]
                 nrows = len(row_labels)
-            for val in sorted_values:
-                if val not in m.val_map:  # always False if it's an IdentityMap
-                    m.val_map[val] = m.sequence[len(m.val_map) % len(m.sequence)]
+            # Assign colors: first map internal keys to display names,
+            # deduplicate display names, assign colors to unique display names,
+            # then map back to internal keys so same display name gets same color.
+            if renamed_to_original is not None:
+                display_to_color = {}
+                for val in sorted_values:
+                    if val not in m.val_map:
+                        display_val = renamed_to_original.get(str(val), str(val))
+                        if display_val not in display_to_color:
+                            display_to_color[display_val] = m.sequence[
+                                len(display_to_color) % len(m.sequence)
+                            ]
+                        m.val_map[val] = display_to_color[display_val]
+            else:
+                for val in sorted_values:
+                    if val not in m.val_map:  # always False if it's an IdentityMap
+                        m.val_map[val] = m.sequence[len(m.val_map) % len(m.sequence)]
 
     subplot_type = _subplot_type_for_trace_type(constructor().type)
 
@@ -2649,10 +2701,10 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
     trendline_rows = []
     trace_name_labels = None
     facet_col_wrap = args.get("facet_col_wrap", 0)
-    renamed_to_original = args.get("_renamed_to_original")
     for group_name, group in groups.items():
         mapping_labels = OrderedDict()
         trace_name_labels = OrderedDict()
+        internal_key_parts = []
         frame_name = ""
         for col, val, m in zip(grouper, group_name, grouped_mappings):
             if col != one_group:
@@ -2663,12 +2715,29 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
                     display_val = str(val)
                     if renamed_to_original is not None and display_val in renamed_to_original:
                         display_val = renamed_to_original[display_val]
+                    # Apply user-specified labels mapping for the value if present:
+                    # labels={"a": "Column A"} should make display_val = "Column A".
+                    # Only do this when args["labels"] is a dict (it can also be a list/Index in
+                    # which is a different Plotly Express feature).
+                    labels_dict = args.get("labels")
+                    if isinstance(labels_dict, dict):
+                        if display_val in labels_dict:
+                            display_val = labels_dict[display_val]
+                        # Also check if the user set a label on the original (pre-rename) value
+                        orig_val_str = str(val)
+                        if orig_val_str in labels_dict:
+                            # Only use this if we didn't already get a label from the display_val
+                            if renamed_to_original is None or orig_val_str not in renamed_to_original:
+                                display_val = labels_dict[orig_val_str]
                     mapping_labels[key] = display_val
                     if m.show_in_trace_name:
                         trace_name_labels[key] = display_val
+                    # Track internal key for offsetgroup etc.
+                    internal_key_parts.append(str(val))
                 if m.variable == "animation_frame":
                     frame_name = val
         trace_name = ", ".join(trace_name_labels.values())
+        internal_group_key = ", ".join(internal_key_parts) if internal_key_parts else trace_name
         if frame_name not in trace_names_by_frame:
             trace_names_by_frame[frame_name] = set()
         trace_names = trace_names_by_frame[frame_name]
@@ -2694,12 +2763,14 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
                     showlegend=(trace_name != "" and trace_name not in trace_names),
                 )
 
-            # Set 'offsetgroup' only in group barmode (or if no barmode is set)
+            # Set 'offsetgroup' only in group barmode (or if no barmode is set).
+            # Use internal_group_key (unique per internal group) rather than trace_name
+            # (which may be shared by groups with the same display name).
             barmode = layout_patch.get("barmode")
             if trace_spec.constructor in [go.Bar, go.Box, go.Violin, go.Histogram] and (
                 barmode == "group" or barmode is None
             ):
-                trace.update(alignmentgroup=True, offsetgroup=trace_name)
+                trace.update(alignmentgroup=True, offsetgroup=internal_group_key)
             trace_names.add(trace_name)
 
             # Init subplot row/col
