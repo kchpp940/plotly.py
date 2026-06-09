@@ -36,263 +36,6 @@ def to_non_numpy_type(np, v):
     return v.item()
 
 
-def is_missing_value(v):
-    """
-    Check if a value is a missing/null value from pandas, numpy, or pyarrow.
-    
-    Returns True for:
-    - None
-    - pandas.NA (pd.NA)
-    - pandas.NaT (pd.NaT)
-    - numpy.ma.core.masked
-    - numpy.datetime64('NaT')
-    - numpy floating NaN values
-    - pyarrow null values (via pandas.NA proxy)
-    """
-    if v is None:
-        return True
-
-    np = get_module("numpy", should_load=False)
-    pd = get_module("pandas", should_load=False)
-
-    # pandas NA and NaT
-    if pd is not None:
-        if v is pd.NA:
-            return True
-        if v is pd.NaT:
-            return True
-
-    # numpy masked value
-    if np is not None:
-        if v is np.ma.core.masked:
-            return True
-        # numpy datetime64 NaT
-        if isinstance(v, np.datetime64):
-            return np.isnat(v)
-        # numpy floating NaN
-        if isinstance(v, np.floating):
-            return np.isnan(v)
-        if isinstance(v, float):
-            import math
-            return math.isnan(v)
-
-    return False
-
-
-def array_has_missing(arr):
-    """
-    Check if a numpy array contains any missing values (NaN, NaT, etc.)
-    
-    Parameters
-    ----------
-    arr : np.ndarray
-    
-    Returns
-    -------
-    bool
-    """
-    np = get_module("numpy", should_load=False)
-    if np is None:
-        return False
-    
-    if not isinstance(arr, np.ndarray):
-        return False
-    
-    if arr.dtype.kind == "f":
-        # Floating point arrays: check for NaN
-        return bool(np.isnan(arr).any())
-    elif arr.dtype.kind == "M":
-        # Datetime arrays: check for NaT
-        return bool(np.isnat(arr).any())
-    elif arr.dtype.kind == "O":
-        # Object arrays: check each element
-        for elem in arr.flat:
-            if is_missing_value(elem):
-                return True
-        return False
-    return False
-
-
-def array_to_list_with_none(arr):
-    """
-    Convert a numpy array to a (optionally nested) list where missing values
-    (NaN, NaT, masked, etc.) are replaced with None.
-    
-    Parameters
-    ----------
-    arr : np.ndarray
-    
-    Returns
-    -------
-    list
-    """
-    np = get_module("numpy", should_load=False)
-    
-    if arr.ndim == 0:
-        return clean_missing_value(arr.item())
-    
-    if arr.dtype.kind == "f":
-        if arr.ndim == 1:
-            return [None if np.isnan(x) else x for x in arr]
-        else:
-            return [[None if np.isnan(x) else x for x in row] for row in arr]
-    elif arr.dtype.kind == "M":
-        if arr.ndim == 1:
-            return [None if np.isnat(x) else str(x) for x in arr]
-        else:
-            return [[None if np.isnat(x) else str(x) for x in row] for row in arr]
-    elif arr.dtype.kind == "O":
-        if arr.ndim == 1:
-            return [clean_missing_value(x) for x in arr]
-        else:
-            return [[clean_missing_value(x) for x in row] for row in arr]
-    else:
-        return arr.tolist()
-
-
-def clean_missing_value(v):
-    """
-    Convert any missing/null value to None.
-    Also converts datetime-like values to ISO-format string (with 'T' separator,
-    matching datetime.isoformat()) to ensure JSON serializability and
-    consistency with the original Plotly encoder behavior.
-    """
-    import datetime as _datetime
-
-    if is_missing_value(v):
-        return None
-    
-    pd = get_module("pandas", should_load=False)
-    
-    # Convert datetime-like scalars to ISO strings using isoformat()
-    # (preserves 'T' separator for consistency with datetime.datetime.isoformat())
-    if pd is not None and isinstance(v, (pd.Timestamp, pd.Timedelta)):
-        return v.isoformat()
-    if isinstance(v, (_datetime.datetime, _datetime.date, _datetime.timedelta)):
-        return v.isoformat()
-    
-    return v
-
-
-def clean_for_json(v, numpy_allowed=False, datetime_allowed=False):
-    """
-    Unified entry point for recursively cleaning any value for JSON serialization.
-
-    Used by validator layer, PlotlyJSONEncoder, and clean_to_json_compatible
-    to ensure consistent missing-value and datetime handling everywhere.
-
-    Parameters
-    ----------
-    v : any
-        Value to clean (scalar, list, tuple, dict, numpy array, pandas Series, etc.)
-    numpy_allowed : bool
-        If True, numeric/bool numpy arrays *without* missing values may be
-        returned as contiguous numpy arrays (for typed-array base64 encoding).
-        Arrays with missing values are always converted to nested lists with None.
-    datetime_allowed : bool
-        If True, native datetime/date objects are kept as-is (caller will handle).
-        If False, they are converted to ISO-format strings.
-
-    Returns
-    -------
-    any
-        JSON-compatible cleaned value.
-    """
-    import datetime as _datetime
-
-    np = get_module("numpy", should_load=False)
-    pd = get_module("pandas", should_load=False)
-
-    # ---- Bail out fast for native JSON scalar types ---------------------------
-    if isinstance(v, (str, bool)):
-        return v
-    if isinstance(v, numbers.Number) and not isinstance(v, bool):
-        # NaN / Inf are numbers but not valid JSON -> None
-        if np is not None and isinstance(v, float) and (
-            np.isnan(v) or np.isinf(v)
-        ):
-            return None
-        return v
-    if v is None:
-        return None
-
-    # ---- dict ----------------------------------------------------------------
-    if isinstance(v, dict):
-        return {k: clean_for_json(val, numpy_allowed, datetime_allowed) for k, val in v.items()}
-
-    # ---- list / tuple --------------------------------------------------------
-    if isinstance(v, (list, tuple)):
-        return [clean_for_json(e, numpy_allowed, datetime_allowed) for e in v]
-
-    # ---- Missing values (before array/series checks) -------------------------
-    if is_missing_value(v):
-        return None
-
-    # ---- pandas Series / Index ----------------------------------------------
-    if pd is not None and isinstance(v, (pd.Series, pd.Index)):
-        # Extension dtype (nullable Int64, Float64, string, boolean): tolist()
-        # preserves original Python scalar types and pd.NA
-        if isinstance(v, (pd.Series, pd.Index)) and pd.api.types.is_extension_array_dtype(
-            v.dtype
-        ):
-            return clean_for_json(v.tolist(), numpy_allowed, datetime_allowed)
-
-        # Fall back to numpy array path
-        return clean_for_json(np.asarray(v), numpy_allowed, datetime_allowed)
-
-    # ---- numpy ndarray -------------------------------------------------------
-    if np is not None and isinstance(v, np.ndarray):
-        # datetime64 array -> list with NaT as None, valid dates as str
-        if v.dtype.kind == "M":
-            arr = np.asarray(v)
-            result = []
-            for val in arr:
-                if np.isnat(val):
-                    result.append(None)
-                else:
-                    result.append(str(val))
-            return result
-
-        # timedelta64 array -> list with NaT as None
-        if v.dtype.kind == "m":
-            arr = np.asarray(v)
-            return [None if np.isnat(x) else str(x) for x in arr]
-
-        # Unicode string array -> plain list
-        if v.dtype.kind == "U":
-            return v.tolist()
-
-        # Numeric / bool: if numpy_allowed AND no missing values -> keep as array
-        if numpy_allowed and v.dtype.kind in ("b", "i", "u", "f"):
-            if v.dtype.kind == "f":
-                has_bad = bool(np.isnan(v).any() or np.isinf(v).any())
-            else:
-                has_bad = False
-            if not has_bad:
-                return np.ascontiguousarray(v)
-
-        # Otherwise convert to nested list, recursively cleaning each element
-        # (handles NaN -> None, preserves dtype per element via tolist)
-        return clean_for_json(v.tolist(), numpy_allowed, datetime_allowed)
-
-    # ---- Datetime-like scalars ----------------------------------------------
-    if not datetime_allowed:
-        if pd is not None and isinstance(v, (pd.Timestamp, pd.Timedelta)):
-            return v.isoformat()
-        if isinstance(v, (_datetime.datetime, _datetime.date, _datetime.timedelta)):
-            return v.isoformat()
-
-    # ---- Fallback: .tolist() -------------------------------------------------
-    if hasattr(v, "tolist"):
-        try:
-            return clean_for_json(v.tolist(), numpy_allowed, datetime_allowed)
-        except Exception:
-            pass
-
-    # ---- Final: scalar clean -------------------------------------------------
-    return clean_missing_value(v)
-
-
 # Utility functions
 # -----------------
 def to_scalar_or_list(v):
@@ -303,50 +46,22 @@ def to_scalar_or_list(v):
     # Python native scalar type ('float' in the example above).
     # We explicitly check if is has the 'item' method, which conventionally
     # converts these types to native scalars.
-    import datetime as _datetime
-
     np = get_module("numpy", should_load=False)
     pd = get_module("pandas", should_load=False)
-    
-    # Check for missing values first
-    if is_missing_value(v):
-        return None
-
-    # Handle datetime-like scalars -> ISO format string (via isoformat())
-    if pd is not None and isinstance(v, (pd.Timestamp, pd.Timedelta)):
-        return v.isoformat()
-    if isinstance(v, (_datetime.datetime, _datetime.date, _datetime.timedelta)):
-        return v.isoformat()
-        
     if np and np.isscalar(v) and hasattr(v, "item"):
-        result = to_non_numpy_type(np, v)
-        # The result could still be a datetime-like, clean it
-        if is_missing_value(result):
-            return None
-        if pd is not None and isinstance(result, (pd.Timestamp, pd.Timedelta)):
-            return result.isoformat()
-        if isinstance(result, (_datetime.datetime, _datetime.date, _datetime.timedelta)):
-            return result.isoformat()
-        return result
+        return to_non_numpy_type(np, v)
     if isinstance(v, (list, tuple)):
         return [to_scalar_or_list(e) for e in v]
     elif np and isinstance(v, np.ndarray):
         if v.ndim == 0:
-            result = to_non_numpy_type(np, v)
-            return clean_missing_value(result)
-        # Recurse into each element (handles 1D and nested lists properly)
+            return to_non_numpy_type(np, v)
         return [to_scalar_or_list(e) for e in v]
     elif pd and isinstance(v, (pd.Series, pd.Index)):
         return [to_scalar_or_list(e) for e in v]
     elif is_numpy_convertable(v):
         return to_scalar_or_list(np.array(v))
     else:
-        # Final catch-all: clean any remaining missing values or datetime types
-        if pd is not None and isinstance(v, (pd.Timestamp, pd.Timedelta)):
-            return v.isoformat()
-        if isinstance(v, (_datetime.datetime, _datetime.date, _datetime.timedelta)):
-            return v.isoformat()
-        return clean_missing_value(v)
+        return v
 
 
 def copy_to_readonly_numpy_array(v, kind=None, force_numeric=False):
@@ -390,88 +105,26 @@ def copy_to_readonly_numpy_array(v, kind=None, force_numeric=False):
         "O": "object",
     }
 
-    pd = get_module("pandas", should_load=False)
-
-    # Pre-process pandas objects to preserve extension dtype semantics
-    # BEFORE Narwhals converts them (which loses nullable int->int type info)
-    if pd is not None and isinstance(v, (pd.Series, pd.Index, pd.DataFrame)):
-        if isinstance(v, (pd.Series, pd.Index)):
-            if pd.api.types.is_extension_array_dtype(v.dtype):
-                # Pandas extension dtype (Int64, Float64, boolean, string, etc.)
-                # Use to_list() which preserves original scalar types, then convert
-                # to object array, replacing pd.NA with None
-                raw_list = v.tolist()
-                cleaned_list = [None if is_missing_value(x) else x for x in raw_list]
-                v = np.array(cleaned_list, dtype=object)
-            elif v.dtype.kind == "M":
-                # Datetime - keep as is for now, will process NaT later
-                v = np.asarray(v.values)
-            else:
-                # Standard pandas dtype, go through Narwhals for normal handling
-                pass
-        elif isinstance(v, pd.DataFrame):
-            # DataFrame - check each column for extension dtypes
-            has_ext = any(
-                pd.api.types.is_extension_array_dtype(v[col].dtype)
-                for col in v.columns
-            )
-            if has_ext:
-                # Convert via to_numpy(dtype=object), but we need to handle per-element
-                # First get object array from pandas
-                obj_data = v.to_numpy(dtype=object)
-                # Clean missing values
-                it = np.nditer(obj_data, flags=["multi_index", "refs_ok"], op_flags=["readwrite"])
-                for val in it:
-                    idx = it.multi_index
-                    if is_missing_value(val.item()):
-                        obj_data[idx] = None
-                v = obj_data
-            else:
-                pass  # go through Narwhals
-
     # With `pass_through=True`, the original object will be returned if unable to convert
     # to a Narwhals DataFrame or Series.
-    if not isinstance(v, np.ndarray):
-        v_nw = nw.from_native(v, allow_series=True, pass_through=True)
+    v = nw.from_native(v, allow_series=True, pass_through=True)
 
-        if isinstance(v_nw, nw.Series):
-            if v_nw.dtype == nw.Datetime and v_nw.dtype.time_zone is not None:
-                # Remove time zone so that local time is displayed
-                v = v_nw.dt.replace_time_zone(None).to_numpy()
-            else:
-                v = v_nw.to_numpy()
-        elif isinstance(v_nw, nw.DataFrame):
-            schema = v_nw.schema
-            overrides = {}
-            for key, val in schema.items():
-                if val == nw.Datetime and val.time_zone is not None:
-                    # Remove time zone so that local time is displayed
-                    overrides[key] = nw.col(key).dt.replace_time_zone(None)
-            if overrides:
-                v_nw = v_nw.with_columns(**overrides)
-            v = v_nw.to_numpy()
+    if isinstance(v, nw.Series):
+        if v.dtype == nw.Datetime and v.dtype.time_zone is not None:
+            # Remove time zone so that local time is displayed
+            v = v.dt.replace_time_zone(None).to_numpy()
         else:
-            v = v_nw
-
-    # Handle numpy masked arrays - preserve original scalar types, only set masked to None
-    if isinstance(v, np.ma.MaskedArray):
-        data = np.asarray(v.data)
-        mask = np.asarray(v.mask)
-        # Convert to object array to preserve original types (int stays int, float stays float)
-        obj_arr = np.empty(data.shape, dtype=object)
-        # Copy non-masked values preserving their original Python/numpy types
-        it = np.nditer(data, flags=["multi_index", "refs_ok"])
-        for _ in it:
-            idx = it.multi_index
-            if not mask[idx]:
-                val = data[idx]
-                # Convert numpy scalar to native Python type if possible
-                if isinstance(val, np.generic):
-                    val = val.item()
-                obj_arr[idx] = val
-            else:
-                obj_arr[idx] = None
-        v = obj_arr
+            v = v.to_numpy()
+    elif isinstance(v, nw.DataFrame):
+        schema = v.schema
+        overrides = {}
+        for key, val in schema.items():
+            if val == nw.Datetime and val.time_zone is not None:
+                # Remove time zone so that local time is displayed
+                overrides[key] = nw.col(key).dt.replace_time_zone(None)
+        if overrides:
+            v = v.with_columns(**overrides)
+        v = v.to_numpy()
 
     if not isinstance(v, np.ndarray):
         # v has its own logic on how to convert itself into a numpy array
@@ -518,52 +171,6 @@ def copy_to_readonly_numpy_array(v, kind=None, force_numeric=False):
         # '<U21'
         if new_v.dtype.kind not in ["u", "i", "f", "O", "M"]:
             new_v = np.array(v, dtype="object")
-
-    # Check for missing values and convert to object array with None
-    # --------------------------------------------------------------
-    # If an array contains NaN, NaT, or other missing values, convert
-    # to an object array where missing values become None. This ensures
-    # consistent JSON serialization and prevents typed-array binary
-    # encoding from obscuring null semantics.
-    # Non-missing values preserve their original scalar types.
-    if array_has_missing(new_v):
-        obj_arr = np.empty(new_v.shape, dtype=object)
-        if new_v.dtype.kind == "f":
-            # Floating array with NaN -> object array, preserve float values, NaN->None
-            mask_nan = np.isnan(new_v)
-            it = np.nditer(new_v, flags=["multi_index", "refs_ok"])
-            for _ in it:
-                idx = it.multi_index
-                if mask_nan[idx]:
-                    obj_arr[idx] = None
-                else:
-                    # Preserve Python float (not numpy scalar)
-                    obj_arr[idx] = float(new_v[idx])
-        elif new_v.dtype.kind == "M":
-            # Datetime array with NaT -> object array, valid dates->str, NaT->None
-            mask_nat = np.isnat(new_v)
-            for idx in np.ndindex(new_v.shape):
-                if mask_nat[idx]:
-                    obj_arr[idx] = None
-                else:
-                    obj_arr[idx] = str(new_v[idx])
-        elif new_v.dtype.kind in ("u", "i"):
-            # Integer arrays can't have NaN, so this shouldn't happen
-            # but just in case, preserve int type
-            for idx in np.ndindex(new_v.shape):
-                val = new_v[idx]
-                if isinstance(val, np.generic):
-                    val = val.item()
-                obj_arr[idx] = val
-        elif new_v.dtype.kind == "O":
-            # Object array - clean each element with clean_missing_value
-            for idx in np.ndindex(new_v.shape):
-                obj_arr[idx] = clean_missing_value(new_v[idx])
-        else:
-            # Other types - just copy, apply clean_missing_value
-            for idx in np.ndindex(new_v.shape):
-                obj_arr[idx] = clean_missing_value(new_v[idx])
-        new_v = obj_arr
 
     # Set new array to be read-only
     # -----------------------------

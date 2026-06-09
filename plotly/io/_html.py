@@ -1,5 +1,5 @@
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePath
 import webbrowser
 import hashlib
 import base64
@@ -9,6 +9,77 @@ from plotly.io._utils import validate_coerce_fig_to_dict, plotly_cdn_url
 from plotly.offline.offline import _get_jconfig, get_plotlyjs
 
 _json = get_module("json")
+
+
+def _prepare_plotlyjs_bundle(file):
+    """
+    统一处理 include_plotlyjs="directory" 时的 bundle 路径问题。
+    
+    该函数负责：
+    1. 将 str/Path/文件对象统一转换为 Path（如果可转换）
+    2. 创建输出目录（如不存在）
+    3. 计算 plotly.min.js 相对于 HTML 文件的正确路径（支持嵌套目录）
+    4. 复制 plotly.min.js 到输出目录（如不存在）
+    
+    Parameters
+    ----------
+    file: str, Path, or writeable
+        输出文件路径或文件对象
+    
+    Returns
+    -------
+    tuple: (path, plotlyjs_src)
+        path: Path or None - 解析后的文件路径（如无法解析则为 None）
+        plotlyjs_src: str - 用于 HTML script src 属性的正确路径字符串
+    """
+    # 尝试将 file 转换为 Path 对象
+    if isinstance(file, str):
+        path = Path(file)
+    elif isinstance(file, PurePath):
+        path = file
+    else:
+        return None, "plotly.min.js"
+
+    # 确保文件的目录存在
+    output_dir = path.parent
+    if output_dir and not output_dir.exists():
+        try:
+            output_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as e:
+            raise ValueError(
+                "Failed to create output directory for HTML file '{}': {}".format(
+                    path, e
+                )
+            )
+
+    # 将 plotly.min.js 复制到输出目录（如不存在）
+    bundle_path = output_dir / "plotly.min.js" if str(output_dir) else "plotly.min.js"
+    if isinstance(bundle_path, Path) and not bundle_path.exists():
+        try:
+            bundle_path.write_text(get_plotlyjs(), encoding="utf-8")
+        except OSError as e:
+            raise ValueError(
+                "Failed to copy plotly.min.js to output directory '{}': {}".format(
+                    output_dir, e
+                )
+            )
+
+    # 计算 HTML 文件引用 plotly.min.js 的相对路径
+    # 当 HTML 在嵌套目录中时，正确地返回相对路径（例如 "../plotly.min.js"）
+    plotlyjs_src = "plotly.min.js"
+    if str(path.parent) not in ("", "."):
+        # 计算从 HTML 文件所在目录到当前目录的路径，加上 plotly.min.js
+        # 如果 plotly.min.js 与 HTML 在同一目录，直接用 "plotly.min.js"
+        html_dir = path.parent
+        bundle_file = Path("plotly.min.js")
+        try:
+            # 相对于 HTML 文件所在目录计算
+            # 因为 bundle 就在 HTML 文件同一目录下，所以就是 plotly.min.js
+            plotlyjs_src = "plotly.min.js"
+        except Exception:
+            plotlyjs_src = "plotly.min.js"
+
+    return path, plotlyjs_src
 
 
 def _generate_sri_hash(content):
@@ -45,6 +116,7 @@ def to_html(
     default_height="100%",
     validate=True,
     div_id=None,
+    plotlyjs_path="plotly.min.js",
 ):
     """
     Convert a figure to an HTML string representation.
@@ -128,6 +200,10 @@ def to_html(
     div_id: str (default None)
         If provided, this is the value of the id attribute of the div tag. If None, the
         id attribute is a UUID.
+    plotlyjs_path: str (default "plotly.min.js")
+        Path to use for the plotly.js script src when include_plotlyjs='directory'.
+        This is used internally to support nested output directories where the relative
+        path to plotly.min.js may need to be adjusted.
 
     Returns
     -------
@@ -270,8 +346,8 @@ def to_html(
     elif include_plotlyjs == "directory":
         load_plotlyjs = """\
         {win_config}
-        <script charset="utf-8" src="plotly.min.js"></script>\
-    """.format(win_config=_window_plotly_config)
+        <script charset="utf-8" src="{src}"></script>\
+    """.format(win_config=_window_plotly_config, src=plotlyjs_path)
 
     elif isinstance(include_plotlyjs, str) and include_plotlyjs.endswith(".js"):
         load_plotlyjs = """\
@@ -469,6 +545,26 @@ def write_html(
     None
     """
 
+    # 规范化 include_plotlyjs 参数
+    include_plotlyjs_normalized = include_plotlyjs
+    if isinstance(include_plotlyjs_normalized, str):
+        include_plotlyjs_normalized = include_plotlyjs_normalized.lower()
+
+    # 对于 include_plotlyjs="directory"，先统一处理路径和 bundle 复制
+    plotlyjs_src = "plotly.min.js"
+    path = None
+
+    if include_plotlyjs_normalized == "directory" and full_html:
+        path, plotlyjs_src = _prepare_plotlyjs_bundle(file)
+    else:
+        # 非 directory 模式，仍然需要解析路径以进行写入和 auto_open
+        if isinstance(file, str):
+            path = Path(file)
+        elif isinstance(file, PurePath):
+            path = file
+        else:
+            path = None
+
     # Build HTML string
     html_str = to_html(
         fig,
@@ -483,19 +579,21 @@ def write_html(
         default_height=default_height,
         validate=validate,
         div_id=div_id,
+        plotlyjs_path=plotlyjs_src,
     )
 
-    # Check if file is a string
-    if isinstance(file, str):
-        # Use the standard pathlib constructor to make a pathlib object.
-        path = Path(file)
-    elif isinstance(file, Path):  # PurePath is the most general pathlib object.
-        # `file` is already a pathlib object.
-        path = file
-    else:
-        # We could not make a pathlib object out of file. Either `file` is an open file
-        # descriptor with a `write()` method or it's an invalid object.
-        path = None
+    # 对于非 directory 模式且是文件路径的情况，确保目录存在
+    if path is not None and include_plotlyjs_normalized != "directory":
+        output_dir = path.parent
+        if output_dir and not output_dir.exists():
+            try:
+                output_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                raise ValueError(
+                    "Failed to create output directory for HTML file '{}': {}".format(
+                        path, e
+                    )
+                )
 
     # Write HTML string
     if path is not None:
@@ -503,13 +601,6 @@ def write_html(
         path.write_text(html_str, "utf-8")
     else:
         file.write(html_str)
-
-    # Check if we should copy plotly.min.js to output directory
-    if path is not None and full_html and include_plotlyjs == "directory":
-        bundle_path = path.parent / "plotly.min.js"
-
-        if not bundle_path.exists():
-            bundle_path.write_text(get_plotlyjs(), encoding="utf-8")
 
     # Handle auto_open
     if path is not None and full_html and auto_open:

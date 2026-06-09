@@ -10,8 +10,6 @@ from _plotly_utils.basevalidators import (
     ImageUriValidator,
     copy_to_readonly_numpy_array,
     is_homogeneous_array,
-    array_has_missing,
-    clean_for_json,
 )
 
 
@@ -41,9 +39,7 @@ plotlyjsShortTypes = {
 def to_typed_array_spec(v):
     """
     Convert numpy array to plotly.js typed array spec
-    If not possible return the original value.
-    Arrays containing missing values (NaN, NaT, None, etc.) are NOT encoded
-    as typed arrays, to preserve null semantics in JSON.
+    If not possible return the original value
     """
     v = copy_to_readonly_numpy_array(v)
 
@@ -51,11 +47,6 @@ def to_typed_array_spec(v):
     # or if v is not a numpy array, or if v is empty
     np = get_module("numpy", should_load=False)
     if not np or not isinstance(v, np.ndarray) or v.size == 0:
-        return v
-
-    # Skip b64 encoding if array contains missing values
-    # to preserve null semantics in JSON output
-    if array_has_missing(v):
         return v
 
     dtype = str(v.dtype)
@@ -278,48 +269,44 @@ class PlotlyJSONEncoder(_json.JSONEncoder):
 
     @staticmethod
     def encode_as_pandas(obj):
-        """Attempt to convert pandas.NaT / pandas.NA using clean_for_json"""
+        """Attempt to convert pandas.NaT / pandas.NA"""
         pandas = get_module("pandas", should_load=False)
         if not pandas:
             raise NotEncodable
 
-        if obj is pandas.NaT or (hasattr(pandas, "NA") and obj is pandas.NA):
-            return clean_for_json(obj)
+        if obj is pandas.NaT:
+            return None
+
+        # pandas.NA was introduced in pandas 1.0
+        if hasattr(pandas, "NA") and obj is pandas.NA:
+            return None
 
         raise NotEncodable
 
     @staticmethod
     def encode_as_numpy(obj):
-        """Attempt to convert numpy.ma.core.masked, numpy datetime64, and
-        numpy datetime64 arrays using clean_for_json"""
+        """Attempt to convert numpy.ma.core.masked"""
         numpy = get_module("numpy", should_load=False)
         if not numpy:
             raise NotEncodable
 
-        # Single masked / datetime64 values -> delegate to clean_for_json
-        if (
-            obj is numpy.ma.core.masked
-            or isinstance(obj, numpy.datetime64)
-            or (isinstance(obj, numpy.ndarray) and obj.dtype.kind in ("M", "m"))
-        ):
-            result = clean_for_json(obj)
-            # clean_for_json returns None, str, or list for these cases - all
-            # are valid JSON encodable. If nothing changed (fallback), raise.
-            if result is not obj:
-                return result
+        if obj is numpy.ma.core.masked:
+            return float("nan")
+        elif isinstance(obj, numpy.ndarray) and obj.dtype.kind == "M":
+            try:
+                return numpy.datetime_as_string(obj).tolist()
+            except TypeError:
+                pass
 
         raise NotEncodable
 
     @staticmethod
     def encode_as_datetime(obj):
-        """Convert datetime objects to iso-format strings via clean_for_json"""
+        """Convert datetime objects to iso-format strings"""
         try:
-            result = clean_for_json(obj)
-            if result is not obj:
-                return result
-        except Exception:
-            pass
-        raise NotEncodable
+            return obj.isoformat()
+        except AttributeError:
+            raise NotEncodable
 
     @staticmethod
     def encode_as_date(obj):

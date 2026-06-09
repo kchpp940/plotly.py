@@ -6,7 +6,7 @@ from pathlib import Path
 
 from plotly.io._utils import validate_coerce_fig_to_dict, validate_coerce_output_type
 from _plotly_utils.optional_imports import get_module
-from _plotly_utils.basevalidators import ImageUriValidator, clean_for_json
+from _plotly_utils.basevalidators import ImageUriValidator
 
 
 # Orca configuration class
@@ -476,37 +476,30 @@ def read_json(file, output_type="Figure", skip_invalid=False, engine=None):
 
 
 def clean_to_json_compatible(obj, **kwargs):
+    # Try handling value as a scalar value that we have a conversion for.
+    # Return immediately if we know we've hit a primitive value
+
+    # Bail out fast for simple scalar types
+    if isinstance(obj, (int, float, str)):
+        return obj
+
+    if isinstance(obj, dict):
+        return {k: clean_to_json_compatible(v, **kwargs) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        if obj:
+            # Must process list recursively even though it may be slow
+            return [clean_to_json_compatible(v, **kwargs) for v in obj]
+
     # unpack kwargs
     numpy_allowed = kwargs.get("numpy_allowed", False)
     datetime_allowed = kwargs.get("datetime_allowed", False)
 
     modules = kwargs.get("modules", {})
     sage_all = modules["sage_all"]
+    np = modules["np"]
+    pd = modules["pd"]
     image = modules["image"]
 
-    # ---- Step 1: Common cleaning via unified clean_for_json ---------------
-    # This handles: missing values (None/pd.NA/pd.NaT/np.nan/np.ma.masked/...),
-    # numpy arrays (with numpy_allowed aware logic), pandas Series/Index,
-    # datetime-like scalars (with datetime_allowed).
-    # NOTE: For list/tuple/dict, clean_for_json recurses into elements for the
-    # above rules. We still need to recurse via clean_to_json_compatible below
-    # so that special types (Decimal, PIL, Plotly .to_plotly_json, etc.) inside
-    # containers also get handled.
-    obj = clean_for_json(
-        obj, numpy_allowed=numpy_allowed, datetime_allowed=datetime_allowed
-    )
-
-    # ---- Step 2: Recurse into containers for special-case handlers --------
-    # clean_for_json doesn't know about Decimal / PIL / Plotly objects, etc.
-    # so we must walk the containers here too.
-    if isinstance(obj, dict):
-        return {
-            k: clean_to_json_compatible(v, **kwargs) for k, v in obj.items()
-        }
-    elif isinstance(obj, (list, tuple)):
-        return [clean_to_json_compatible(v, **kwargs) for v in obj]
-
-    # ---- Step 3: clean_to_json_compatible-specific special cases ----------
     # Sage
     if sage_all is not None:
         if obj in sage_all.RR:
@@ -514,17 +507,73 @@ def clean_to_json_compatible(obj, **kwargs):
         elif obj in sage_all.ZZ:
             return int(obj)
 
-    # datetime with to_pydatetime() conversion (e.g. pandas Timestamp with tz
-    # that survived the first pass)
-    if datetime_allowed:
+    # numpy
+    if np is not None:
+        if obj is np.ma.core.masked:
+            return float("nan")
+        elif isinstance(obj, np.ndarray):
+            if numpy_allowed and obj.dtype.kind in ("b", "i", "u", "f"):
+                return np.ascontiguousarray(obj)
+            elif obj.dtype.kind == "M":
+                # datetime64 array
+                return np.datetime_as_string(obj).tolist()
+            elif obj.dtype.kind == "U":
+                return obj.tolist()
+            elif obj.dtype.kind == "O":
+                # Treat object array as a lists, continue processing
+                obj = obj.tolist()
+        elif isinstance(obj, np.datetime64):
+            return str(obj)
+
+    # pandas
+    if pd is not None:
+        if obj is pd.NaT or obj is pd.NA:
+            return None
+        elif isinstance(obj, (pd.Series, pd.DatetimeIndex)):
+            if numpy_allowed and obj.dtype.kind in ("b", "i", "u", "f"):
+                return np.ascontiguousarray(obj.values)
+            elif obj.dtype.kind == "M":
+                if isinstance(obj, pd.Series):
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", FutureWarning)
+                        # Series.dt.to_pydatetime will return Index[object]
+                        # https://github.com/pandas-dev/pandas/pull/52459
+                        dt_values = np.array(obj.dt.to_pydatetime()).tolist()
+                else:  # DatetimeIndex
+                    dt_values = obj.to_pydatetime().tolist()
+
+                if not datetime_allowed:
+                    # Note: We don't need to handle dropping timezones here because
+                    # numpy's datetime64 doesn't support them and pandas's tz_localize
+                    # above drops them.
+                    for i in range(len(dt_values)):
+                        dt_values[i] = dt_values[i].isoformat()
+
+                return dt_values
+
+    # datetime and date
+    try:
+        # Need to drop timezone for scalar datetimes. Don't need to convert
+        # to string since engine can do that
+        obj = obj.to_pydatetime()
+    except (TypeError, AttributeError):
+        pass
+
+    if not datetime_allowed:
         try:
-            obj_py = obj.to_pydatetime()
-            if isinstance(obj_py, datetime.datetime):
-                return obj_py
+            return obj.isoformat()
         except (TypeError, AttributeError):
             pass
+    elif isinstance(obj, datetime.datetime):
+        return obj
 
-    # Decimal
+    # Try .tolist() convertible, do not recurse inside
+    try:
+        return obj.tolist()
+    except AttributeError:
+        pass
+
+    # Do best we can with decimal
     if isinstance(obj, decimal.Decimal):
         return float(obj)
 
@@ -532,18 +581,18 @@ def clean_to_json_compatible(obj, **kwargs):
     if image is not None and isinstance(obj, image.Image):
         return ImageUriValidator.pil_image_to_uri(obj)
 
-    # Plotly objects (BaseFigure / BasePlotlyType / BaseFrameHierarchyType)
+    # Plotly
     try:
-        plotly_json = obj.to_plotly_json()
-        return clean_to_json_compatible(plotly_json, **kwargs)
+        obj = obj.to_plotly_json()
     except AttributeError:
         pass
 
-    # .tolist() fallback
-    try:
-        as_list = obj.tolist()
-        return clean_to_json_compatible(as_list, **kwargs)
-    except AttributeError:
-        pass
+    # Recurse into lists and dictionaries
+    if isinstance(obj, dict):
+        return {k: clean_to_json_compatible(v, **kwargs) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        if obj:
+            # Must process list recursively even though it may be slow
+            return [clean_to_json_compatible(v, **kwargs) for v in obj]
 
     return obj

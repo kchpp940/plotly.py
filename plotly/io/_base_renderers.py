@@ -3,7 +3,6 @@ import json
 import webbrowser
 import inspect
 import os
-from os.path import isdir
 
 from plotly import optional_imports
 from plotly.io import to_json, to_image, write_image, write_html
@@ -529,13 +528,7 @@ class IFrameRenderer(MimetypeRenderer):
         # Build filename using ipython cell number
         filename = self.build_filename()
 
-        # Make directory for
-        try:
-            os.makedirs(self.html_directory)
-        except OSError:
-            if not isdir(self.html_directory):
-                raise
-
+        # 目录创建和 plotly.js bundle 复制统一由 write_html 内部处理
         write_html(
             fig_dict,
             filename,
