@@ -429,7 +429,6 @@ class FigureWidget(BaseFigureWidget):
         col="all",
         exclude_empty_subplots=True,
         annotation=None,
-        secondary_y=None,
         **kwargs,
     ) -> "FigureWidget":
         """
@@ -452,9 +451,6 @@ class FigureWidget(BaseFigureWidget):
             Subplot column for shape indexed starting at 1. If 'all', addresses all rows in
             the specified column(s). If both row and col are None, addresses the
             first subplot if subplots exist, or the only plot. By default is "all".
-        secondary_y: Boolean or None
-            Whether to add shape and annotation to the secondary y-axis. Only valid for
-            subplots created with the secondary_y spec property set to True.
         annotation: dict or plotly.graph_objects.layout.Annotation. If dict(),
             it is interpreted as describing an annotation. The annotation is
             placed relative to the shape based on annotation_position (see
@@ -475,13 +471,7 @@ class FigureWidget(BaseFigureWidget):
             except for x0, x1, y0, y1 or type.
         """
         return super().add_vline(
-            x,
-            row=row,
-            col=col,
-            exclude_empty_subplots=exclude_empty_subplots,
-            annotation=annotation,
-            secondary_y=secondary_y,
-            **kwargs,
+            x, row, col, exclude_empty_subplots, annotation, **kwargs
         )
 
     def add_hline(
@@ -491,7 +481,6 @@ class FigureWidget(BaseFigureWidget):
         col="all",
         exclude_empty_subplots=True,
         annotation=None,
-        secondary_y=None,
         **kwargs,
     ) -> "FigureWidget":
         """
@@ -514,9 +503,6 @@ class FigureWidget(BaseFigureWidget):
             Subplot column for shape indexed starting at 1. If 'all', addresses all rows in
             the specified column(s). If both row and col are None, addresses the
             first subplot if subplots exist, or the only plot. By default is "all".
-        secondary_y: Boolean or None
-            Whether to add shape and annotation to the secondary y-axis. Only valid for
-            subplots created with the secondary_y spec property set to True.
         annotation: dict or plotly.graph_objects.layout.Annotation. If dict(),
             it is interpreted as describing an annotation. The annotation is
             placed relative to the shape based on annotation_position (see
@@ -537,13 +523,7 @@ class FigureWidget(BaseFigureWidget):
             except for x0, x1, y0, y1 or type.
         """
         return super().add_hline(
-            y,
-            row=row,
-            col=col,
-            exclude_empty_subplots=exclude_empty_subplots,
-            annotation=annotation,
-            secondary_y=secondary_y,
-            **kwargs,
+            y, row, col, exclude_empty_subplots, annotation, **kwargs
         )
 
     def add_vrect(
@@ -554,7 +534,6 @@ class FigureWidget(BaseFigureWidget):
         col="all",
         exclude_empty_subplots=True,
         annotation=None,
-        secondary_y=None,
         **kwargs,
     ) -> "FigureWidget":
         """
@@ -579,9 +558,6 @@ class FigureWidget(BaseFigureWidget):
             Subplot column for shape indexed starting at 1. If 'all', addresses all rows in
             the specified column(s). If both row and col are None, addresses the
             first subplot if subplots exist, or the only plot. By default is "all".
-        secondary_y: Boolean or None
-            Whether to add shape and annotation to the secondary y-axis. Only valid for
-            subplots created with the secondary_y spec property set to True.
         annotation: dict or plotly.graph_objects.layout.Annotation. If dict(),
             it is interpreted as describing an annotation. The annotation is
             placed relative to the shape based on annotation_position (see
@@ -603,14 +579,7 @@ class FigureWidget(BaseFigureWidget):
             except for x0, x1, y0, y1 or type.
         """
         return super().add_vrect(
-            x0,
-            x1,
-            row=row,
-            col=col,
-            exclude_empty_subplots=exclude_empty_subplots,
-            annotation=annotation,
-            secondary_y=secondary_y,
-            **kwargs,
+            x0, x1, row, col, exclude_empty_subplots, annotation, **kwargs
         )
 
     def add_hrect(
@@ -621,7 +590,6 @@ class FigureWidget(BaseFigureWidget):
         col="all",
         exclude_empty_subplots=True,
         annotation=None,
-        secondary_y=None,
         **kwargs,
     ) -> "FigureWidget":
         """
@@ -646,9 +614,6 @@ class FigureWidget(BaseFigureWidget):
             Subplot column for shape indexed starting at 1. If 'all', addresses all rows in
             the specified column(s). If both row and col are None, addresses the
             first subplot if subplots exist, or the only plot. By default is "all".
-        secondary_y: Boolean or None
-            Whether to add shape and annotation to the secondary y-axis. Only valid for
-            subplots created with the secondary_y spec property set to True.
         annotation: dict or plotly.graph_objects.layout.Annotation. If dict(),
             it is interpreted as describing an annotation. The annotation is
             placed relative to the shape based on annotation_position (see
@@ -670,14 +635,7 @@ class FigureWidget(BaseFigureWidget):
             except for x0, x1, y0, y1 or type.
         """
         return super().add_hrect(
-            y0,
-            y1,
-            row=row,
-            col=col,
-            exclude_empty_subplots=exclude_empty_subplots,
-            annotation=annotation,
-            secondary_y=secondary_y,
-            **kwargs,
+            y0, y1, row, col, exclude_empty_subplots, annotation, **kwargs
         )
 
     def set_subplots(
