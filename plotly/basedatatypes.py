@@ -4182,6 +4182,15 @@ because subplot does not have a secondary y-axis""".format(
                 )
             rows_cols = [(row, col)]
 
+        seen = set()
+        deduped = []
+        for rc in rows_cols:
+            key = (rc[0], rc[1], bool(secondary_y))
+            if key not in seen:
+                seen.add(key)
+                deduped.append(rc)
+        rows_cols = deduped
+
         n_shapes_before = len(self.layout["shapes"])
         n_annotations_before = len(self.layout["annotations"])
 
