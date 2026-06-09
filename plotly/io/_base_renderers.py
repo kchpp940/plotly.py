@@ -794,31 +794,8 @@ class SphinxGalleryHtmlRenderer(HtmlRenderer):
         self._connected = connected
 
     def to_mimebundle(self, fig_dict):
-        from plotly.io import write_html, to_html
-
-        # 通过 inspect.stack() 找到调用渲染器的示例脚本路径
-        # 遍历调用栈，找到第一个不是 plotly 内部文件的 .py 脚本
-        # Sphinx Gallery 会从脚本同目录抓取 .html 文件，因此需要写出到磁盘
-        stack = inspect.stack()
-        plotly_pkg_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        filename = None
-        for frame_info in stack:
-            try:
-                frame_file = frame_info.filename
-            except AttributeError:
-                frame_file = frame_info[1]
-            # 跳过 plotly 包内部的文件
-            if not frame_file.startswith(plotly_pkg_dir) and frame_file.endswith('.py'):
-                filename = frame_file
-                break
-        # fallback：和 SphinxGalleryOrcaRenderer 保持一致使用 stack[3]
-        if filename is None:
-            try:
-                filename = stack[3].filename
-            except Exception:
-                filename = stack[3][1]
-        filename_root, _ = os.path.splitext(filename)
-        filename_html = filename_root + ".html"
+        from plotly.io import to_html
+        from plotly.io._sg_scraper import _enqueue_fig
 
         # 规范化 include_plotlyjs
         if self._connected:
@@ -828,27 +805,7 @@ class SphinxGalleryHtmlRenderer(HtmlRenderer):
             include_plotlyjs = self.include_plotlyjs
             include_mathjax = "cdn"
 
-        # 写出 HTML 文件到脚本同目录，供 Sphinx Gallery scraper 抓取
-        # write_html 内部会通过 _prepare_plotlyjs_bundle 统一处理 directory 模式：
-        #   - 自动创建目录（如需要）
-        #   - 复制 plotly.min.js 到输出目录（如不存在）
-        #   - 计算正确的相对 src 路径
-        write_html(
-            fig_dict,
-            file=filename_html,
-            config=self.config,
-            auto_play=self.auto_play,
-            include_plotlyjs=include_plotlyjs,
-            include_mathjax=include_mathjax,
-            full_html=True,
-            animation_opts=self.animation_opts,
-            default_width="100%",
-            default_height=525,
-            validate=False,
-            auto_open=False,
-        )
-
-        # 同时返回 HTML 字符串用于 Jupyter 等环境的预览
+        # Renderer 只负责生成 HTML 字符串，不猜路径、不写文件
         html = to_html(
             fig_dict,
             config=self.config,
@@ -862,6 +819,14 @@ class SphinxGalleryHtmlRenderer(HtmlRenderer):
             validate=False,
         )
 
+        # 将内容 push 到模块级 buffer，由 scraper 统一负责落盘和路径处理
+        _enqueue_fig(
+            html_content=html,
+            png_bytes=None,
+            include_plotlyjs=include_plotlyjs,
+        )
+
+        # 同时返回 HTML 字符串用于 Jupyter 等环境的预览
         return {"text/html": html}
 
 
@@ -873,39 +838,28 @@ class SphinxGalleryOrcaRenderer(ExternalRenderer):
         self.include_plotlyjs = include_plotlyjs
 
     def render(self, fig_dict):
-        from plotly.io import write_html
+        from plotly.io import to_html
+        from plotly.io._sg_scraper import _enqueue_fig
+        import io
 
-        stack = inspect.stack()
-        # 遍历调用栈，找到第一个不是 plotly 内部文件的 .py 脚本
-        plotly_pkg_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        filename = None
-        for frame_info in stack:
-            try:
-                frame_file = frame_info.filename
-            except AttributeError:
-                frame_file = frame_info[1]
-            # 跳过 plotly 包内部的文件
-            if not frame_file.startswith(plotly_pkg_dir) and frame_file.endswith('.py'):
-                filename = frame_file
-                break
-        # fallback：使用固定深度
-        if filename is None:
-            try:
-                filename = stack[3].filename  # let's hope this is robust...
-            except Exception:  # python 2
-                filename = stack[3][1]
-        filename_root, _ = os.path.splitext(filename)
-        filename_html = filename_root + ".html"
-        filename_png = filename_root + ".png"
         figure = return_figure_from_figure_or_data(fig_dict, True)
-        # 使用统一的 write_html，它内部接入了 bundle 处理层
-        _ = write_html(
+
+        # Renderer 只负责生成内容：HTML 字符串 + PNG 字节
+        # 不猜路径、不写文件
+        html = to_html(
             fig_dict,
-            file=filename_html,
             include_plotlyjs=self.include_plotlyjs,
+            include_mathjax="cdn",
+            full_html=True,
+            validate=False,
         )
+
+        # 生成 PNG 字节（写入内存缓冲区，不写到磁盘）
+        png_bytes = None
         try:
-            write_image(figure, filename_png)
+            png_buffer = io.BytesIO()
+            write_image(figure, png_buffer, format="png")
+            png_bytes = png_buffer.getvalue()
         except (ValueError, ImportError):
             raise ImportError(
                 "orca and psutil are required to use the `sphinx-gallery-orca` renderer. "
@@ -914,3 +868,10 @@ class SphinxGalleryOrcaRenderer(ExternalRenderer):
                 "renderer (note that png thumbnails can only be generated with "
                 "the `sphinx-gallery-orca` renderer)."
             )
+
+        # 将内容 push 到模块级 buffer，由 scraper 统一负责落盘和路径处理
+        _enqueue_fig(
+            html_content=html,
+            png_bytes=png_bytes,
+            include_plotlyjs=self.include_plotlyjs,
+        )
