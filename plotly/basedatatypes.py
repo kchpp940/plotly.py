@@ -4140,10 +4140,11 @@ because subplot does not have a secondary y-axis""".format(
         The subplot (xref, yref) pair is resolved **once per subplot** from
         ``row``/``col``/``secondary_y`` and then applied to both the shape and
         the associated annotation, so they are guaranteed to land on the same
-        axes.
+        axes.  The objects themselves are still created and appended via the
+        normal ``add_shape`` / ``add_annotation`` paths (with ``row``/``col``
+        omitted) so that validation, magic-underscore expansion, and other
+        compatibility behaviour continue to apply.
         """
-        from plotly.graph_objs import layout as _layout
-
         if shape_type in ["vline", "vrect"]:
             direction = "vertical"
         elif shape_type in ["hline", "hrect"]:
@@ -4164,32 +4165,6 @@ because subplot does not have a secondary y-axis""".format(
             annotation, shape_type, shape_args, annotation_kwargs
         )
 
-        def _apply_user_ref_overrides(obj, xref, yref):
-            if hasattr(obj, "_props"):
-                user_xref = obj._props.get("xref")
-                user_yref = obj._props.get("yref")
-            else:
-                user_xref = obj.get("xref")
-                user_yref = obj.get("yref")
-
-            if user_yref and user_yref not in (
-                "y",
-                None,
-            ) and "paper" not in user_yref and "domain" not in user_yref:
-                yref = user_yref
-
-            def _add_domain_suffix(ax_letter, ax_ref):
-                key = ax_letter + "ref"
-                if hasattr(obj, "_props"):
-                    val = obj._props.get(key)
-                else:
-                    val = obj.get(key)
-                if val and "domain" in val:
-                    ax_ref += " domain"
-                return ax_ref
-
-            return _add_domain_suffix("x", xref), _add_domain_suffix("y", yref)
-
         if row is not None and _is_select_subplot_coordinates_arg(row, col):
             rows_cols = self._select_subplot_coordinates(row, col)
         elif row is None and col is None:
@@ -4207,44 +4182,74 @@ because subplot does not have a secondary y-axis""".format(
                 )
             rows_cols = [(row, col)]
 
-        new_shapes = []
-        new_annotations = []
+        n_shapes_before = len(self.layout["shapes"])
+        n_annotations_before = len(self.layout["annotations"])
+
+        def _apply_user_ref_overrides(obj, xref, yref):
+            if hasattr(obj, "_props"):
+                user_yref = obj._props.get("yref")
+            elif isinstance(obj, dict):
+                user_yref = obj.get("yref")
+            else:
+                user_yref = None
+
+            if user_yref and user_yref not in (
+                "y",
+                None,
+            ) and "paper" not in user_yref and "domain" not in user_yref:
+                yref = user_yref
+            return xref, yref
+
         for r, c in rows_cols:
             xref, yref = self._resolve_subplot_axis_refs(
                 r, c, secondary_y, prop_singular="shape"
             )
-            if exclude_empty_subplots and not (
-                r is None and c is None
-            ):
+            if exclude_empty_subplots and not (r is None and c is None):
                 if not self._subplot_not_empty(
                     xref, yref, selector=bool(exclude_empty_subplots)
                 ):
                     continue
 
             shape_dict = _combine_dicts([shape_args, shape_kwargs])
-            new_shape = _layout.Shape(**shape_dict)
-            s_xref, s_yref = _apply_user_ref_overrides(new_shape, xref, yref)
-            new_shape.update(xref=s_xref, yref=s_yref)
-            new_shape = self._make_axis_spanning_layout_object(direction, new_shape)
-            new_shapes.append(new_shape)
+            s_xref, s_yref = _apply_user_ref_overrides(shape_dict, xref, yref)
+            shape_dict.setdefault("xref", s_xref)
+            shape_dict.setdefault("yref", s_yref)
+            self.add_shape(**shape_dict)
 
             if augmented_annotation is not None:
                 if isinstance(augmented_annotation, dict):
-                    new_anno = _layout.Annotation(**augmented_annotation)
+                    anno_copy = dict(augmented_annotation)
                 else:
-                    new_anno = _layout.Annotation(augmented_annotation)
-                a_xref, a_yref = _apply_user_ref_overrides(new_anno, xref, yref)
-                new_anno.update(xref=a_xref, yref=a_yref)
-                new_anno = self._make_axis_spanning_layout_object(
-                    direction, new_anno
-                )
-                new_annotations.append(new_anno)
+                    anno_copy = augmented_annotation
+                a_xref, a_yref = _apply_user_ref_overrides(anno_copy, xref, yref)
+                if isinstance(anno_copy, dict):
+                    anno_copy.setdefault("xref", a_xref)
+                    anno_copy.setdefault("yref", a_yref)
+                else:
+                    if anno_copy.xref is None:
+                        anno_copy.xref = a_xref
+                    if anno_copy.yref is None:
+                        anno_copy.yref = a_yref
+                self.add_annotation(anno_copy)
 
-        if new_shapes:
-            self.layout["shapes"] = self.layout["shapes"] + tuple(new_shapes)
-        if new_annotations:
-            self.layout["annotations"] = (
-                self.layout["annotations"] + tuple(new_annotations)
+        for layout_obj, n_layout_objs_before in zip(
+            ["shapes", "annotations"], [n_shapes_before, n_annotations_before]
+        ):
+            n_layout_objs_after = len(self.layout[layout_obj])
+            new_layout_objs = tuple(
+                filter(
+                    lambda x: x is not None,
+                    [
+                        self._make_axis_spanning_layout_object(
+                            direction,
+                            self.layout[layout_obj][n],
+                        )
+                        for n in range(n_layout_objs_before, n_layout_objs_after)
+                    ],
+                )
+            )
+            self.layout[layout_obj] = (
+                self.layout[layout_obj][:n_layout_objs_before] + new_layout_objs
             )
 
     def add_vline(
