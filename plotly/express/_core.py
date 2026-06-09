@@ -1524,6 +1524,81 @@ def build_dataframe(args, constructor):
         # data_frame is pandas-like DataFrame (pandas, modin.pandas, cudf)
         if nw.dependencies.is_pandas_like_dataframe(args["data_frame"]):
             columns = args["data_frame"].columns  # This can be multi index
+            # Handle duplicate column names before converting to Narwhals
+            # since Narwhals requires unique column names
+            if len(set(columns)) != len(columns):
+                import pandas as pd
+                seen = {}
+                col_rename_map = {}  # Maps (old_name, occurrence_index) -> new_name
+                new_columns = []
+                for idx, col in enumerate(columns):
+                    if col in seen:
+                        seen[col] += 1
+                        new_name = f"{col}_{seen[col]}"
+                        new_columns.append(new_name)
+                    else:
+                        seen[col] = 0
+                        new_name = col
+                        new_columns.append(new_name)
+                    col_rename_map[(col, seen[col])] = new_name
+
+                # Build a simple list-based mapping for sequential column references:
+                # For each old column name, store a list of new names in order of occurrence
+                old_to_new_list = {}
+                for (old_name, occ_idx), new_name in col_rename_map.items():
+                    if old_name not in old_to_new_list:
+                        old_to_new_list[old_name] = []
+                    # Insert at the correct position
+                    while len(old_to_new_list[old_name]) <= occ_idx:
+                        old_to_new_list[old_name].append(None)
+                    old_to_new_list[old_name][occ_idx] = new_name
+
+                args["data_frame"].columns = new_columns
+
+                # Update labels mapping for renamed columns
+                has_renamed = any(old != new for old, new in zip(columns, new_columns))
+                if has_renamed:
+                    labels_modified = False
+                    for old_col, new_col in zip(columns, new_columns):
+                        if old_col != new_col:
+                            if args.get("labels") is None:
+                                args["labels"] = {}
+                            # Preserve user-specified labels: if user set a label for the
+                            # original column name, copy it to the new name.
+                            # Otherwise create a label with the original column name.
+                            if old_col in args["labels"]:
+                                args["labels"][new_col] = args["labels"][old_col]
+                            else:
+                                args["labels"][new_col] = str(old_col)
+                            labels_modified = True
+
+                # Update user-provided column references in args to use new names
+                # This handles cases like y=["a", "a", "b"] where columns were renamed
+                def _update_col_refs(value, occurrence_counters):
+                    """Recursively update column references in args values."""
+                    if value is None:
+                        return value
+                    if isinstance(value, str):
+                        if value in old_to_new_list:
+                            counter = occurrence_counters.get(value, 0)
+                            if counter < len(old_to_new_list[value]):
+                                occurrence_counters[value] = counter + 1
+                                return old_to_new_list[value][counter]
+                        return value
+                    if isinstance(value, list):
+                        return [_update_col_refs(v, occurrence_counters) for v in value]
+                    if isinstance(value, tuple):
+                        return tuple(_update_col_refs(v, occurrence_counters) for v in value)
+                    if isinstance(value, dict):
+                        return {k: _update_col_refs(v, occurrence_counters) for k, v in value.items()}
+                    return value
+
+                for field in args:
+                    if field in all_attrables and field not in ["wide_variable", "wide_cross"]:
+                        occurrence_counters = {}
+                        args[field] = _update_col_refs(args[field], occurrence_counters)
+
+                columns = args["data_frame"].columns
             args["data_frame"] = nw.from_native(args["data_frame"], eager_only=True)
             is_pd_like = True
 
@@ -1824,6 +1899,15 @@ def build_dataframe(args, constructor):
         )
         df_output = df_output.with_columns(nw.col(var_name).cast(nw.String))
         orient_v = wide_orientation == "v"
+
+        # Update labels mapping for the new column names created by unpivot
+        # Map user-specified labels for "variable" and "value" to actual var_name/value_name
+        # This ensures labels={"variable": "My Series", "value": "My Values"} work
+        if args.get("labels") is not None:
+            if "variable" in args["labels"] and var_name not in args["labels"]:
+                args["labels"][var_name] = args["labels"]["variable"]
+            if "value" in args["labels"] and value_name not in args["labels"]:
+                args["labels"][value_name] = args["labels"]["value"]
 
         if hist1d_orientation:
             args["x" if orient_v else "y"] = value_name
