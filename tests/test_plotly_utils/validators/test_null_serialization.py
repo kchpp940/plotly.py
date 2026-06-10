@@ -229,15 +229,41 @@ class TestToScalarOrListNulls:
         assert isinstance(result, list)
         assert len(result) == 3
 
-        assert isinstance(result[0][0], (int, float))
+        assert isinstance(result[0][0], int), "Int64 non-null must be int"
         assert result[0][0] == 1
         assert result[0][1] is None
+        assert result[0][2] == 3
 
+        assert isinstance(result[1][0], str), "string non-null must be str"
         assert result[1][0] == "a"
         assert result[1][1] is None
 
         assert result[2][0].year == 2021
         assert result[2][1] is None
+
+    def test_scalar_or_list_float64_nullable(self):
+        s = pd.Series([1.5, pd.NA, 3.5], dtype="Float64")
+        result = to_scalar_or_list(s)
+        assert isinstance(result[0], float), "Float64 non-null must be float"
+        assert result[0] == 1.5
+        assert result[1] is None
+        assert result[2] == 3.5
+
+    def test_scalar_or_list_boolean_nullable(self):
+        s = pd.Series([True, pd.NA, False], dtype="boolean")
+        result = to_scalar_or_list(s)
+        assert isinstance(result[0], bool), "boolean non-null must be bool"
+        assert result[0] is True
+        assert result[1] is None
+        assert result[2] is False
+
+    def test_scalar_or_list_masked_array(self):
+        ma = np.ma.array([10, 20, 30], mask=[False, True, False])
+        result = to_scalar_or_list(ma)
+        assert isinstance(result[0], int), "MaskedArray int non-null must be int"
+        assert result[0] == 10
+        assert result[1] is None
+        assert result[2] == 30
 
     def test_object_array_preserves_types(self):
         arr = np.array([1, pd.NA, 3], dtype=object)
@@ -417,22 +443,79 @@ class TestTableNullsEndToEnd:
         vals = parsed["data"][0]["cells"]["values"]
 
         col0 = vals[0]
-        assert isinstance(col0[0], (int, float))
+        assert isinstance(col0[0], int), "Int64 non-null must be int"
         assert col0[0] == 1
         assert col0[1] is None
         assert col0[2] == 3
-        assert col0[1] != "None"
 
         col1 = vals[1]
+        assert isinstance(col1[0], str), "string non-null must be str"
         assert col1[0] == "a"
         assert col1[1] is None
         assert col1[2] == "c"
-        assert col1[0] != "'a'"
 
         col2 = vals[2]
         assert "2021-01-01" in col2[0]
         assert col2[1] is None
         assert "2021-01-03" in col2[2]
+
+    def test_table_float64_nullable_series(self):
+        cells_values = [
+            pd.Series([1.5, pd.NA, 3.5], dtype="Float64"),
+        ]
+        fig = go.Figure(
+            go.Table(
+                header=dict(values=["Y"]),
+                cells=dict(values=cells_values),
+            )
+        )
+
+        json_str = fig.to_json(engine="json")
+        parsed = json.loads(json_str)
+        vals = parsed["data"][0]["cells"]["values"]
+
+        assert isinstance(vals[0][0], float), "Float64 non-null must be float"
+        assert vals[0][0] == 1.5
+        assert vals[0][1] is None
+        assert vals[0][2] == 3.5
+
+    def test_table_boolean_nullable_series(self):
+        cells_values = [
+            pd.Series([True, pd.NA, False], dtype="boolean"),
+        ]
+        fig = go.Figure(
+            go.Table(
+                header=dict(values=["B"]),
+                cells=dict(values=cells_values),
+            )
+        )
+
+        json_str = fig.to_json(engine="json")
+        parsed = json.loads(json_str)
+        vals = parsed["data"][0]["cells"]["values"]
+
+        assert isinstance(vals[0][0], bool), "boolean non-null must be bool"
+        assert vals[0][0] is True
+        assert vals[0][1] is None
+        assert vals[0][2] is False
+
+    def test_table_masked_array(self):
+        ma = np.ma.array([10, 20, 30], mask=[False, True, False])
+        fig = go.Figure(
+            go.Table(
+                header=dict(values=["X"]),
+                cells=dict(values=[ma]),
+            )
+        )
+
+        json_str = fig.to_json(engine="json")
+        parsed = json.loads(json_str)
+        vals = parsed["data"][0]["cells"]["values"]
+
+        assert isinstance(vals[0][0], int), "MaskedArray int non-null must be int"
+        assert vals[0][0] == 10
+        assert vals[0][1] is None
+        assert vals[0][2] == 30
 
     def test_table_nulls_write_json(self):
         cells_values = [

@@ -221,8 +221,28 @@ def to_scalar_or_list(v):
         cleaned = _clean_array_nulls(v)
         return [to_scalar_or_list(e) for e in cleaned]
     elif pd and isinstance(v, (pd.Series, pd.Index)):
-        # For pandas Series/Index, convert via numpy with null cleaning
-        # to avoid pandas extension type scalar issues (string repr of scalars)
+        orig_dtype = str(v.dtype)
+        nullable_extension = (
+            orig_dtype.startswith(("Int", "UInt", "Float"))
+            or orig_dtype in ("string", "boolean")
+        )
+        if nullable_extension:
+            v_list = []
+            for val in v:
+                if pd.isna(val):
+                    v_list.append(None)
+                else:
+                    if orig_dtype.startswith(("Int", "UInt")):
+                        v_list.append(int(val))
+                    elif orig_dtype.startswith("Float"):
+                        v_list.append(float(val))
+                    elif orig_dtype == "boolean":
+                        v_list.append(bool(val))
+                    elif orig_dtype == "string":
+                        v_list.append(str(val))
+                    else:
+                        v_list.append(val)
+            return v_list
         try:
             if hasattr(v, "to_numpy"):
                 np_arr = v.to_numpy()
@@ -231,9 +251,6 @@ def to_scalar_or_list(v):
             cleaned = _clean_array_nulls(np_arr)
             if cleaned.dtype.kind in ("u", "i", "f"):
                 return cleaned.tolist()
-            elif cleaned.dtype.kind == "M":
-                # datetime with NaT already cleaned to object array
-                return [to_scalar_or_list(e) for e in cleaned]
             else:
                 return [to_scalar_or_list(e) for e in cleaned]
         except Exception:
