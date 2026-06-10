@@ -817,33 +817,39 @@ class SphinxGalleryHtmlRenderer(HtmlRenderer):
             include_plotlyjs=include_plotlyjs,
         )
 
+    def _get_output_path(self):
+        stack = inspect.stack()
+        try:
+            filename = stack[3].filename
+        except Exception:
+            filename = stack[3][1]
+        filename_root, _ = os.path.splitext(filename)
+        return filename_root + ".html"
+
     def to_mimebundle(self, fig_dict):
-        from plotly.io import to_html
-
-        if self.include_plotlyjs == "directory":
-            include_plotlyjs = "directory"
-            include_mathjax = "cdn"
-        elif self.connected:
-            include_plotlyjs = "cdn"
-            include_mathjax = "cdn"
-        else:
-            include_plotlyjs = True
-            include_mathjax = "cdn"
-
-        html = to_html(
-            fig_dict,
-            config=self.config,
-            auto_play=self.auto_play,
-            include_plotlyjs=include_plotlyjs,
-            include_mathjax=include_mathjax,
-            full_html=self.full_html,
-            animation_opts=self.animation_opts,
-            default_width="100%",
-            default_height=525,
-            validate=False,
+        from plotly.io._html import (
+            _coerce_to_path,
+            _ensure_plotlyjs_bundle,
+            _ensure_output_directory,
         )
 
-        return {"text/html": html}
+        bundle = super(SphinxGalleryHtmlRenderer, self).to_mimebundle(fig_dict)
+        html = bundle["text/html"]
+
+        html_path_str = self._get_output_path()
+        html_path = _coerce_to_path(html_path_str)
+
+        _ensure_plotlyjs_bundle(
+            html_path=html_path,
+            include_plotlyjs=self.include_plotlyjs,
+            full_html=True,
+        )
+
+        if html_path is not None:
+            _ensure_output_directory(html_path)
+            html_path.write_text(html, "utf-8")
+
+        return bundle
 
 
 class SphinxGalleryOrcaRenderer(ExternalRenderer):
