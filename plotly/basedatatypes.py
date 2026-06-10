@@ -4040,7 +4040,9 @@ Invalid property path '{key_path_str}' for layout
     ):
         """
         Resolve subplot (row, col, secondary_y) to (xref, yref) axis reference
-        strings.  Returns None if the subplot is empty.
+        strings.  Returns None if the subplot does not support this
+        configuration (empty subplot, non-xy type, or no secondary y-axis
+        available).  Raises IndexError if row/col is out of bounds.
 
         This is the single source of truth for mapping subplot coordinates to
         axis references, used by both shape and annotation placement so they
@@ -4065,12 +4067,7 @@ Invalid property path '{key_path_str}' for layout
         if not refs:
             return None
         if refs[0].subplot_type != "xy":
-            raise ValueError(
-                "Cannot add shape or annotation to subplot at position ({r}, {c}) "
-                "because subplot is of type {subplot_type}.".format(
-                    r=row, c=col, subplot_type=refs[0].subplot_type
-                )
-            )
+            return None
         if (
             user_yref is None
             or user_yref == "y"
@@ -4078,11 +4075,7 @@ Invalid property path '{key_path_str}' for layout
             or "domain" in user_yref
         ):
             if len(refs) == 1 and secondary_y:
-                raise ValueError(
-                    "Cannot add shape or annotation to secondary y-axis of subplot "
-                    "at position ({r}, {c}) because subplot does not have a "
-                    "secondary y-axis".format(r=row, c=col)
-                )
+                return None
             if secondary_y:
                 xaxis, yaxis = refs[1].layout_keys
             else:
@@ -4211,6 +4204,9 @@ Invalid property path '{key_path_str}' for layout
                 rows_cols = [(row, col)]
                 is_specific_subplot = True
 
+            seen_refs = set()
+            subplot_refs = []
+
             for r, c in rows_cols:
                 axis_refs = self._resolve_subplot_axis_refs(
                     r, c, secondary_y, user_yref
@@ -4244,6 +4240,13 @@ Invalid property path '{key_path_str}' for layout
                 elif direction == "horizontal":
                     shape_xref += " domain"
 
+                ref_key = (shape_xref, shape_yref)
+                if ref_key in seen_refs:
+                    continue
+                seen_refs.add(ref_key)
+                subplot_refs.append((r, c, shape_xref, shape_yref))
+
+            for r, c, shape_xref, shape_yref in subplot_refs:
                 self.add_shape(
                     row=r,
                     col=c,
