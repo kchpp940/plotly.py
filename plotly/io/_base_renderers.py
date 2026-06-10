@@ -1,5 +1,6 @@
 import base64
 import json
+import sys
 import webbrowser
 import inspect
 import os
@@ -817,37 +818,13 @@ class SphinxGalleryHtmlRenderer(HtmlRenderer):
             include_plotlyjs=include_plotlyjs,
         )
 
-    def _get_output_path(self):
-        stack = inspect.stack()
-        try:
-            filename = stack[3].filename
-        except Exception:
-            filename = stack[3][1]
-        filename_root, _ = os.path.splitext(filename)
-        return filename_root + ".html"
-
     def to_mimebundle(self, fig_dict):
-        from plotly.io._html import (
-            _coerce_to_path,
-            _ensure_plotlyjs_bundle,
-            _ensure_output_directory,
-        )
+        from plotly.io._sg_scraper import _store_sg_html
 
         bundle = super(SphinxGalleryHtmlRenderer, self).to_mimebundle(fig_dict)
         html = bundle["text/html"]
 
-        html_path_str = self._get_output_path()
-        html_path = _coerce_to_path(html_path_str)
-
-        _ensure_plotlyjs_bundle(
-            html_path=html_path,
-            include_plotlyjs=self.include_plotlyjs,
-            full_html=True,
-        )
-
-        if html_path is not None:
-            _ensure_output_directory(html_path)
-            html_path.write_text(html, "utf-8")
+        _store_sg_html(html, self.include_plotlyjs)
 
         return bundle
 
@@ -865,12 +842,7 @@ class SphinxGalleryOrcaRenderer(ExternalRenderer):
             _ensure_plotlyjs_bundle,
         )
 
-        stack = inspect.stack()
-        # Name of script from which plot function was called is retrieved
-        try:
-            filename = stack[3].filename  # let's hope this is robust...
-        except Exception:  # python 2
-            filename = stack[3][1]
+        filename = sys.argv[0]
         filename_root, _ = os.path.splitext(filename)
         filename_html = filename_root + ".html"
         filename_png = filename_root + ".png"
