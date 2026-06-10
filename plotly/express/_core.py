@@ -158,6 +158,27 @@ def invert_label(args, column):
         return column
 
 
+def _resolve_col(args, attr_name_or_col):
+    """Resolve a semantic column name to the actual DataFrame column name.
+
+    If the name is tracked in args["_col_map"], return the internal name.
+    Otherwise return the name as-is (for backward compatibility).
+    Accepts either an attribute name (like "x") or a direct column name.
+    """
+    try:
+        col_map = args.get("_col_map", {})
+        if attr_name_or_col in col_map:
+            return col_map[attr_name_or_col]
+        if attr_name_or_col in args:
+            arg_val = args[attr_name_or_col]
+            if isinstance(arg_val, str) and arg_val in col_map:
+                return col_map[arg_val]
+            return arg_val
+        return attr_name_or_col
+    except Exception:
+        return attr_name_or_col
+
+
 def _is_continuous(df: nw.DataFrame, col_name: str) -> bool:
     if nw.dependencies.is_pandas_like_dataframe(df_native := df.to_native()):
         # fastpath for pandas: Narwhals' Series.dtype has a bit of overhead, as it
@@ -326,6 +347,16 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
     trace_data: nw.DataFrame
     df: nw.DataFrame = args["data_frame"]
 
+    def _rc(name):
+        return _resolve_col(args, name)
+
+    def _rc_list(lst):
+        if lst is None:
+            return lst
+        if isinstance(lst, str):
+            return _rc(lst)
+        return [_rc(c) for c in lst]
+
     if "line_close" in args and args["line_close"]:
         trace_data = nw.concat([trace_data, trace_data.head(1)], how="vertical")
 
@@ -362,7 +393,7 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
             if attr_name == "size":
                 if "marker" not in trace_patch:
                     trace_patch["marker"] = dict()
-                trace_patch["marker"]["size"] = trace_data.get_column(attr_value)
+                trace_patch["marker"]["size"] = trace_data.get_column(_rc(attr_value))
                 trace_patch["marker"]["sizemode"] = "area"
                 trace_patch["marker"]["sizeref"] = sizeref
                 mapping_labels[attr_label] = "%{marker.size}"
@@ -377,14 +408,15 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
                     args["x"]
                     and args["y"]
                     and len(
-                        trace_data.select(nw.col(args["x"], args["y"])).drop_nulls()
+                        trace_data.select(nw.col(_rc(args["x"]), _rc(args["y"]))).drop_nulls()
                     )
                     > 1
                 ):
-                    # sorting is bad but trace_specs with "trendline" have no other attrs
-                    sorted_trace_data = trace_data.sort(by=args["x"], nulls_last=True)
-                    y = sorted_trace_data.get_column(args["y"])
-                    x = sorted_trace_data.get_column(args["x"])
+                    x_col = _rc(args["x"])
+                    y_col = _rc(args["y"])
+                    sorted_trace_data = trace_data.sort(by=x_col, nulls_last=True)
+                    y = sorted_trace_data.get_column(y_col)
+                    x = sorted_trace_data.get_column(x_col)
 
                     if x.dtype == nw.Datetime or x.dtype == nw.Date:
                         # convert to unix epoch seconds
@@ -413,7 +445,7 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
                     # i.e. we can't do resampling, because then the X values might not line up!
                     non_missing = ~(x.is_null() | y.is_null())
                     trace_patch["x"] = sorted_trace_data.filter(non_missing).get_column(
-                        args["x"]
+                        x_col
                     )
                     if (
                         trace_patch["x"].dtype == nw.Datetime
@@ -429,7 +461,7 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
                     trendline_function = trendline_functions[attr_value]
                     y_out, hover_header, fit_results = trendline_function(
                         args["trendline_options"],
-                        sorted_trace_data.get_column(args["x"]),  # narwhals series
+                        sorted_trace_data.get_column(x_col),  # narwhals series
                         x.to_numpy(),  # numpy array
                         y.to_numpy(),  # numpy array
                         args["x"],
@@ -447,19 +479,19 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
                 arr = "arrayminus" if attr_name.endswith("minus") else "array"
                 if error_xy not in trace_patch:
                     trace_patch[error_xy] = {}
-                trace_patch[error_xy][arr] = trace_data.get_column(attr_value)
+                trace_patch[error_xy][arr] = trace_data.get_column(_rc(attr_value))
             elif attr_name == "custom_data":
                 if len(attr_value) > 0:
                     # here we store a data frame in customdata, and it's serialized
                     # as a list of row lists, which is what we want
-                    trace_patch["customdata"] = trace_data.select(nw.col(attr_value))
+                    trace_patch["customdata"] = trace_data.select(nw.col(_rc_list(attr_value)))
             elif attr_name == "hover_name":
                 if trace_spec.constructor not in [
                     go.Histogram,
                     go.Histogram2d,
                     go.Histogram2dContour,
                 ]:
-                    trace_patch["hovertext"] = trace_data.get_column(attr_value)
+                    trace_patch["hovertext"] = trace_data.get_column(_rc(attr_value))
                     if hover_header == "":
                         hover_header = "<b>%{hovertext}</b><br><br>"
             elif attr_name == "hover_data":
@@ -497,7 +529,7 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
                         # dict.fromkeys(customdata_cols) allows to deduplicate column
                         # names, yet maintaining the original order.
                         trace_patch["customdata"] = trace_data.select(
-                            *[nw.col(c) for c in dict.fromkeys(customdata_cols)]
+                            *[nw.col(_rc(c)) for c in dict.fromkeys(customdata_cols)]
                         )
             elif attr_name == "color":
                 if trace_spec.constructor in [
@@ -505,7 +537,7 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
                     go.Choroplethmap,
                     go.Choroplethmapbox,
                 ]:
-                    trace_patch["z"] = trace_data.get_column(attr_value)
+                    trace_patch["z"] = trace_data.get_column(_rc(attr_value))
                     trace_patch["coloraxis"] = "coloraxis1"
                     mapping_labels[attr_label] = "%{z}"
                 elif trace_spec.constructor in [
@@ -520,7 +552,7 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
 
                     if args.get("color_is_continuous"):
                         trace_patch["marker"]["colors"] = trace_data.get_column(
-                            attr_value
+                            _rc(attr_value)
                         )
                         trace_patch["marker"]["coloraxis"] = "coloraxis1"
                         mapping_labels[attr_label] = "%{color}"
@@ -530,7 +562,7 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
                             mapping = args["color_discrete_map"].copy()
                         else:
                             mapping = {}
-                        for cat in trace_data.get_column(attr_value).to_list():
+                        for cat in trace_data.get_column(_rc(attr_value)).to_list():
                             # although trace_data.get_column(attr_value) is a Narwhals
                             # Series, which is an iterable, explicitly calling a to_list()
                             # makes sure that the elements we loop over are python objects
@@ -547,24 +579,24 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
                         colorable = "line"
                     if colorable not in trace_patch:
                         trace_patch[colorable] = dict()
-                    trace_patch[colorable]["color"] = trace_data.get_column(attr_value)
+                    trace_patch[colorable]["color"] = trace_data.get_column(_rc(attr_value))
                     trace_patch[colorable]["coloraxis"] = "coloraxis1"
                     mapping_labels[attr_label] = "%%{%s.color}" % colorable
             elif attr_name == "animation_group":
-                trace_patch["ids"] = trace_data.get_column(attr_value)
+                trace_patch["ids"] = trace_data.get_column(_rc(attr_value))
             elif attr_name == "locations":
-                trace_patch[attr_name] = trace_data.get_column(attr_value)
+                trace_patch[attr_name] = trace_data.get_column(_rc(attr_value))
                 mapping_labels[attr_label] = "%{location}"
             elif attr_name == "values":
-                trace_patch[attr_name] = trace_data.get_column(attr_value)
+                trace_patch[attr_name] = trace_data.get_column(_rc(attr_value))
                 _label = "value" if attr_label == "values" else attr_label
                 mapping_labels[_label] = "%{value}"
             elif attr_name == "parents":
-                trace_patch[attr_name] = trace_data.get_column(attr_value)
+                trace_patch[attr_name] = trace_data.get_column(_rc(attr_value))
                 _label = "parent" if attr_label == "parents" else attr_label
                 mapping_labels[_label] = "%{parent}"
             elif attr_name == "ids":
-                trace_patch[attr_name] = trace_data.get_column(attr_value)
+                trace_patch[attr_name] = trace_data.get_column(_rc(attr_value))
                 _label = "id" if attr_label == "ids" else attr_label
                 mapping_labels[_label] = "%{id}"
             elif attr_name == "names":
@@ -575,13 +607,13 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
                     go.Pie,
                     go.Funnelarea,
                 ]:
-                    trace_patch["labels"] = trace_data.get_column(attr_value)
+                    trace_patch["labels"] = trace_data.get_column(_rc(attr_value))
                     _label = "label" if attr_label == "names" else attr_label
                     mapping_labels[_label] = "%{label}"
                 else:
-                    trace_patch[attr_name] = trace_data.get_column(attr_value)
+                    trace_patch[attr_name] = trace_data.get_column(_rc(attr_value))
             else:
-                trace_patch[attr_name] = trace_data.get_column(attr_value)
+                trace_patch[attr_name] = trace_data.get_column(_rc(attr_value))
                 mapping_labels[attr_label] = "%%{%s}" % attr_name
         elif (trace_spec.constructor == go.Histogram and attr_name in ["x", "y"]) or (
             trace_spec.constructor in [go.Histogram2d, go.Histogram2dContour]
@@ -814,8 +846,8 @@ def configure_mapbox(args, fig, orders):
     center = args["center"]
     if not center and "lat" in args and "lon" in args:
         center = dict(
-            lat=args["data_frame"][args["lat"]].mean(),
-            lon=args["data_frame"][args["lon"]].mean(),
+            lat=args["data_frame"][_resolve_col(args, args["lat"])].mean(),
+            lon=args["data_frame"][_resolve_col(args, args["lon"])].mean(),
         )
     fig.update_mapboxes(
         accesstoken=MAPBOX_TOKEN,
@@ -829,8 +861,8 @@ def configure_map(args, fig, orders):
     center = args["center"]
     if not center and "lat" in args and "lon" in args:
         center = dict(
-            lat=args["data_frame"][args["lat"]].mean(),
-            lon=args["data_frame"][args["lon"]].mean(),
+            lat=args["data_frame"][_resolve_col(args, args["lat"])].mean(),
+            lon=args["data_frame"][_resolve_col(args, args["lon"])].mean(),
         )
     fig.update_maps(
         center=center,
@@ -1567,6 +1599,8 @@ def build_dataframe(args, constructor):
     if _labels_provided and isinstance(args["labels"], dict):
         _labels = dict(args["labels"])
 
+    _col_map = {}
+
     _df_index_name = None
     _df_columns_name = None
     _intended_wide_cross_name = None
@@ -1753,15 +1787,16 @@ def build_dataframe(args, constructor):
                 wide_cross_name = "__x__" if wide_y else "__y__"
 
     if wide_mode:
-        _intended_value_name = "value"
+        _semantic_value_name = "value"
         value_name = _escape_col_name(columns, "value", [])
-        if value_name != _intended_value_name:
-            _update_labels_for_rename(_labels, _intended_value_name, value_name)
+        if value_name != _semantic_value_name:
+            _col_map[_semantic_value_name] = value_name
         _original_value_name = "value"
-        _captured_intended_var_name = _intended_var_name if _intended_var_name is not None else var_name
+        _semantic_var_name = _intended_var_name if _intended_var_name is not None else var_name
+        _captured_intended_var_name = _semantic_var_name
         var_name = _escape_col_name(columns, var_name, [])
-        if _captured_intended_var_name is not None and var_name != _captured_intended_var_name:
-            _update_labels_for_rename(_labels, _captured_intended_var_name, var_name)
+        if _semantic_var_name is not None and var_name != _semantic_var_name:
+            _col_map[_semantic_var_name] = var_name
 
     # If the data_frame has interchange-only support levelin Narwhals, then we need to
     # convert it to a full support level backend.
@@ -1853,10 +1888,12 @@ def build_dataframe(args, constructor):
     if wide_mode:
         _old_var_name = var_name
         var_name = _escape_col_name(df_output.columns, var_name, [])
-        _update_labels_for_rename(_labels, _old_var_name, var_name)
+        if var_name != _old_var_name and _semantic_var_name is not None:
+            _col_map[_semantic_var_name] = var_name
         _old_value_name = value_name
         value_name = _escape_col_name(df_output.columns, value_name, [])
-        _update_labels_for_rename(_labels, _old_value_name, value_name)
+        if value_name != _old_value_name:
+            _col_map[_semantic_value_name] = value_name
 
     count_name = _escape_col_name(df_output.columns, "count", [var_name, value_name])
     if not wide_mode and missing_bar_dim and constructor == go.Bar:
@@ -1865,7 +1902,7 @@ def build_dataframe(args, constructor):
         # constant 1 is a less-insane thing to do than setting it to the index by
         # default and we let the normal auto-orientation-code do its thing later
         other_dim = "x" if missing_bar_dim == "y" else "y"
-        if not _is_continuous(df_output, args[other_dim]):
+        if not _is_continuous(df_output, _resolve_col(args, args[other_dim])):
             args[missing_bar_dim] = count_name
             df_output = df_output.with_columns(nw.lit(1).alias(count_name))
         else:
@@ -1895,21 +1932,75 @@ def build_dataframe(args, constructor):
             _intended_wide_cross_name is not None
             and wide_cross_name != _intended_wide_cross_name
         ):
-            _update_labels_for_rename(_labels, _intended_wide_cross_name, wide_cross_name)
+            _col_map[_intended_wide_cross_name] = wide_cross_name
+        _semantic_wide_cross_name = (
+            _intended_wide_cross_name
+            if _intended_wide_cross_name is not None
+            else wide_cross_name
+        )
 
-        if "variable" not in _labels and var_name in _labels:
-            if _labels[var_name] != "variable":
-                _labels["variable"] = _labels[var_name]
-        if "value" not in _labels and value_name in _labels:
-            if _labels[value_name] != "value":
-                _labels["value"] = _labels[value_name]
-        if (
-            "index" not in _labels
-            and _df_index_name is not None
-            and wide_cross_name in _labels
-            and _labels[wide_cross_name] != "index"
-        ):
-            _labels["index"] = _labels[wide_cross_name]
+        # --- Ensure unique semantic names for the three melt dimensions ---
+        # Canonical names: index (x-axis), value (y-axis), variable (color-axis)
+        # If intended semantic names collide, fall back to canonical names
+        # and set up labels to map canonical names back to intended display names
+        _semantic_names = {
+            "x": _semantic_wide_cross_name,
+            "y": _semantic_value_name,
+            "color": _semantic_var_name,
+        }
+        _canonical_names = {
+            "x": "index",
+            "y": "value",
+            "color": "variable",
+        }
+        _internal_names = {
+            "x": wide_cross_name,
+            "y": value_name,
+            "color": var_name,
+        }
+        _intended_display = {
+            "x": _semantic_wide_cross_name,
+            "y": _semantic_value_name,
+            "color": _semantic_var_name,
+        }
+        # Clean up any previous _col_map entries for these three to avoid stale mappings
+        for _s in [_semantic_wide_cross_name, _semantic_value_name, _semantic_var_name]:
+            if _s and _s in _col_map:
+                del _col_map[_s]
+        # Build new unique semantic names: try canonical first, then intended, then keep escaping with numeric suffix
+        _used_semantics = set()
+        for _axis in ["x", "y", "color"]:
+            _sname = _semantic_names[_axis]
+            _cname = _canonical_names[_axis]
+            _iname = _internal_names[_axis]
+            if _sname is None:
+                continue
+            # Try intended custom name first, then canonical name, then escape with numeric suffix
+            _candidates = [_sname]
+            if _cname != _sname:
+                _candidates.append(_cname)
+            _candidate = None
+            for _c in _candidates:
+                if _c not in _used_semantics:
+                    _candidate = _c
+                    break
+            if _candidate is None:
+                # All preferred names taken, escape the canonical name with numeric suffix
+                _i = 1
+                while f"{_cname}_{_i}" in _used_semantics:
+                    _i += 1
+                _candidate = f"{_cname}_{_i}"
+            # Update mapping and labels
+            if _candidate != _iname:
+                _col_map[_candidate] = _iname
+            if _candidate != _intended_display[_axis] and _candidate not in _labels:
+                _labels[_candidate] = _intended_display[_axis]
+            _semantic_names[_axis] = _candidate
+            _used_semantics.add(_candidate)
+        _semantic_wide_cross_name = _semantic_names["x"]
+        _semantic_value_name = _semantic_names["y"]
+        _semantic_var_name = _semantic_names["color"]
+        # --- End semantic name collision resolution ---
 
         dtype = None
         for v in wide_value_vars:
@@ -1940,7 +2031,9 @@ def build_dataframe(args, constructor):
                 escaped_name = _escape_col_name(
                     df_output.columns, col_name, [var_name, value_name]
                 )
-                _update_labels_for_rename(_labels, col_name, escaped_name)
+                if escaped_name != col_name:
+                    _col_map[col_name] = escaped_name
+                    _update_labels_for_rename(_labels, col_name, escaped_name)
                 df_output = df_output.with_columns(
                     nw.new_series(
                         name=escaped_name,
@@ -1954,29 +2047,38 @@ def build_dataframe(args, constructor):
         orient_v = wide_orientation == "v"
 
         if hist1d_orientation:
-            args["x" if orient_v else "y"] = value_name
-            args["y" if orient_v else "x"] = wide_cross_name
-            args["color"] = args["color"] or var_name
+            args["x" if orient_v else "y"] = _semantic_value_name
+            args["y" if orient_v else "x"] = _semantic_wide_cross_name
+            if args["color"] is None and _semantic_var_name is not None:
+                args["color"] = _semantic_var_name
         elif constructor in [go.Scatter, go.Funnel] + hist2d_types:
-            args["x" if orient_v else "y"] = wide_cross_name
-            args["y" if orient_v else "x"] = value_name
+            args["x" if orient_v else "y"] = _semantic_wide_cross_name
+            args["y" if orient_v else "x"] = _semantic_value_name
             if constructor != go.Histogram2d:
-                args["color"] = args["color"] or var_name
+                if args["color"] is None and _semantic_var_name is not None:
+                    args["color"] = _semantic_var_name
             if "line_group" in args:
-                args["line_group"] = args["line_group"] or var_name
+                if args["line_group"] is None and _semantic_var_name is not None:
+                    args["line_group"] = _semantic_var_name
         elif constructor == go.Bar:
             if _is_continuous(df_output, value_name):
-                args["x" if orient_v else "y"] = wide_cross_name
-                args["y" if orient_v else "x"] = value_name
-                args["color"] = args["color"] or var_name
+                args["x" if orient_v else "y"] = _semantic_wide_cross_name
+                args["y" if orient_v else "x"] = _semantic_value_name
+                if args["color"] is None and _semantic_var_name is not None:
+                    args["color"] = _semantic_var_name
             else:
-                args["x" if orient_v else "y"] = value_name
+                args["x" if orient_v else "y"] = _semantic_value_name
                 args["y" if orient_v else "x"] = count_name
                 df_output = df_output.with_columns(nw.lit(1).alias(count_name))
-                args["color"] = args["color"] or var_name
+                if args["color"] is None and _semantic_var_name is not None:
+                    args["color"] = _semantic_var_name
         elif constructor in [go.Violin, go.Box]:
-            args["x" if orient_v else "y"] = wide_cross_name or var_name
-            args["y" if orient_v else "x"] = value_name
+            args["x" if orient_v else "y"] = (
+                _semantic_wide_cross_name
+                if _semantic_wide_cross_name is not None
+                else _semantic_var_name
+            )
+            args["y" if orient_v else "x"] = _semantic_value_name
 
     if hist1d_orientation and constructor == go.Scatter:
         if args["x"] is not None and args["y"] is not None:
@@ -1995,6 +2097,8 @@ def build_dataframe(args, constructor):
     if no_color:
         args["color"] = None
     args["data_frame"] = df_output
+    if _col_map:
+        args["_col_map"] = _col_map
     _labels = {k: v for k, v in _labels.items() if k != v}
     if isinstance(args.get("labels"), dict) or _labels:
         args["labels"] = _labels
@@ -2068,7 +2172,7 @@ def process_dataframe_hierarchy(args):
     df: nw.DataFrame = args["data_frame"]
     path = args["path"][::-1]
     _check_dataframe_all_leaves(df[path[::-1]])
-    discrete_color = not _is_continuous(df, args["color"]) if args["color"] else False
+    discrete_color = not _is_continuous(df, _resolve_col(args, args["color"])) if args["color"] else False
 
     df = df.lazy()
 
@@ -2082,7 +2186,7 @@ def process_dataframe_hierarchy(args):
     agg_f = {}
     if args["values"]:
         try:
-            df = df.with_columns(nw.col(args["values"]).cast(nw.Float64()))
+            df = df.with_columns(nw.col(_resolve_col(args, args["values"])).cast(nw.Float64()))
 
         except Exception:  # pandas, Polars and pyarrow exception types are different
             raise ValueError(
@@ -2092,7 +2196,7 @@ def process_dataframe_hierarchy(args):
 
         if args["color"] and args["color"] == args["values"]:
             new_value_col_name = args["values"] + "_sum"
-            df = df.with_columns(nw.col(args["values"]).alias(new_value_col_name))
+            df = df.with_columns(nw.col(_resolve_col(args, args["values"])).alias(new_value_col_name))
             args["values"] = new_value_col_name
         count_colname = args["values"]
     else:
@@ -2148,9 +2252,9 @@ def process_dataframe_hierarchy(args):
     if args["color"]:
         if discrete_color:
             discrete_aggs.append(args["color"])
-            agg_f[args["color"]] = nw.col(args["color"]).max()
+            agg_f[_resolve_col(args, args["color"])] = nw.col(_resolve_col(args, args["color"])).max()
             agg_f[f"{args['color']}{n_unique_token}"] = (
-                nw.col(args["color"])
+                nw.col(_resolve_col(args, args["color"]))
                 .n_unique()
                 .alias(f"{args['color']}{n_unique_token}")
             )
@@ -2158,7 +2262,7 @@ def process_dataframe_hierarchy(args):
             # This first needs to be multiplied by `count_colname`
             continuous_aggs.append(args["color"])
 
-            agg_f[args["color"]] = nw.sum(args["color"])
+            agg_f[args["color"]] = nw.sum(_resolve_col(args, args["color"]))
 
     #  Other columns (for color, hover_data, custom_data etc.)
     cols = list(set(df.collect_schema().names()).difference(path))
@@ -2179,7 +2283,7 @@ def process_dataframe_hierarchy(args):
 
     if args["color"] and not discrete_color:
         df = df.with_columns(
-            (nw.col(args["color"]) * nw.col(count_colname)).alias(args["color"])
+            (nw.col(_resolve_col(args, args["color"])) * nw.col(count_colname)).alias(_resolve_col(args, args["color"]))
         )
 
     def post_agg(dframe: nw.LazyFrame, continuous_aggs, discrete_aggs) -> nw.LazyFrame:
@@ -2254,7 +2358,7 @@ def process_dataframe_hierarchy(args):
         while sort_col_name in df_all_trees.columns:
             sort_col_name += "0"
         df_all_trees = df_all_trees.with_columns(
-            nw.col(args["color"]).cast(nw.String()).alias(sort_col_name)
+            nw.col(_resolve_col(args, args["color"])).cast(nw.String()).alias(sort_col_name)
         ).sort(by=sort_col_name, nulls_last=True)
 
     # Now modify arguments
@@ -2285,9 +2389,9 @@ def process_dataframe_timeline(args):
     df: nw.DataFrame = args["data_frame"]
     schema = df.schema
     to_convert_to_datetime = [
-        col
+        _resolve_col(args, col)
         for col in [args["x_start"], args["x_end"]]
-        if schema[col] != nw.Datetime and schema[col] != nw.Date
+        if schema[_resolve_col(args, col)] != nw.Datetime and schema[_resolve_col(args, col)] != nw.Date
     ]
 
     if to_convert_to_datetime:
@@ -2300,7 +2404,7 @@ def process_dataframe_timeline(args):
 
     # note that we are not adding any columns to the data frame here, so no risk of overwrite
     args["data_frame"] = df.with_columns(
-        (nw.col(args["x_end"]) - nw.col(args["x_start"]))
+        (nw.col(_resolve_col(args, args["x_end"])) - nw.col(_resolve_col(args, args["x_start"])))
         .dt.total_milliseconds()
         .alias(args["x_end"])
     )
@@ -2322,14 +2426,15 @@ def process_dataframe_pie(args, trace_patch):
     df: nw.DataFrame = args["data_frame"]
     trace_patch["sort"] = False
     trace_patch["direction"] = "clockwise"
-    uniques = df.get_column(names).unique(maintain_order=True).to_list()
+    internal_names = _resolve_col(args, names)
+    uniques = df.get_column(internal_names).unique(maintain_order=True).to_list()
     order = [x for x in OrderedDict.fromkeys(list(order_in) + uniques) if x in uniques]
 
     # Sort args['data_frame'] by column `names` according to order `order`.
     token = nw.generate_temporary_column_name(8, df.columns)
     args["data_frame"] = (
         df.with_columns(
-            nw.col(names)
+            nw.col(internal_names)
             .replace_strict(order, np.arange(len(order)), return_dtype=nw.UInt32)
             .alias(token)
         )
@@ -2348,7 +2453,7 @@ def infer_config(args, constructor, trace_patch, layout_patch):
     sizeref = 0
     if "size" in args and args["size"]:
         sizeref = (
-            nw.to_py_scalar(df.get_column(args["size"]).max()) / args["size_max"] ** 2
+            nw.to_py_scalar(df.get_column(_resolve_col(args, args["size"])).max()) / args["size_max"] ** 2
         )
 
     # Compute color attributes and grouping attributes
@@ -2357,7 +2462,7 @@ def infer_config(args, constructor, trace_patch, layout_patch):
             if "color_discrete_sequence" not in args:
                 attrs.append("color")
             else:
-                if args["color"] and _is_continuous(df, args["color"]):
+                if args["color"] and _is_continuous(df, _resolve_col(args, args["color"])):
                     attrs.append("color")
                     args["color_is_continuous"] = True
                 elif constructor in [go.Sunburst, go.Treemap, go.Icicle]:
@@ -2412,8 +2517,8 @@ def infer_config(args, constructor, trace_patch, layout_patch):
                     args["orientation"] = "h"
 
         if args["orientation"] is None and has_x and has_y:
-            x_is_continuous = _is_continuous(df, args["x"])
-            y_is_continuous = _is_continuous(df, args["y"])
+            x_is_continuous = _is_continuous(df, _resolve_col(args, args["x"]))
+            y_is_continuous = _is_continuous(df, _resolve_col(args, args["y"]))
             if x_is_continuous and not y_is_continuous:
                 args["orientation"] = "h"
             if y_is_continuous and not x_is_continuous:
@@ -2590,8 +2695,9 @@ def get_groups_and_orders(args, grouper):
             single_group_name.append("")
         else:
             if col not in unique_cache:
+                internal_col = _resolve_col(args, col)
                 unique_cache[col] = (
-                    df.get_column(col).unique(maintain_order=True).to_list()
+                    df.get_column(internal_col).unique(maintain_order=True).to_list()
                 )
             uniques = unique_cache[col]
             if len(uniques) == 1:
@@ -2605,14 +2711,17 @@ def get_groups_and_orders(args, grouper):
         # we have a single group, so we can skip all group-by operations!
         groups = {tuple(single_group_name): df}
     else:
-        required_grouper = [group for group in orders if group in grouper]
-        grouped = dict(df.group_by(required_grouper, drop_null_keys=True).__iter__())
+        required_grouper_semantic = [group for group in orders if group in grouper]
+        required_grouper_internal = [
+            _resolve_col(args, g) for g in required_grouper_semantic
+        ]
+        grouped = dict(df.group_by(required_grouper_internal, drop_null_keys=True).__iter__())
 
         sorted_group_names = sorted(
             grouped.keys(),
             key=lambda values: [
                 orders[group].index(value) if value in orders[group] else -1
-                for group, value in zip(required_grouper, values)
+                for group, value in zip(required_grouper_semantic, values)
             ],
         )
 
@@ -2623,7 +2732,7 @@ def get_groups_and_orders(args, grouper):
                     (
                         ""
                         if col == one_group
-                        else sub_group_names[required_grouper.index(col)]
+                        else sub_group_names[required_grouper_semantic.index(col)]
                     )
                     for col in grouper
                 ]

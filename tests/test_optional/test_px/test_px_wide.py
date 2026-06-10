@@ -164,6 +164,7 @@ def test_wide_mode_internal(trace_type, x, y, color, orientation):
     args_in = dict(data_frame=df_in, color=None, orientation=orientation)
     args_out = build_dataframe(args_in, trace_type)
     df_out = args_out.pop("data_frame")
+    args_out.pop("_col_map", None)
     expected = dict(
         variable=["a", "a", "a", "b", "b", "b"],
         value=[1, 2, 3, 4, 5, 6],
@@ -300,6 +301,7 @@ def test_wide_x_or_y(tt, df_in, args_in, x, y, color, df_out_exp, transpose):
     args_in["data_frame"] = df_in
     args_out = build_dataframe(args_in, tt)
     df_out = args_out.pop("data_frame")
+    args_out.pop("_col_map", None)
     assert_frame_equal(df_out.to_native(), pd.DataFrame(df_out_exp)[df_out.columns])
     if transpose:
         args_exp = dict(x=y, y=x, color=color)
@@ -319,6 +321,7 @@ def test_wide_mode_internal_bar_exception(orientation):
     args_in = dict(data_frame=df_in, color=None, orientation=orientation)
     args_out = build_dataframe(args_in, go.Bar)
     df_out = args_out.pop("data_frame")
+    args_out.pop("_col_map", None)
     assert_frame_equal(
         df_out.to_native(),
         pd.DataFrame(
@@ -686,11 +689,10 @@ append_special_case(
     df_in=df,
     args_in=dict(x=None, y=None, color=None),
     args_expect=dict(
-        x="_index",
-        y="_value",
-        color="_variable",
+        x="index",
+        y="value",
+        color="variable",
         orientation="v",
-        labels=dict(_index="index", _value="value", _variable="variable"),
     ),
     df_expect=pd.DataFrame(
         dict(
@@ -709,11 +711,10 @@ append_special_case(
     df_in=df,
     args_in=dict(x=None, y=None, color=None),
     args_expect=dict(
-        x="index",
+        x="a",
         y="value",
-        color="variable",
+        color="b",
         orientation="v",
-        labels=dict(index="a", variable="b"),
     ),
     df_expect=pd.DataFrame(
         dict(
@@ -732,11 +733,11 @@ append_special_case(
     df_in=df,
     args_in=dict(x=None, y=None, color=None),
     args_expect=dict(
-        x="index",
-        y="_value",
+        x="value",
+        y="value_1",
         color="variable",
         orientation="v",
-        labels=dict(_value="value", index="value", variable="value"),
+        labels=dict(value_1="value", variable="value"),
     ),
     df_expect=pd.DataFrame(
         dict(
@@ -814,6 +815,7 @@ def test_wide_mode_internal_special_cases(df_in, args_in, args_expect, df_expect
     args_in["data_frame"] = df_in
     args_out = build_dataframe(args_in, go.Scatter)
     df_out = args_out.pop("data_frame")
+    args_out.pop("_col_map", None)
 
     assert args_out == args_expect
     assert_frame_equal(
