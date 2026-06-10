@@ -68,6 +68,7 @@ class PxDefaults(object):
         "size_max",
         "category_orders",
         "labels",
+        "field_display",
     ]
 
     def __init__(self):
@@ -89,6 +90,7 @@ class PxDefaults(object):
         self.size_max = 20
         self.category_orders = {}
         self.labels = {}
+        self.field_display = {}
 
 
 defaults = PxDefaults()
@@ -156,6 +158,101 @@ def invert_label(args, column):
         return reversed_labels[column]
     except Exception:
         return column
+
+
+def get_field_display(args, column, role=None):
+    """Get the display name for a field from the unified field_display layer.
+
+    This function looks up display names in the following order:
+    1. field_display by role (e.g., "x", "y", "color")
+    2. field_display by column name (original or internal)
+    3. labels by column name
+    4. fallback to column name itself
+
+    Parameters
+    ----------
+    args : dict
+        The arguments dict for the plot
+    column : str
+        The column name to look up
+    role : str, optional
+        The semantic role (e.g., "x", "y", "color", "size", "facet_row",
+        "facet_col", "animation_frame", "line_group", "symbol", "line_dash")
+
+    Returns
+    -------
+    str
+        The display name for the field
+    """
+    field_display = args.get("_field_display_map") or {}
+    if field_display:
+        if role and role in field_display:
+            val = field_display[role]
+            if isinstance(val, str):
+                return val
+        if isinstance(column, str) and column in field_display:
+            val = field_display[column]
+            if isinstance(val, str):
+                return val
+    return get_label(args, column)
+
+
+def is_field_hidden(args, column, role=None):
+    """Check if a field should be hidden from hover display.
+
+    Parameters
+    ----------
+    args : dict
+        The arguments dict for the plot
+    column : str
+        The column name to check
+    role : str, optional
+        The semantic role
+
+    Returns
+    -------
+    bool
+        True if the field should be hidden
+    """
+    field_display = args.get("_field_display_map") or {}
+    if not field_display:
+        return False
+    if role and role in field_display:
+        val = field_display[role]
+        if val is False:
+            return True
+    if isinstance(column, str) and column in field_display:
+        val = field_display[column]
+        if val is False:
+            return True
+    return False
+
+
+def _build_field_display_map(args):
+    """Build the unified field display map by merging labels and field_display.
+
+    This function merges:
+    - field_display (higher priority, supports roles and column names)
+    - labels (lower priority, only column names, for backward compatibility)
+
+    The result is stored in args["_field_display_map"]
+    """
+    field_display_input = args.get("field_display") or {}
+    labels_input = args.get("labels") or {}
+
+    merged = {}
+
+    if labels_input and isinstance(labels_input, dict):
+        for k, v in labels_input.items():
+            merged[k] = v
+
+    if field_display_input and isinstance(field_display_input, dict):
+        for k, v in field_display_input.items():
+            merged[k] = v
+
+    args["_field_display_map"] = merged
+
+    return merged
 
 
 def _resolve_col(args, attr_name_or_col):
@@ -233,7 +330,7 @@ def _generate_temporary_column_name(n_bytes, columns) -> str:
 
 
 def get_decorated_label(args, column, role):
-    original_label = label = get_label(args, column)
+    original_label = label = get_field_display(args, column, role)
     if "histfunc" in args and (
         (role == "z")
         or (role == "x" and "orientation" in args and args["orientation"] == "h")
@@ -380,7 +477,7 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
                 )
             ]
             trace_patch["dimensions"] = [
-                dict(label=get_label(args, name), values=column)
+                dict(label=get_field_display(args, name, "dimensions"), values=column)
                 for (name, column) in dims
             ]
             if trace_spec.constructor == go.Splom:
@@ -472,8 +569,8 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
                         "missing-data-handling failure in trendline code"
                     )
                     trace_patch["y"] = y_out
-                    mapping_labels[get_label(args, args["x"])] = "%{x}"
-                    mapping_labels[get_label(args, args["y"])] = "%{y} <b>(trend)</b>"
+                    mapping_labels[get_field_display(args, args["x"], "x")] = "%{x}"
+                    mapping_labels[get_field_display(args, args["y"], "y")] = "%{y} <b>(trend)</b>"
             elif attr_name.startswith("error"):
                 error_xy = attr_name[:7]
                 arr = "arrayminus" if attr_name.endswith("minus") else "array"
@@ -511,6 +608,8 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
                             args.get("z"),
                             args.get("base"),
                         ]:
+                            continue
+                        if is_field_hidden(args, col, "hover_data"):
                             continue
                         try:
                             position = args["custom_data"].index(col)
@@ -1599,6 +1698,13 @@ def build_dataframe(args, constructor):
     if _labels_provided and isinstance(args["labels"], dict):
         _labels = dict(args["labels"])
 
+    _field_display_provided = (
+        "field_display" in args and args["field_display"] is not None
+    )
+    _field_display = {}
+    if _field_display_provided and isinstance(args["field_display"], dict):
+        _field_display = dict(args["field_display"])
+
     _col_map = {}
 
     _df_index_name = None
@@ -1617,6 +1723,7 @@ def build_dataframe(args, constructor):
                 new_cols = _deduplicate_columns(col_list)
                 for old, new in zip(col_list, new_cols):
                     _update_labels_for_rename(_labels, str(old), new)
+                    _update_labels_for_rename(_field_display, str(old), new)
                 args["data_frame"].columns = new_cols
                 columns = args["data_frame"].columns
             if hasattr(args["data_frame"].index, "name"):
@@ -1971,6 +2078,7 @@ def build_dataframe(args, constructor):
                 if escaped_name != col_name:
                     _col_map[col_name] = escaped_name
                     _update_labels_for_rename(_labels, col_name, escaped_name)
+                    _update_labels_for_rename(_field_display, col_name, escaped_name)
                 df_output = df_output.with_columns(
                     nw.new_series(
                         name=escaped_name,
@@ -2041,6 +2149,15 @@ def build_dataframe(args, constructor):
         args["labels"] = _labels
     elif not _labels_provided and "labels" in args:
         del args["labels"]
+
+    _field_display = {k: v for k, v in _field_display.items() if k != v}
+    if _field_display_provided or _field_display:
+        args["field_display"] = _field_display
+    elif not _field_display_provided and "field_display" in args:
+        del args["field_display"]
+
+    _build_field_display_map(args)
+
     return args
 
 
@@ -2718,11 +2835,11 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
         else:
             sorted_values = orders[m.grouper]
             if m.facet == "col":
-                prefix = get_label(args, args["facet_col"]) + "="
+                prefix = get_field_display(args, args["facet_col"], "facet_col") + "="
                 col_labels = [prefix + str(s) for s in sorted_values]
                 ncols = len(col_labels)
             if m.facet == "row":
-                prefix = get_label(args, args["facet_row"]) + "="
+                prefix = get_field_display(args, args["facet_row"], "facet_row") + "="
                 row_labels = [prefix + str(s) for s in sorted_values]
                 nrows = len(row_labels)
             for val in sorted_values:
@@ -2742,7 +2859,10 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
         frame_name = ""
         for col, val, m in zip(grouper, group_name, grouped_mappings):
             if col != one_group:
-                key = get_label(args, col)
+                role = None
+                if hasattr(m, 'variable') and m.variable:
+                    role = m.variable
+                key = get_field_display(args, col, role)
                 if not isinstance(m.val_map, IdentityMap):
                     mapping_labels[key] = str(val)
                     if m.show_in_trace_name:
