@@ -160,99 +160,279 @@ def invert_label(args, column):
         return column
 
 
-def get_field_display(args, column, role=None):
-    """Get the display name for a field from the unified field_display layer.
+_VALID_ROLES = set(
+    all_attrables
+    + [
+        "x",
+        "y",
+        "z",
+        "color",
+        "size",
+        "symbol",
+        "line_dash",
+        "pattern_shape",
+        "dash",
+        "pattern",
+        "shape",
+        "facet_row",
+        "facet_col",
+        "animation_frame",
+        "line_group",
+        "hover_name",
+        "text",
+        "dimensions",
+        "trendline",
+    ]
+)
 
-    This function looks up display names in the following order:
-    1. field_display by role (e.g., "x", "y", "color")
-    2. field_display by column name (original or internal)
-    3. labels by column name
-    4. fallback to column name itself
+_INTERNAL_DERIVED_COLUMNS = {"value", "variable", "index"}
 
-    Parameters
-    ----------
-    args : dict
-        The arguments dict for the plot
-    column : str
-        The column name to look up
-    role : str, optional
-        The semantic role (e.g., "x", "y", "color", "size", "facet_row",
-        "facet_col", "animation_frame", "line_group", "symbol", "line_dash")
 
-    Returns
-    -------
-    str
-        The display name for the field
+class FieldDisplayContext:
+    """Unified field display context for Plotly Express.
+
+    This context provides a clean separation between:
+    1. by_role: display configs keyed by semantic role (x, y, color, etc.)
+    2. by_original_column: display configs keyed by original DataFrame column names
+    3. by_internal_column: display configs keyed by internally derived column names
+       (e.g., "value", "variable", "index" from wide-form transformation,
+       or renamed columns to avoid conflicts)
+
+    All display layer (axis titles, legend titles, hover field names, trace names)
+    should query this context exclusively.
     """
-    field_display = args.get("_field_display_map") or {}
-    if field_display:
-        if role and role in field_display:
-            val = field_display[role]
+
+    def __init__(self, args=None):
+        self.by_role = {}
+        self.by_original_column = {}
+        self.by_internal_column = {}
+        self._labels_fallback = {}
+        self._original_to_internal = {}
+        self._internal_to_original = {}
+        if args is not None:
+            self.parse(args)
+
+    def parse(self, args):
+        """Parse field_display and labels from args into the three buckets.
+
+        Rules:
+        - Keys in field_display that match known semantic roles go to by_role
+        - Other keys in field_display go to by_original_column
+        - Keys in labels that match known semantic roles also go to by_role (for compat)
+        - Other keys in labels go to by_original_column
+        - field_display always overrides labels
+        """
+        field_display_input = args.get("field_display") or {}
+        labels_input = args.get("labels") or {}
+
+        self._labels_fallback = dict(labels_input) if labels_input else {}
+
+        def _is_role_key(key):
+            if not isinstance(key, str):
+                return False
+            return key in _VALID_ROLES
+
+        if labels_input and isinstance(labels_input, dict):
+            for k, v in labels_input.items():
+                if _is_role_key(k):
+                    self.by_role.setdefault(k, v)
+                else:
+                    self.by_original_column.setdefault(k, v)
+
+        if field_display_input and isinstance(field_display_input, dict):
+            for k, v in field_display_input.items():
+                if _is_role_key(k):
+                    self.by_role[k] = v
+                else:
+                    self.by_original_column[k] = v
+
+    def register_internal_column(self, internal_name, original_name=None):
+        """Register an internally derived column (e.g., "value", "variable").
+
+        This creates a mapping from internal column name to the display config.
+        If original_name is provided, it inherits display config from original column.
+        """
+        if original_name and original_name in self.by_original_column:
+            self.by_internal_column[internal_name] = self.by_original_column[original_name]
+
+        if internal_name in self.by_original_column:
+            self.by_internal_column[internal_name] = self.by_original_column.pop(internal_name)
+
+        if original_name:
+            self._original_to_internal[original_name] = internal_name
+            self._internal_to_original[internal_name] = original_name
+
+    def rename_column(self, old_name, new_name):
+        """Update mappings when a column is renamed (e.g., to avoid conflicts).
+
+        This keeps the display configs in sync with actual DataFrame column names.
+        """
+        if old_name in self.by_original_column:
+            self.by_original_column[new_name] = self.by_original_column.pop(old_name)
+
+        if old_name in self.by_internal_column:
+            self.by_internal_column[new_name] = self.by_internal_column.pop(old_name)
+
+        if old_name in self._labels_fallback:
+            self._labels_fallback[new_name] = self._labels_fallback.pop(old_name)
+
+        if old_name in self._original_to_internal:
+            self._original_to_internal[new_name] = self._original_to_internal.pop(old_name)
+
+        if old_name in self._internal_to_original:
+            orig = self._internal_to_original.pop(old_name)
+            self._internal_to_original[new_name] = orig
+            if orig in self._original_to_internal:
+                self._original_to_internal[orig] = new_name
+
+    def _resolve_column_name(self, column):
+        """Resolve a column name to its internal equivalent if needed."""
+        if isinstance(column, str) and column in self._original_to_internal:
+            return self._original_to_internal[column]
+        return column
+
+    def get_display_name(self, role=None, column=None):
+        """Get the display name for a field.
+
+        Lookup order:
+        1. by_role[role] (if role is provided)
+        2. by_internal_column[column] (if column is provided and is an internal column)
+        3. by_original_column[column] (if column is provided)
+        4. labels fallback[column] (for backward compatibility)
+        5. column name itself
+
+        Parameters
+        ----------
+        role : str, optional
+            The semantic role (e.g., "x", "y", "color", "facet_row")
+        column : str, optional
+            The actual DataFrame column name
+
+        Returns
+        -------
+        str
+            The display name
+        """
+        if role and role in self.by_role:
+            val = self.by_role[role]
             if isinstance(val, str):
                 return val
-        if isinstance(column, str) and column in field_display:
-            val = field_display[column]
-            if isinstance(val, str):
-                return val
+
+        if column:
+            resolved_col = self._resolve_column_name(column)
+
+            if resolved_col in self.by_internal_column:
+                val = self.by_internal_column[resolved_col]
+                if isinstance(val, str):
+                    return val
+
+            if column in self.by_original_column:
+                val = self.by_original_column[column]
+                if isinstance(val, str):
+                    return val
+
+            if column in self._labels_fallback:
+                return self._labels_fallback[column]
+
+            return column
+
+        return role or column or ""
+
+    def is_hidden(self, role=None, column=None):
+        """Check if a field should be hidden from hover display.
+
+        Lookup order is the same as get_display_name.
+
+        Returns
+        -------
+        bool
+            True if the field should be hidden
+        """
+        if role and role in self.by_role:
+            if self.by_role[role] is False:
+                return True
+
+        if column:
+            resolved_col = self._resolve_column_name(column)
+
+            if resolved_col in self.by_internal_column:
+                if self.by_internal_column[resolved_col] is False:
+                    return True
+
+            if column in self.by_original_column:
+                if self.by_original_column[column] is False:
+                    return True
+
+        return False
+
+    def get_group_display_name(self, role, value):
+        """Get the display name for a group value (used in trace names).
+
+        Parameters
+        ----------
+        role : str
+            The semantic role of the grouping column (e.g., "color", "symbol")
+        value : any
+            The actual group value
+
+        Returns
+        -------
+        str
+            "<display_name>=<value>" format suitable for trace names
+        """
+        label = self.get_display_name(role=role)
+        return f"{label}={value}"
+
+    def get_trace_name(self, role_value_pairs):
+        """Build a complete trace name from role-value pairs.
+
+        Parameters
+        ----------
+        role_value_pairs : list of (role, value) tuples
+            Only pairs where show_in_trace_name=True should be included
+
+        Returns
+        -------
+        str
+            Comma-separated display name pairs, e.g., "Category=A, Size=Large"
+        """
+        parts = []
+        for role, value in role_value_pairs:
+            parts.append(self.get_group_display_name(role, value))
+        return ", ".join(parts)
+
+
+def get_field_display(args, column, role=None):
+    """Compatibility wrapper: get display name from FieldDisplayContext in args.
+
+    Prefer using args["_field_display_ctx"].get_display_name() directly.
+    """
+    ctx = args.get("_field_display_ctx")
+    if ctx is not None:
+        return ctx.get_display_name(role=role, column=column)
     return get_label(args, column)
 
 
 def is_field_hidden(args, column, role=None):
-    """Check if a field should be hidden from hover display.
+    """Compatibility wrapper: check if field is hidden from FieldDisplayContext in args.
 
-    Parameters
-    ----------
-    args : dict
-        The arguments dict for the plot
-    column : str
-        The column name to check
-    role : str, optional
-        The semantic role
-
-    Returns
-    -------
-    bool
-        True if the field should be hidden
+    Prefer using args["_field_display_ctx"].is_hidden() directly.
     """
-    field_display = args.get("_field_display_map") or {}
-    if not field_display:
-        return False
-    if role and role in field_display:
-        val = field_display[role]
-        if val is False:
-            return True
-    if isinstance(column, str) and column in field_display:
-        val = field_display[column]
-        if val is False:
-            return True
+    ctx = args.get("_field_display_ctx")
+    if ctx is not None:
+        return ctx.is_hidden(role=role, column=column)
     return False
 
 
-def _build_field_display_map(args):
-    """Build the unified field display map by merging labels and field_display.
+def _build_field_display_context(args):
+    """Build the FieldDisplayContext from args.
 
-    This function merges:
-    - field_display (higher priority, supports roles and column names)
-    - labels (lower priority, only column names, for backward compatibility)
-
-    The result is stored in args["_field_display_map"]
+    This replaces the old _build_field_display_map function.
+    The context is stored in args["_field_display_ctx"].
     """
-    field_display_input = args.get("field_display") or {}
-    labels_input = args.get("labels") or {}
-
-    merged = {}
-
-    if labels_input and isinstance(labels_input, dict):
-        for k, v in labels_input.items():
-            merged[k] = v
-
-    if field_display_input and isinstance(field_display_input, dict):
-        for k, v in field_display_input.items():
-            merged[k] = v
-
-    args["_field_display_map"] = merged
-
-    return merged
+    ctx = FieldDisplayContext(args)
+    args["_field_display_ctx"] = ctx
+    return ctx
 
 
 def _resolve_col(args, attr_name_or_col):
@@ -1705,6 +1885,8 @@ def build_dataframe(args, constructor):
     if _field_display_provided and isinstance(args["field_display"], dict):
         _field_display = dict(args["field_display"])
 
+    _field_display_ctx = _build_field_display_context(args)
+
     _col_map = {}
 
     _df_index_name = None
@@ -1724,6 +1906,7 @@ def build_dataframe(args, constructor):
                 for old, new in zip(col_list, new_cols):
                     _update_labels_for_rename(_labels, str(old), new)
                     _update_labels_for_rename(_field_display, str(old), new)
+                    _field_display_ctx.rename_column(str(old), new)
                 args["data_frame"].columns = new_cols
                 columns = args["data_frame"].columns
             if hasattr(args["data_frame"].index, "name"):
@@ -1899,11 +2082,13 @@ def build_dataframe(args, constructor):
         if value_name != _semantic_value_name:
             _col_map[_semantic_value_name] = value_name
         _original_value_name = "value"
+        _field_display_ctx.register_internal_column(value_name, _semantic_value_name)
         _semantic_var_name = _intended_var_name if _intended_var_name is not None else var_name
         _captured_intended_var_name = _semantic_var_name
         var_name = _escape_col_name(columns, var_name, [])
         if _semantic_var_name is not None and var_name != _semantic_var_name:
             _col_map[_semantic_var_name] = var_name
+        _field_display_ctx.register_internal_column(var_name, _semantic_var_name or "variable")
 
     # If the data_frame has interchange-only support levelin Narwhals, then we need to
     # convert it to a full support level backend.
@@ -2045,6 +2230,7 @@ def build_dataframe(args, constructor):
             if _intended_wide_cross_name is not None
             else wide_cross_name
         )
+        _field_display_ctx.register_internal_column(wide_cross_name, _semantic_wide_cross_name)
 
         dtype = None
         for v in wide_value_vars:
@@ -2079,6 +2265,7 @@ def build_dataframe(args, constructor):
                     _col_map[col_name] = escaped_name
                     _update_labels_for_rename(_labels, col_name, escaped_name)
                     _update_labels_for_rename(_field_display, col_name, escaped_name)
+                    _field_display_ctx.rename_column(col_name, escaped_name)
                 df_output = df_output.with_columns(
                     nw.new_series(
                         name=escaped_name,
@@ -2155,8 +2342,6 @@ def build_dataframe(args, constructor):
         args["field_display"] = _field_display
     elif not _field_display_provided and "field_display" in args:
         del args["field_display"]
-
-    _build_field_display_map(args)
 
     return args
 
@@ -2853,8 +3038,10 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
     trendline_rows = []
     trace_name_labels = None
     facet_col_wrap = args.get("facet_col_wrap", 0)
+    field_display_ctx = args.get("_field_display_ctx")
     for group_name, group in groups.items():
         mapping_labels = OrderedDict()
+        trace_name_pairs = []
         trace_name_labels = OrderedDict()
         frame_name = ""
         for col, val, m in zip(grouper, group_name, grouped_mappings):
@@ -2862,14 +3049,21 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
                 role = None
                 if hasattr(m, 'variable') and m.variable:
                     role = m.variable
-                key = get_field_display(args, col, role)
+                if field_display_ctx is not None:
+                    key = field_display_ctx.get_display_name(role=role, column=col)
+                else:
+                    key = get_field_display(args, col, role)
                 if not isinstance(m.val_map, IdentityMap):
                     mapping_labels[key] = str(val)
-                    if m.show_in_trace_name:
+                    if m.show_in_trace_name and role is not None:
+                        trace_name_pairs.append((role, val))
                         trace_name_labels[key] = str(val)
                 if m.variable == "animation_frame":
                     frame_name = val
-        trace_name = ", ".join(trace_name_labels.values())
+        if field_display_ctx is not None and trace_name_pairs:
+            trace_name = field_display_ctx.get_trace_name(trace_name_pairs)
+        else:
+            trace_name = ", ".join(trace_name_labels.values())
         if frame_name not in trace_names_by_frame:
             trace_names_by_frame[frame_name] = set()
         trace_names = trace_names_by_frame[frame_name]
