@@ -1,5 +1,4 @@
 import base64
-import math
 import numbers
 import textwrap
 import uuid
@@ -11,345 +10,6 @@ import sys
 import narwhals.stable.v1 as nw
 
 from _plotly_utils.optional_imports import get_module
-
-
-def is_null_value(v):
-    """
-    Check whether a value represents a null/missing value that should be
-    serialized as JSON null (None in Python).
-
-    Handles: None, float('nan'), numpy.nan, pandas.NA, pandas.NaT,
-    numpy.datetime64('NaT'), numpy.ma.core.masked (scalar sentinel),
-    and numpy scalar float NaN / int 'NaT' representations.
-    """
-    if v is None:
-        return True
-
-    np = get_module("numpy", should_load=False)
-    pd = get_module("pandas", should_load=False)
-
-    if pd is not None:
-        if v is pd.NA or v is pd.NaT:
-            return True
-
-    if np is not None:
-        if v is np.ma.core.masked:
-            return True
-        # NaT as a scalar
-        if isinstance(v, np.datetime64):
-            if v.dtype.kind == "M" and np.isnat(v):
-                return True
-        # NaN as a floating point scalar or native float
-        if isinstance(v, (float, np.floating)):
-            try:
-                if math.isnan(v):
-                    return True
-            except (TypeError, ValueError):
-                pass
-
-    return False
-
-
-def _clean_null_scalar(v):
-    """
-    Convert a single null-like value to Python None, otherwise return v
-    unchanged (except for pandas extension scalars which are converted to
-    native Python types).
-    """
-    if is_null_value(v):
-        return None
-    return v
-
-
-def _clean_array_nulls(np_arr):
-    """
-    Clean a numpy array so that all null-like values become None.
-
-    Arrays that contain any null values are always converted to object dtype
-    with None in null slots. This prevents NaN from leaking into typed-array
-    (base64 binary) encoding downstream, where null semantics would be lost.
-
-    Arrays with no nulls are returned unchanged.
-    """
-    import math as _math
-
-    np = get_module("numpy", should_load=False)
-    if np is None or not isinstance(np_arr, np.ndarray):
-        return np_arr
-
-    pd = get_module("pandas", should_load=False)
-
-    kind = np_arr.dtype.kind
-
-    # Datetime: NaT -> object array with None in NaT slots
-    if kind == "M":
-        if np.any(np.isnat(np_arr)):
-            flat = np_arr.ravel()
-            result = np.empty(flat.shape, dtype=object)
-            for i in range(flat.size):
-                val = flat[i]
-                if np.isnat(val):
-                    result[i] = None
-                else:
-                    try:
-                        # datetime64[ns] .item() returns int (nanoseconds) or
-                        # pd.Timestamp; cast to [us] so .item() returns a real
-                        # datetime object, which both orjson and the standard
-                        # json encoder can handle via isoformat().
-                        if val.dtype == np.dtype("datetime64[ns]"):
-                            val = val.astype("datetime64[us]")
-                        scalar = val.item()
-                        pd_mod = get_module("pandas", should_load=False)
-                        if pd_mod is not None and isinstance(scalar, pd_mod.Timestamp):
-                            scalar = scalar.to_pydatetime()
-                        result[i] = scalar
-                    except Exception:
-                        result[i] = val
-            result = result.reshape(np_arr.shape)
-            result.flags["WRITEABLE"] = False
-            return result
-        return np_arr
-
-    # Numeric (u, i, f): if any NaN present, convert to object+None
-    # so that the array will NOT be eligible for typed-array (b64) encoding
-    if kind in ("u", "i", "f"):
-        has_nan = False
-        flat = np_arr.ravel()
-        for i in range(flat.size):
-            v = flat[i]
-            if isinstance(v, float) and _math.isnan(v):
-                has_nan = True
-                break
-            elif isinstance(v, np.floating) and np.isnan(v):
-                has_nan = True
-                break
-            elif pd is not None and (v is pd.NA or v is pd.NaT):
-                has_nan = True
-                break
-            elif v is np.ma.core.masked:
-                has_nan = True
-                break
-        if has_nan:
-            result = np.empty(flat.shape, dtype=object)
-            for i in range(flat.size):
-                v = flat[i]
-                if isinstance(v, (float, np.floating)):
-                    try:
-                        if _math.isnan(v):
-                            result[i] = None
-                        else:
-                            result[i] = float(v)
-                    except (TypeError, ValueError):
-                        result[i] = v
-                elif isinstance(v, (int, np.integer)):
-                    result[i] = int(v)
-                elif is_null_value(v):
-                    result[i] = None
-                else:
-                    result[i] = v
-            result = result.reshape(np_arr.shape)
-            result.flags["WRITEABLE"] = False
-            return result
-        return np_arr
-
-    # Object dtype: replace pd.NA / masked / NaN float / NaT with None
-    if kind == "O":
-        needs_copy = False
-        flat = np_arr.ravel()
-        for i in range(flat.size):
-            v = flat[i]
-            if is_null_value(v):
-                needs_copy = True
-                break
-        if needs_copy:
-            result = np_arr.copy()
-            flat_res = result.ravel()
-            for i in range(flat_res.size):
-                if is_null_value(flat_res[i]):
-                    flat_res[i] = None
-            result.flags["WRITEABLE"] = False
-            return result
-        return np_arr
-
-    return np_arr
-
-
-def clean_nulls(v):
-    """
-    Unified public API for cleaning null/missing values from arbitrary
-    Python data structures before JSON serialization.
-
-    Recursively traverses the entire input structure (scalars, lists,
-    tuples, dicts, pandas Series/Index, numpy arrays including MaskedArray)
-    and replaces ALL null-like representations with Python None (JSON null).
-
-    Non-null values are converted to native Python scalar types:
-      - pandas Int* / UInt*  -> Python int
-      - pandas Float*        -> Python float
-      - pandas boolean       -> Python bool
-      - pandas string        -> Python str
-      - numpy scalars        -> via .item() to native Python types
-      - numpy arrays         -> nested Python lists with native scalars
-      - MaskedArray          -> nested Python lists, masked -> None
-      - datetime64 NaT       -> None, non-NaT -> str via .item()
-
-    The result is guaranteed to be JSON-serializable (no pd.NA, np.nan,
-    np.ma.core.masked, NaT strings, etc.) and preserves the original
-    container structure (nested list depth, dict keys, dimensions).
-
-    This single function replaces duplicated null-cleaning logic that
-    previously lived in three places:
-      1. basevalidators.py   (to_scalar_or_list, _clean_array_nulls)
-      2. _plotly_utils/utils.py  (PlotlyJSONEncoder.encode_as_list/_numpy)
-      3. plotly/io/_json.py      (clean_to_json_compatible helpers)
-    """
-    np = get_module("numpy", should_load=False)
-    pd = get_module("pandas", should_load=False)
-
-    # 1. Fast bail for JSON-native scalars
-    if v is None:
-        return None
-    if isinstance(v, (int, str)):
-        return v
-    if isinstance(v, bool):
-        return v
-    if isinstance(v, float):
-        import math as _math
-        if _math.isnan(v):
-            return None
-        return v
-
-    # 2. Scalar null-like detection
-    if is_null_value(v):
-        return None
-
-    # 3. Numpy scalars (not arrays) -> native Python types via .item()
-    if np and np.isscalar(v) and hasattr(v, "item"):
-        if isinstance(v, np.datetime64):
-            if np.isnat(v):
-                return None
-            # datetime64[ns] .item() returns int (nanosecond epoch); cast to [us]
-            if v.dtype == np.dtype("datetime64[ns]"):
-                v = v.astype("datetime64[us]")
-        val = v.item()
-        # val may be pd.Timestamp if pandas is around; force to pydatetime
-        if pd is not None and isinstance(val, pd.Timestamp):
-            val = val.to_pydatetime()
-        if is_null_value(val):
-            return None
-        return val
-
-    # 4. Numpy MaskedArray -> build object array preserving native types
-    if np and isinstance(v, np.ma.MaskedArray):
-        mask = np.ma.getmaskarray(v)
-        data = np.asarray(v)
-        if mask.any():
-            flat_data = data.ravel()
-            flat_mask = mask.ravel()
-            obj_flat = [None] * flat_data.size
-            for i in range(flat_data.size):
-                if flat_mask[i]:
-                    obj_flat[i] = None
-                else:
-                    val = flat_data[i]
-                    obj_flat[i] = val.item() if hasattr(val, "item") else val
-            return _reshape_list(obj_flat, data.shape)
-        else:
-            return clean_nulls(np.asarray(v))
-
-    # 5. Pandas Series / Index (handle extension types before to_numpy)
-    if pd and isinstance(v, (pd.Series, pd.Index)):
-        orig_dtype = str(v.dtype)
-        nullable_extension = (
-            orig_dtype.startswith(("Int", "UInt", "Float"))
-            or orig_dtype in ("string", "boolean")
-        )
-        if nullable_extension:
-            out = [None] * len(v)
-            for i, val in enumerate(v):
-                if pd.isna(val):
-                    out[i] = None
-                elif orig_dtype.startswith(("Int", "UInt")):
-                    out[i] = int(val)
-                elif orig_dtype.startswith("Float"):
-                    out[i] = float(val)
-                elif orig_dtype == "boolean":
-                    out[i] = bool(val)
-                elif orig_dtype == "string":
-                    out[i] = str(val)
-                else:
-                    out[i] = val
-            return out
-        # Non-extension pandas type: go via numpy + _clean_array_nulls
-        try:
-            if hasattr(v, "to_numpy"):
-                np_arr = v.to_numpy()
-            else:
-                np_arr = np.array(v)
-            return clean_nulls(np_arr)
-        except Exception:
-            return [clean_nulls(x) for x in v]
-
-    # 6. numpy ndarray (including 2D+) -> _clean_array_nulls then tolist recursively
-    if np and isinstance(v, np.ndarray):
-        cleaned = _clean_array_nulls(v)
-        # _clean_array_nulls may return the original array if no nulls
-        if cleaned is v and v.dtype.kind in ("b", "i", "u", "f", "U"):
-            # No nulls: native tolist() directly
-            return v.tolist()
-        # Otherwise object or mixed: recursive tolist per element
-        if cleaned.ndim == 0:
-            return clean_nulls(cleaned.item() if hasattr(cleaned, "item") else cleaned)
-        return [clean_nulls(e) for e in cleaned]
-
-    # 7. dict -> recurse values, preserve keys
-    if isinstance(v, dict):
-        return {k: clean_nulls(val) for k, val in v.items()}
-
-    # 8. list / tuple -> recurse each element
-    if isinstance(v, (list, tuple)):
-        return [clean_nulls(x) for x in v]
-
-    # 9. Normalize any remaining pandas Timestamp to native datetime
-    # (Produced by pandas datetime Series via various conversion paths.)
-    if pd is not None and isinstance(v, pd.Timestamp):
-        try:
-            return v.to_pydatetime()
-        except Exception:
-            pass
-
-    # 10. Fallthrough: try .tolist() conversion
-    if hasattr(v, "tolist"):
-        try:
-            result = v.tolist()
-            return clean_nulls(result)
-        except Exception:
-            pass
-
-    # 11. Final: try to_plotly_json() hook
-    if hasattr(v, "to_plotly_json"):
-        try:
-            result = v.to_plotly_json()
-            return clean_nulls(result)
-        except Exception:
-            pass
-
-    return v
-
-
-def _reshape_list(flat_list, shape):
-    """Reshape a flat list into a nested list with the given numpy-style shape."""
-    if not shape:
-        return flat_list[0] if flat_list else None
-    if len(shape) == 1:
-        return list(flat_list)
-    stride = 1
-    for s in shape[1:]:
-        stride *= s
-    return [
-        _reshape_list(flat_list[i * stride:(i + 1) * stride], shape[1:])
-        for i in range(shape[0])
-    ]
 
 
 # back-port of fullmatch from Py3.4+
@@ -369,15 +29,9 @@ def to_non_numpy_type(np, v):
     Python datetimes only support microsecond precision. So we cast
     datetime64[ns] to datetime64[us] to ensure it remains a datetime.
 
-    Null-like values (NaN, NaT, pd.NA, np.ma.masked) are converted to None.
-
     Should only be used in contexts where we already know `np` is defined.
     """
-    if is_null_value(v):
-        return None
     if hasattr(v, "dtype") and v.dtype == np.dtype("datetime64[ns]"):
-        if np.isnat(v):
-            return None
         return v.astype("datetime64[us]").item()
     return v.item()
 
@@ -385,10 +39,6 @@ def to_non_numpy_type(np, v):
 # Utility functions
 # -----------------
 def to_scalar_or_list(v):
-    # Handle null-like scalars first
-    if is_null_value(v):
-        return None
-
     # Handle the case where 'v' is a non-native scalar-like type,
     # such as numpy.float32. Without this case, the object might be
     # considered numpy-convertable and therefore promoted to a
@@ -405,44 +55,9 @@ def to_scalar_or_list(v):
     elif np and isinstance(v, np.ndarray):
         if v.ndim == 0:
             return to_non_numpy_type(np, v)
-        # Clean nulls in numpy arrays before iterating
-        cleaned = _clean_array_nulls(v)
-        return [to_scalar_or_list(e) for e in cleaned]
+        return [to_scalar_or_list(e) for e in v]
     elif pd and isinstance(v, (pd.Series, pd.Index)):
-        orig_dtype = str(v.dtype)
-        nullable_extension = (
-            orig_dtype.startswith(("Int", "UInt", "Float"))
-            or orig_dtype in ("string", "boolean")
-        )
-        if nullable_extension:
-            v_list = []
-            for val in v:
-                if pd.isna(val):
-                    v_list.append(None)
-                else:
-                    if orig_dtype.startswith(("Int", "UInt")):
-                        v_list.append(int(val))
-                    elif orig_dtype.startswith("Float"):
-                        v_list.append(float(val))
-                    elif orig_dtype == "boolean":
-                        v_list.append(bool(val))
-                    elif orig_dtype == "string":
-                        v_list.append(str(val))
-                    else:
-                        v_list.append(val)
-            return v_list
-        try:
-            if hasattr(v, "to_numpy"):
-                np_arr = v.to_numpy()
-            else:
-                np_arr = np.array(v)
-            cleaned = _clean_array_nulls(np_arr)
-            if cleaned.dtype.kind in ("u", "i", "f"):
-                return cleaned.tolist()
-            else:
-                return [to_scalar_or_list(e) for e in cleaned]
-        except Exception:
-            return [to_scalar_or_list(e) for e in v]
+        return [to_scalar_or_list(e) for e in v]
     elif is_numpy_convertable(v):
         return to_scalar_or_list(np.array(v))
     else:
@@ -473,29 +88,6 @@ def copy_to_readonly_numpy_array(v, kind=None, force_numeric=False):
 
     assert np is not None
 
-    # Special-case numpy MaskedArray: convert masked positions to None
-    # in an object-dtype array.  We cannot use .filled(None) because
-    # numpy replaces None with the dtype's default fill_value for
-    # numeric dtypes (e.g. 1e+20 for float64).  Instead, build an
-    # object array manually so that null values are never encoded via
-    # typed-array (b64 binary) downstream.
-    if isinstance(v, np.ma.MaskedArray):
-        mask = np.ma.getmaskarray(v)
-        data = np.asarray(v)
-        if mask.any():
-            flat_data = data.ravel()
-            flat_mask = mask.ravel()
-            obj_flat = np.empty(flat_data.shape, dtype=object)
-            for i in range(flat_data.size):
-                if flat_mask[i]:
-                    obj_flat[i] = None
-                else:
-                    val = flat_data[i]
-                    obj_flat[i] = val.item() if hasattr(val, "item") else val
-            v = obj_flat.reshape(data.shape)
-        else:
-            v = data
-
     # ### Process kind ###
     if not kind:
         kind = ()
@@ -512,37 +104,6 @@ def copy_to_readonly_numpy_array(v, kind=None, force_numeric=False):
         "f": "float64",
         "O": "object",
     }
-
-    # Special-case pandas extension dtypes (nullable Int64, Float64, string, boolean)
-    # Narwhals.to_numpy() converts Int64/Float64 to float64+NaN, losing integer type info.
-    # We iterate the original Series directly, preserving the original Python types
-    # (int, float, bool, str) and using None for null values.
-    pd = get_module("pandas", should_load=False)
-    if pd is not None and isinstance(v, (pd.Series, pd.Index)):
-        orig_dtype = str(v.dtype)
-        # Check for nullable extension dtypes: Int*, UInt*, Float*, string, boolean
-        nullable_extension = (
-            orig_dtype.startswith(("Int", "UInt", "Float"))
-            or orig_dtype in ("string", "boolean")
-        )
-        if nullable_extension:
-            v_np = np.empty(len(v), dtype=object)
-            for i, val in enumerate(v):
-                if pd.isna(val):
-                    v_np[i] = None
-                else:
-                    # Preserve the original Python scalar type
-                    if orig_dtype in ("string",):
-                        v_np[i] = str(val)
-                    elif orig_dtype == "boolean":
-                        v_np[i] = bool(val)
-                    elif orig_dtype.startswith(("Int", "UInt")):
-                        v_np[i] = int(val)
-                    elif orig_dtype.startswith("Float"):
-                        v_np[i] = float(val)
-                    else:
-                        v_np[i] = val
-            v = v_np
 
     # With `pass_through=True`, the original object will be returned if unable to convert
     # to a Narwhals DataFrame or Series.
@@ -611,20 +172,9 @@ def copy_to_readonly_numpy_array(v, kind=None, force_numeric=False):
         if new_v.dtype.kind not in ["u", "i", "f", "O", "M"]:
             new_v = np.array(v, dtype="object")
 
-    # Clean null-like values (pd.NA, NaT, np.ma.masked, etc.) so they
-    # become either None (for object/datetime arrays) or remain as
-    # np.nan (for numeric float arrays)
-    # -----------------------------------------------------------
-    cleaned = _clean_array_nulls(new_v)
-    if cleaned is not new_v:
-        new_v = cleaned
-
     # Set new array to be read-only
     # -----------------------------
-    try:
-        new_v.flags["WRITEABLE"] = False
-    except Exception:
-        pass
+    new_v.flags["WRITEABLE"] = False
 
     return new_v
 

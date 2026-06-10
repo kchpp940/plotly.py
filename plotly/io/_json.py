@@ -6,7 +6,7 @@ from pathlib import Path
 
 from plotly.io._utils import validate_coerce_fig_to_dict, validate_coerce_output_type
 from _plotly_utils.optional_imports import get_module
-from _plotly_utils.basevalidators import ImageUriValidator, clean_nulls
+from _plotly_utils.basevalidators import ImageUriValidator
 
 
 # Orca configuration class
@@ -475,36 +475,6 @@ def read_json(file, output_type="Figure", skip_invalid=False, engine=None):
     )
 
 
-def _clean_nulls_in_list_recursive(obj, np=None, pd=None):
-    """
-    Deprecated: use clean_nulls() from _plotly_utils.basevalidators instead.
-    Kept here temporarily for backward-compatible callers.
-    """
-    return clean_nulls(obj)
-
-
-def _format_datetimes_in_structure(obj, datetime_allowed):
-    """
-    Walk a structure produced by clean_nulls() and convert any
-    datetime/date objects to ISO format strings if datetime_allowed=False.
-    When datetime_allowed=True, datetimes are passed through unchanged.
-    """
-    if datetime_allowed:
-        return obj
-    if isinstance(obj, (list, tuple)):
-        return [_format_datetimes_in_structure(x, datetime_allowed) for x in obj]
-    if isinstance(obj, dict):
-        return {
-            k: _format_datetimes_in_structure(v, datetime_allowed)
-            for k, v in obj.items()
-        }
-    if obj is None:
-        return None
-    if isinstance(obj, (datetime.datetime, datetime.date)):
-        return obj.isoformat()
-    return obj
-
-
 def clean_to_json_compatible(obj, **kwargs):
     # Try handling value as a scalar value that we have a conversion for.
     # Return immediately if we know we've hit a primitive value
@@ -540,24 +510,19 @@ def clean_to_json_compatible(obj, **kwargs):
     # numpy
     if np is not None:
         if obj is np.ma.core.masked:
-            return None
+            return float("nan")
         elif isinstance(obj, np.ndarray):
             if numpy_allowed and obj.dtype.kind in ("b", "i", "u", "f"):
-                # Fast path for orjson: pure numeric arrays with no nulls
-                # may be passed as contiguous memory for binary encoding.
-                # Any null (NaN) must go through clean_nulls -> list of None.
-                if obj.dtype.kind == "f" and np.any(np.isnan(obj)):
-                    return clean_nulls(obj)
                 return np.ascontiguousarray(obj)
-            # All other ndarray kinds: use unified clean_nulls (handles
-            # datetime64, object, unicode, MaskedArray via subclass check)
-            result = clean_nulls(obj)
-            return _format_datetimes_in_structure(result, datetime_allowed)
+            elif obj.dtype.kind == "M":
+                # datetime64 array
+                return np.datetime_as_string(obj).tolist()
+            elif obj.dtype.kind == "U":
+                return obj.tolist()
+            elif obj.dtype.kind == "O":
+                # Treat object array as a lists, continue processing
+                obj = obj.tolist()
         elif isinstance(obj, np.datetime64):
-            if np.isnat(obj):
-                return None
-            if datetime_allowed:
-                return obj.item()
             return str(obj)
 
     # pandas
@@ -565,19 +530,26 @@ def clean_to_json_compatible(obj, **kwargs):
         if obj is pd.NaT or obj is pd.NA:
             return None
         elif isinstance(obj, (pd.Series, pd.DatetimeIndex)):
-            # Pandas series: try orjson fast-path first for pure numeric
-            # without nulls, otherwise use unified clean_nulls.
             if numpy_allowed and obj.dtype.kind in ("b", "i", "u", "f"):
-                # Need to check for NaN in float series; Int64 nullables have
-                # already been handled via their extension dtype.kind check
-                # (Int64 dtype.kind is 'O' via narwhals/numpy, so they skip here).
-                if obj.dtype.kind == "f" and obj.isnull().any():
-                    cleaned = clean_nulls(obj)
-                    return _format_datetimes_in_structure(cleaned, datetime_allowed)
                 return np.ascontiguousarray(obj.values)
-            else:
-                cleaned = clean_nulls(obj)
-                return _format_datetimes_in_structure(cleaned, datetime_allowed)
+            elif obj.dtype.kind == "M":
+                if isinstance(obj, pd.Series):
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("ignore", FutureWarning)
+                        # Series.dt.to_pydatetime will return Index[object]
+                        # https://github.com/pandas-dev/pandas/pull/52459
+                        dt_values = np.array(obj.dt.to_pydatetime()).tolist()
+                else:  # DatetimeIndex
+                    dt_values = obj.to_pydatetime().tolist()
+
+                if not datetime_allowed:
+                    # Note: We don't need to handle dropping timezones here because
+                    # numpy's datetime64 doesn't support them and pandas's tz_localize
+                    # above drops them.
+                    for i in range(len(dt_values)):
+                        dt_values[i] = dt_values[i].isoformat()
+
+                return dt_values
 
     # datetime and date
     try:
@@ -595,11 +567,9 @@ def clean_to_json_compatible(obj, **kwargs):
     elif isinstance(obj, datetime.datetime):
         return obj
 
-    # Try .tolist() convertible, clean nulls inside via unified API
+    # Try .tolist() convertible, do not recurse inside
     try:
-        to_list_result = obj.tolist()
-        cleaned = clean_nulls(to_list_result)
-        return _format_datetimes_in_structure(cleaned, datetime_allowed)
+        return obj.tolist()
     except AttributeError:
         pass
 
