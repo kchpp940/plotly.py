@@ -23896,6 +23896,8 @@ class Figure(BaseFigure):
         col=None,
         secondary_y=None,
         exclude_empty_subplots=None,
+        _precomputed_xref=None,
+        _precomputed_yref=None,
         **kwargs,
     ) -> "Figure":
         """
@@ -24258,6 +24260,8 @@ class Figure(BaseFigure):
             col=col,
             secondary_y=secondary_y,
             exclude_empty_subplots=exclude_empty_subplots,
+            _precomputed_xref=_precomputed_xref,
+            _precomputed_yref=_precomputed_yref,
         )
 
     def select_layout_images(self, selector=None, row=None, col=None, secondary_y=None):
@@ -25096,6 +25100,8 @@ class Figure(BaseFigure):
         col=None,
         secondary_y=None,
         exclude_empty_subplots=None,
+        _precomputed_xref=None,
+        _precomputed_yref=None,
         **kwargs,
     ) -> "Figure":
         """
@@ -25397,4 +25403,6 @@ class Figure(BaseFigure):
             col=col,
             secondary_y=secondary_y,
             exclude_empty_subplots=exclude_empty_subplots,
+            _precomputed_xref=_precomputed_xref,
+            _precomputed_yref=_precomputed_yref,
         )
