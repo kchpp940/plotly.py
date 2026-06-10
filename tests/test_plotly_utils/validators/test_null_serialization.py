@@ -104,11 +104,19 @@ class TestNullHelpers:
         assert cleaned[1] is None
         assert cleaned[0] == 1.0
         assert cleaned[2] == 3.0
+        assert isinstance(cleaned[0], float)
+        assert isinstance(cleaned[2], float)
 
     def test_clean_array_nulls_float_no_nan_unchanged(self):
         arr = np.array([1.0, 2.0, 3.0])
         cleaned = _clean_array_nulls(arr)
         assert cleaned is arr
+
+    def test_clean_array_nulls_int_no_nan_unchanged(self):
+        arr = np.array([1, 2, 3])
+        cleaned = _clean_array_nulls(arr)
+        assert cleaned is arr
+        assert cleaned.dtype.kind in ("i", "u")
 
 
 # =============================================================================
@@ -122,12 +130,20 @@ class TestCopyToReadonlyNullHandling:
         assert not result.flags["WRITEABLE"]
         assert result[1] is None
         assert result[3] is None
+        assert isinstance(result[0], int)
+        assert isinstance(result[2], int)
+        assert result[0] == 1
+        assert result[2] == 3
 
     def test_float64_nullable_series(self):
         s = pd.Series([1.0, pd.NA, 3.0], dtype="Float64")
         result = copy_to_readonly_numpy_array(s)
         assert result.dtype == object
         assert result[1] is None
+        assert isinstance(result[0], float)
+        assert isinstance(result[2], float)
+        assert result[0] == 1.0
+        assert result[2] == 3.0
 
     def test_string_nullable_series(self):
         s = pd.Series(["a", pd.NA, "c"], dtype="string")
@@ -136,6 +152,7 @@ class TestCopyToReadonlyNullHandling:
         assert result[1] is None
         assert result[0] == "a"
         assert result[2] == "c"
+        assert isinstance(result[0], str)
 
     def test_boolean_nullable_series(self):
         s = pd.Series([True, pd.NA, False], dtype="boolean")
@@ -144,6 +161,8 @@ class TestCopyToReadonlyNullHandling:
         assert result[1] is None
         assert result[0] is True
         assert result[2] is False
+        assert isinstance(result[0], bool)
+        assert isinstance(result[2], bool)
 
     def test_datetime_with_nat(self):
         s = pd.Series(
@@ -158,13 +177,34 @@ class TestCopyToReadonlyNullHandling:
         result = copy_to_readonly_numpy_array(arr)
         assert result.dtype == object
         assert result[1] is None
+        assert isinstance(result[0], int)
+        assert isinstance(result[2], int)
+        assert result[0] == 1
+        assert result[2] == 3
 
     def test_np_masked_array_float(self):
         data = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
         masked = np.ma.masked_where(data == 5.0, data)
         result = copy_to_readonly_numpy_array(masked)
         assert result.dtype == object
+        assert result.shape == (2, 3)
         assert result[1, 1] is None
+        assert isinstance(result[0, 0], float)
+        assert isinstance(result[1, 0], float)
+        assert result[0, 0] == 1.0
+        assert result[1, 0] == 4.0
+
+    def test_np_masked_array_2d_shape_preserved(self):
+        data = np.array([[1, 2, 3], [4, 5, 6], [7, 8, 9]], dtype=float)
+        masked = np.ma.masked_where(data % 3 == 0, data)
+        result = copy_to_readonly_numpy_array(masked)
+        assert result.dtype == object
+        assert result.shape == (3, 3)
+        assert result[0, 2] is None
+        assert result[1, 2] is None
+        assert result[2, 2] is None
+        assert isinstance(result[0, 0], float)
+        assert result[0, 0] == 1.0
 
     def test_object_array_pd_na(self):
         arr = np.array([1, pd.NA, 3], dtype=object)
@@ -263,6 +303,25 @@ class TestScatterNullsEndToEnd:
         assert isinstance(x, list), "Array with nulls must not be b64 encoded"
         assert x[1] is None
         assert x[3] is None
+        assert isinstance(x[0], int), "Int64 non-null must be JSON int, not float"
+        assert isinstance(x[2], int)
+        assert x[0] == 1
+        assert x[2] == 3
+
+    def test_scatter_float64_nullable_series_json_roundtrip(self):
+        s = pd.Series([1.5, pd.NA, 3.5], dtype="Float64")
+        fig = go.Figure(go.Scatter(x=s, y=s, mode="markers"))
+
+        json_str = fig.to_json(engine="json")
+        parsed = json.loads(json_str)
+
+        x = parsed["data"][0]["x"]
+        assert isinstance(x, list), "Array with nulls must not be b64 encoded"
+        assert x[1] is None
+        assert isinstance(x[0], float), "Float64 non-null must be JSON float"
+        assert isinstance(x[2], float)
+        assert x[0] == 1.5
+        assert x[2] == 3.5
 
     def test_scatter_datetime_nat_json_roundtrip(self):
         dates = pd.to_datetime(
@@ -328,7 +387,13 @@ class TestHeatmapNullsEndToEnd:
         z = parsed["data"][0]["z"]
 
         assert isinstance(z, list), "Array with masked values must not be b64 encoded"
+        assert len(z) == 3
+        assert len(z[0]) == 3
         assert z[1][1] is None
+        assert isinstance(z[0][0], float), "Non-null values must preserve float type"
+        assert isinstance(z[0][1], float)
+        assert z[0][0] == 1.0
+        assert z[0][1] == 2.0
 
 
 class TestTableNullsEndToEnd:

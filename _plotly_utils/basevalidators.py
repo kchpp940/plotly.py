@@ -308,6 +308,37 @@ def copy_to_readonly_numpy_array(v, kind=None, force_numeric=False):
         "O": "object",
     }
 
+    # Special-case pandas extension dtypes (nullable Int64, Float64, string, boolean)
+    # Narwhals.to_numpy() converts Int64/Float64 to float64+NaN, losing integer type info.
+    # We iterate the original Series directly, preserving the original Python types
+    # (int, float, bool, str) and using None for null values.
+    pd = get_module("pandas", should_load=False)
+    if pd is not None and isinstance(v, (pd.Series, pd.Index)):
+        orig_dtype = str(v.dtype)
+        # Check for nullable extension dtypes: Int*, UInt*, Float*, string, boolean
+        nullable_extension = (
+            orig_dtype.startswith(("Int", "UInt", "Float"))
+            or orig_dtype in ("string", "boolean")
+        )
+        if nullable_extension:
+            v_np = np.empty(len(v), dtype=object)
+            for i, val in enumerate(v):
+                if pd.isna(val):
+                    v_np[i] = None
+                else:
+                    # Preserve the original Python scalar type
+                    if orig_dtype in ("string",):
+                        v_np[i] = str(val)
+                    elif orig_dtype == "boolean":
+                        v_np[i] = bool(val)
+                    elif orig_dtype.startswith(("Int", "UInt")):
+                        v_np[i] = int(val)
+                    elif orig_dtype.startswith("Float"):
+                        v_np[i] = float(val)
+                    else:
+                        v_np[i] = val
+            v = v_np
+
     # With `pass_through=True`, the original object will be returned if unable to convert
     # to a Narwhals DataFrame or Series.
     v = nw.from_native(v, allow_series=True, pass_through=True)
