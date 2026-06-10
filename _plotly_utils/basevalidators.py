@@ -1,4 +1,5 @@
 import base64
+import math
 import numbers
 import textwrap
 import uuid
@@ -10,6 +11,116 @@ import sys
 import narwhals.stable.v1 as nw
 
 from _plotly_utils.optional_imports import get_module
+
+
+def is_null_value(v):
+    """
+    Check whether a value represents a null/missing value that should be
+    serialized as JSON null (None in Python).
+
+    Handles: None, float('nan'), numpy.nan, pandas.NA, pandas.NaT,
+    numpy.datetime64('NaT'), numpy.ma.core.masked (scalar sentinel),
+    and numpy scalar float NaN / int 'NaT' representations.
+    """
+    if v is None:
+        return True
+
+    np = get_module("numpy", should_load=False)
+    pd = get_module("pandas", should_load=False)
+
+    if pd is not None:
+        if v is pd.NA or v is pd.NaT:
+            return True
+
+    if np is not None:
+        if v is np.ma.core.masked:
+            return True
+        # NaT as a scalar
+        if isinstance(v, np.datetime64):
+            if v.dtype.kind == "M" and np.isnat(v):
+                return True
+        # NaN as a floating point scalar or native float
+        if isinstance(v, (float, np.floating)):
+            try:
+                if math.isnan(v):
+                    return True
+            except (TypeError, ValueError):
+                pass
+
+    return False
+
+
+def _clean_null_scalar(v):
+    """
+    Convert a single null-like value to Python None, otherwise return v
+    unchanged (except for pandas extension scalars which are converted to
+    native Python types).
+    """
+    if is_null_value(v):
+        return None
+    return v
+
+
+def _clean_array_nulls(np_arr):
+    """
+    Clean a numpy array in-place (or return a copy if needed) so that all
+    null-like values become either:
+      - None for object arrays / datetime arrays (so they serialize as null)
+      - np.nan for numeric float arrays (native JSON path handles them)
+
+    The dtype of the returned array is preserved when possible.
+    """
+    import math as _math
+
+    np = get_module("numpy", should_load=False)
+    if np is None or not isinstance(np_arr, np.ndarray):
+        return np_arr
+
+    pd = get_module("pandas", should_load=False)
+
+    kind = np_arr.dtype.kind
+
+    # Datetime: NaT -> object array with None in NaT slots
+    if kind == "M":
+        if np.any(np.isnat(np_arr)):
+            flat = np_arr.ravel()
+            result = np.empty(flat.shape, dtype=object)
+            for i in range(flat.size):
+                val = flat[i]
+                if np.isnat(val):
+                    result[i] = None
+                else:
+                    # Convert numpy datetime64 scalar to native Python datetime
+                    try:
+                        result[i] = val.item()
+                    except Exception:
+                        result[i] = val
+            result = result.reshape(np_arr.shape)
+            result.flags["WRITEABLE"] = False
+            return result
+        return np_arr
+
+    # Object dtype: replace pd.NA / masked / NaN float / NaT with None
+    if kind == "O":
+        needs_copy = False
+        flat = np_arr.ravel()
+        for i in range(flat.size):
+            v = flat[i]
+            if is_null_value(v):
+                needs_copy = True
+                break
+        if needs_copy:
+            result = np_arr.copy()
+            flat_res = result.ravel()
+            for i in range(flat_res.size):
+                if is_null_value(flat_res[i]):
+                    flat_res[i] = None
+            result.flags["WRITEABLE"] = False
+            return result
+        return np_arr
+
+    # Numeric float: keep np.nan as-is (PlotlyJSONEncoder converts to null)
+    return np_arr
 
 
 # back-port of fullmatch from Py3.4+
@@ -29,9 +140,15 @@ def to_non_numpy_type(np, v):
     Python datetimes only support microsecond precision. So we cast
     datetime64[ns] to datetime64[us] to ensure it remains a datetime.
 
+    Null-like values (NaN, NaT, pd.NA, np.ma.masked) are converted to None.
+
     Should only be used in contexts where we already know `np` is defined.
     """
+    if is_null_value(v):
+        return None
     if hasattr(v, "dtype") and v.dtype == np.dtype("datetime64[ns]"):
+        if np.isnat(v):
+            return None
         return v.astype("datetime64[us]").item()
     return v.item()
 
@@ -39,6 +156,10 @@ def to_non_numpy_type(np, v):
 # Utility functions
 # -----------------
 def to_scalar_or_list(v):
+    # Handle null-like scalars first
+    if is_null_value(v):
+        return None
+
     # Handle the case where 'v' is a non-native scalar-like type,
     # such as numpy.float32. Without this case, the object might be
     # considered numpy-convertable and therefore promoted to a
@@ -55,9 +176,27 @@ def to_scalar_or_list(v):
     elif np and isinstance(v, np.ndarray):
         if v.ndim == 0:
             return to_non_numpy_type(np, v)
-        return [to_scalar_or_list(e) for e in v]
+        # Clean nulls in numpy arrays before iterating
+        cleaned = _clean_array_nulls(v)
+        return [to_scalar_or_list(e) for e in cleaned]
     elif pd and isinstance(v, (pd.Series, pd.Index)):
-        return [to_scalar_or_list(e) for e in v]
+        # For pandas Series/Index, convert via numpy with null cleaning
+        # to avoid pandas extension type scalar issues (string repr of scalars)
+        try:
+            if hasattr(v, "to_numpy"):
+                np_arr = v.to_numpy()
+            else:
+                np_arr = np.array(v)
+            cleaned = _clean_array_nulls(np_arr)
+            if cleaned.dtype.kind in ("u", "i", "f"):
+                return cleaned.tolist()
+            elif cleaned.dtype.kind == "M":
+                # datetime with NaT already cleaned to object array
+                return [to_scalar_or_list(e) for e in cleaned]
+            else:
+                return [to_scalar_or_list(e) for e in cleaned]
+        except Exception:
+            return [to_scalar_or_list(e) for e in v]
     elif is_numpy_convertable(v):
         return to_scalar_or_list(np.array(v))
     else:
@@ -87,6 +226,18 @@ def copy_to_readonly_numpy_array(v, kind=None, force_numeric=False):
     np = get_module("numpy")
 
     assert np is not None
+
+    # Special-case numpy MaskedArray: convert masked values to NaN/None
+    # before any further processing. Otherwise the mask info is lost and
+    # underlying values leak through.
+    if isinstance(v, np.ma.MaskedArray):
+        if v.dtype.kind in ("u", "i"):
+            # Integer masked arrays can't hold NaN; promote to float first
+            v = v.astype(np.float64).filled(np.nan)
+        elif v.dtype.kind == "f":
+            v = v.filled(np.nan)
+        else:
+            v = v.filled(None)
 
     # ### Process kind ###
     if not kind:
@@ -172,9 +323,20 @@ def copy_to_readonly_numpy_array(v, kind=None, force_numeric=False):
         if new_v.dtype.kind not in ["u", "i", "f", "O", "M"]:
             new_v = np.array(v, dtype="object")
 
+    # Clean null-like values (pd.NA, NaT, np.ma.masked, etc.) so they
+    # become either None (for object/datetime arrays) or remain as
+    # np.nan (for numeric float arrays)
+    # -----------------------------------------------------------
+    cleaned = _clean_array_nulls(new_v)
+    if cleaned is not new_v:
+        new_v = cleaned
+
     # Set new array to be read-only
     # -----------------------------
-    new_v.flags["WRITEABLE"] = False
+    try:
+        new_v.flags["WRITEABLE"] = False
+    except Exception:
+        pass
 
     return new_v
 

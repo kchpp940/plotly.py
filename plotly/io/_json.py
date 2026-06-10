@@ -475,6 +475,32 @@ def read_json(file, output_type="Figure", skip_invalid=False, engine=None):
     )
 
 
+def _clean_nulls_in_list_recursive(obj, np=None, pd=None):
+    """Recursively clean null-like values inside nested lists (from tolist())."""
+    if isinstance(obj, list):
+        return [_clean_nulls_in_list_recursive(x, np=np, pd=pd) for x in obj]
+    if obj is None:
+        return None
+    if pd is not None:
+        if obj is pd.NA or obj is pd.NaT:
+            return None
+    if np is not None:
+        if obj is np.ma.core.masked:
+            return None
+        if isinstance(obj, np.datetime64):
+            if np.isnat(obj):
+                return None
+        if isinstance(obj, (float, np.floating)):
+            try:
+                import math
+
+                if math.isnan(obj):
+                    return None
+            except (TypeError, ValueError):
+                pass
+    return obj
+
+
 def clean_to_json_compatible(obj, **kwargs):
     # Try handling value as a scalar value that we have a conversion for.
     # Return immediately if we know we've hit a primitive value
@@ -510,19 +536,36 @@ def clean_to_json_compatible(obj, **kwargs):
     # numpy
     if np is not None:
         if obj is np.ma.core.masked:
-            return float("nan")
+            return None
         elif isinstance(obj, np.ndarray):
             if numpy_allowed and obj.dtype.kind in ("b", "i", "u", "f"):
                 return np.ascontiguousarray(obj)
             elif obj.dtype.kind == "M":
-                # datetime64 array
-                return np.datetime_as_string(obj).tolist()
+                # datetime64 array: convert strings, then replace 'NaT' entries with None
+                strings = np.datetime_as_string(obj)
+                result = strings.tolist()
+
+                def _replace_nat_list(lst):
+                    if isinstance(lst, list):
+                        return [_replace_nat_list(x) for x in lst]
+                    elif lst == "NaT":
+                        return None
+                    else:
+                        return lst
+
+                if isinstance(result, list):
+                    return _replace_nat_list(result)
+                elif result == "NaT":
+                    return None
+                return result
             elif obj.dtype.kind == "U":
-                return obj.tolist()
+                return _clean_nulls_in_list_recursive(obj.tolist(), np=np, pd=pd)
             elif obj.dtype.kind == "O":
                 # Treat object array as a lists, continue processing
-                obj = obj.tolist()
+                obj = _clean_nulls_in_list_recursive(obj.tolist(), np=np, pd=pd)
         elif isinstance(obj, np.datetime64):
+            if np.isnat(obj):
+                return None
             return str(obj)
 
     # pandas
@@ -542,14 +585,27 @@ def clean_to_json_compatible(obj, **kwargs):
                 else:  # DatetimeIndex
                     dt_values = obj.to_pydatetime().tolist()
 
-                if not datetime_allowed:
-                    # Note: We don't need to handle dropping timezones here because
-                    # numpy's datetime64 doesn't support them and pandas's tz_localize
-                    # above drops them.
-                    for i in range(len(dt_values)):
-                        dt_values[i] = dt_values[i].isoformat()
+                # Clean None (from NaT) entries before formatting
+                def _clean_dt_and_format(elem):
+                    if isinstance(elem, list):
+                        return [_clean_dt_and_format(x) for x in elem]
+                    if elem is None or elem is pd.NaT:
+                        return None
+                    if not datetime_allowed:
+                        return elem.isoformat()
+                    return elem
 
-                return dt_values
+                return [_clean_dt_and_format(v) for v in dt_values]
+            else:
+                # Other pandas series types: go via to_numpy and clean
+                try:
+                    if hasattr(obj, "to_numpy"):
+                        np_arr = obj.to_numpy()
+                    else:
+                        np_arr = np.array(obj)
+                    obj = _clean_nulls_in_list_recursive(np_arr.tolist(), np=np, pd=pd)
+                except Exception:
+                    pass
 
     # datetime and date
     try:
@@ -567,9 +623,10 @@ def clean_to_json_compatible(obj, **kwargs):
     elif isinstance(obj, datetime.datetime):
         return obj
 
-    # Try .tolist() convertible, do not recurse inside
+    # Try .tolist() convertible, clean nulls inside
     try:
-        return obj.tolist()
+        to_list_result = obj.tolist()
+        return _clean_nulls_in_list_recursive(to_list_result, np=np, pd=pd)
     except AttributeError:
         pass
 
