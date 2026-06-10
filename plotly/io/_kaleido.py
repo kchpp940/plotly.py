@@ -458,9 +458,13 @@ def to_image(
     bytes
         The image data
     """
-    # Emit deprecation warnings (unless caller has already handled them)
+    # Step 1: Emit deprecation warnings (pure local, no external deps)
     if not _skip_deprecation_warnings:
         _handle_deprecation_warnings(engine, stacklevel=2)
+
+    # Step 2: Validate and normalize format FIRST (pure local operation)
+    # This ensures format errors are shown before any installation hints
+    format = validate_coerce_format(format)
 
     # Handle engine selection
     if engine is None:
@@ -492,23 +496,20 @@ def to_image(
     elif engine != "kaleido":
         raise ValueError(f"Invalid image export engine specified: {repr(engine)}")
 
-    # Check Kaleido availability
+    # Step 3: Check Kaleido availability (now format is already validated)
     _ensure_kaleido_available()
 
-    # Validate and normalize format
-    format = validate_coerce_format(format)
-
-    # Convert figure to dict (and validate if requested)
+    # Step 4: Convert figure to dict (and validate if requested)
     fig_dict = validate_coerce_fig_to_dict(fig, validate)
 
-    # Apply defaults consistently
+    # Step 5: Apply defaults consistently
     resolved_format = format or defaults.default_format
     resolved_scale = scale or defaults.default_scale
     resolved_width, resolved_height = _resolve_image_dimensions(fig_dict, width, height)
 
-    # Request image bytes
+    # Step 6: Request image bytes (v0/v1 branching + Chrome detection)
     if kaleido_major() > 0:
-        # Kaleido v1
+        # Kaleido v1 - check EPS support before invoking
         if resolved_format == "eps":
             raise ValueError(EPS_NOT_SUPPORTED_V1_MSG)
 
@@ -766,10 +767,7 @@ def write_images(
     -------
     None
     """
-    # Check Kaleido v1 availability with consistent error message
-    _ensure_kaleido_v1()
-
-    # Broadcast arguments into correct format for passing to Kaleido
+    # Step 1: Broadcast arguments (pure local, no external deps)
     arg_dicts = broadcast_args_to_dicts(
         fig=fig,
         file=file,
@@ -780,22 +778,25 @@ def write_images(
         validate=validate,
     )
 
-    # For each dict:
-    #   - convert figures to dicts (and validate if requested)
-    #   - try to cast `file` as a Path object
-    #   - validate and normalize format
-    #   - resolve width/height with layout/template fallback
+    # Step 2: Validate and normalize all formats FIRST (pure local operation)
+    # This ensures format errors are shown before any installation hints
     for d in arg_dicts:
-        d["fig"] = validate_coerce_fig_to_dict(d["fig"], d["validate"])
         d["file"] = as_path_object(d["file"])
         d["format"] = validate_coerce_format(
             infer_format(d["file"], d["format"])
         )
+
+    # Step 3: Check Kaleido v1 availability (now format is already validated)
+    _ensure_kaleido_v1()
+
+    # Step 4: Convert figures to dicts and resolve dimensions
+    for d in arg_dicts:
+        d["fig"] = validate_coerce_fig_to_dict(d["fig"], d["validate"])
         d["width"], d["height"] = _resolve_image_dimensions(
             d["fig"], d["width"], d["height"]
         )
 
-    # Reshape arg_dicts into correct format for passing to Kaleido
+    # Step 5: Reshape for Kaleido and apply defaults
     kaleido_specs = [
         dict(
             fig=d["fig"],
@@ -811,6 +812,7 @@ def write_images(
         for d in arg_dicts
     ]
 
+    # Step 6: Call Kaleido (Chrome detection is the last check)
     from kaleido.errors import ChromeNotFoundError
 
     try:
@@ -897,6 +899,7 @@ def plotly_get_chrome() -> None:
     When running from the command line, use the command `plotly_get_chrome`;
     when calling from Python code, use `plotly.io.get_chrome()`.
     """
+    import sys
 
     usage = """
 Usage: plotly_get_chrome [-y] [--path PATH]
@@ -909,13 +912,13 @@ Options:
   --help  Show this message and exit.
 """
 
-    # Check Kaleido v1 availability with consistent error message
-    _ensure_kaleido_v1()
+    # Parse arguments first (so --help works even without Kaleido)
+    cli_args = sys.argv.copy()
 
-    # Handle command line arguments
-    import sys
-
-    cli_args = sys.argv
+    # Handle --help first
+    if "--help" in cli_args or "-h" in cli_args:
+        print(usage)
+        sys.exit(0)
 
     # Handle "-y" flag
     cli_yes = "-y" in cli_args
@@ -931,12 +934,23 @@ Options:
             cli_args.remove("--path")
             cli_args.remove(chrome_install_path)
             chrome_install_path = Path(chrome_install_path)
+        else:
+            print(usage, file=sys.stderr)
+            sys.exit(1)
 
     # If any arguments remain, command syntax was incorrect -- print usage and exit
     if len(cli_args) > 1:
-        print(usage)
+        print(usage, file=sys.stderr)
         sys.exit(1)
 
+    # Check Kaleido v1 availability (after arg parsing, with CLI-friendly error)
+    try:
+        _ensure_kaleido_v1()
+    except ValueError as e:
+        print(f"Error: {e}", file=sys.stderr)
+        sys.exit(1)
+
+    # Confirmation prompt
     if not cli_yes:
         print(
             f"""
@@ -947,8 +961,15 @@ Chrome will be installed at: {chrome_install_path}"""
         if not response or response[0].lower() != "y":
             print("Cancelled")
             return
+
+    # Install Chrome
     print("Installing Chrome for Plotly...")
-    exe_path = get_chrome(chrome_install_path)
+    try:
+        exe_path = get_chrome(chrome_install_path)
+    except Exception as e:
+        print(f"Error installing Chrome: {e}", file=sys.stderr)
+        sys.exit(1)
+
     print("Chrome installed successfully.")
     print(f"The Chrome executable is now located at: {exe_path}")
 
