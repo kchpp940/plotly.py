@@ -4026,6 +4026,66 @@ Invalid property path '{key_path_str}' for layout
 
         return index_list[0]
 
+    def _resolve_subplot_axis_refs(
+        self, row, col, secondary_y=False, user_yref=None
+    ):
+        """
+        Resolve subplot (row, col, secondary_y) to (xref, yref) axis reference
+        strings.  Returns None if the subplot is empty.
+
+        This is the single source of truth for mapping subplot coordinates to
+        axis references, used by both shape and annotation placement so they
+        can never diverge.
+
+        If user_yref is provided and is not a generic/paper/domain reference,
+        the yref from the grid is ignored in favor of the user-supplied value.
+        """
+        grid_ref = self._validate_get_grid_ref()
+        if row > len(grid_ref):
+            raise IndexError(
+                "row index %d out-of-bounds, row index must be between 1 and %d, inclusive."
+                % (row, len(grid_ref))
+            )
+        if col > len(grid_ref[row - 1]):
+            raise IndexError(
+                "column index %d out-of-bounds, "
+                "column index must be between 1 and %d, inclusive."
+                % (row, len(grid_ref[row - 1]))
+            )
+        refs = grid_ref[row - 1][col - 1]
+        if not refs:
+            return None
+        if refs[0].subplot_type != "xy":
+            raise ValueError(
+                "Cannot add shape or annotation to subplot at position ({r}, {c}) "
+                "because subplot is of type {subplot_type}.".format(
+                    r=row, c=col, subplot_type=refs[0].subplot_type
+                )
+            )
+        if (
+            user_yref is None
+            or user_yref == "y"
+            or "paper" in user_yref
+            or "domain" in user_yref
+        ):
+            if len(refs) == 1 and secondary_y:
+                raise ValueError(
+                    "Cannot add shape or annotation to secondary y-axis of subplot "
+                    "at position ({r}, {c}) because subplot does not have a "
+                    "secondary y-axis".format(r=row, c=col)
+                )
+            if secondary_y:
+                xaxis, yaxis = refs[1].layout_keys
+            else:
+                xaxis, yaxis = refs[0].layout_keys
+            xref = xaxis.replace("axis", "")
+            yref = yaxis.replace("axis", "")
+        else:
+            yref = user_yref
+            xaxis = refs[0].layout_keys[0]
+            xref = xaxis.replace("axis", "")
+        return xref, yref
+
     def _make_axis_spanning_layout_object(self, direction, shape):
         """
         Convert a shape drawn on a plot or a subplot into one whose yref or xref
@@ -4068,7 +4128,8 @@ Invalid property path '{key_path_str}' for layout
     ):
         """
         Add a shape or multiple shapes and call _make_axis_spanning_layout_object on
-        all the new shapes.
+        all the new shapes.  Subplot axis references are resolved once and shared
+        between shape and annotation so they can never diverge.
         """
         if shape_type in ["vline", "vrect"]:
             direction = "vertical"
@@ -4080,70 +4141,95 @@ Invalid property path '{key_path_str}' for layout
                 % (shape_type,)
             )
         if (row is not None or col is not None) and (not self._has_subplots()):
-            # this has no subplots to address, so we force row and col to be None
             row = None
             col = None
-        n_shapes_before = len(self.layout["shapes"])
-        n_annotations_before = len(self.layout["annotations"])
-        # shapes are always added at the end of the tuple of shapes, so we see
-        # how long the tuple is before the call and after the call, and adjust
-        # the new shapes that were added at the end
-        # extract annotation prefixed kwargs
-        # annotation with extra parameters based on the annotation_position
-        # argument and other annotation_ prefixed kwargs
+
         shape_kwargs, annotation_kwargs = shapeannotation.split_dict_by_key_prefix(
             kwargs, "annotation_"
         )
         augmented_annotation = shapeannotation.axis_spanning_shape_annotation(
             annotation, shape_type, shape_args, annotation_kwargs
         )
-        self.add_shape(
-            row=row,
-            col=col,
-            secondary_y=secondary_y,
-            exclude_empty_subplots=exclude_empty_subplots,
-            **_combine_dicts([shape_args, shape_kwargs]),
-        )
-        if augmented_annotation is not None:
-            self.add_annotation(
-                augmented_annotation,
-                row=row,
-                col=col,
-                secondary_y=secondary_y,
-                exclude_empty_subplots=exclude_empty_subplots,
-            )
-        # update xref and yref for the new shapes and annotations
-        for layout_obj, n_layout_objs_before in zip(
-            ["shapes", "annotations"], [n_shapes_before, n_annotations_before]
-        ):
-            n_layout_objs_after = len(self.layout[layout_obj])
-            if (n_layout_objs_after > n_layout_objs_before) and (
-                row is None and col is None
-            ):
-                # this was called intending to add to a single plot (and
-                # self.add_{layout_obj} succeeded)
-                # however, in the case of a single plot, xref and yref MAY not be
-                # specified, IF they are not specified we specify them here so the following routines can work
-                # (they need to append " domain" to xref or yref). If they are specified, we leave them alone.
-                if self.layout[layout_obj][-1].xref is None:
-                    self.layout[layout_obj][-1].update(xref="x")
-                if self.layout[layout_obj][-1].yref is None:
-                    self.layout[layout_obj][-1].update(yref="y")
-            new_layout_objs = tuple(
-                filter(
-                    lambda x: x is not None,
-                    [
-                        self._make_axis_spanning_layout_object(
-                            direction,
-                            self.layout[layout_obj][n],
-                        )
-                        for n in range(n_layout_objs_before, n_layout_objs_after)
-                    ],
+
+        combined_shape_args = _combine_dicts([shape_args, shape_kwargs])
+
+        user_xref = combined_shape_args.get("xref")
+        user_yref = combined_shape_args.get("yref")
+
+        def _copy_props(obj):
+            if obj is None:
+                return None
+            if isinstance(obj, dict):
+                return dict(obj)
+            if hasattr(obj, "_props"):
+                return dict(obj._props)
+            return dict(obj)
+
+        if row is None and col is None:
+            shape_obj = dict(combined_shape_args)
+            if shape_obj.get("xref") is None:
+                shape_obj["xref"] = "x"
+            if shape_obj.get("yref") is None:
+                shape_obj["yref"] = "y"
+            self._make_axis_spanning_layout_object(direction, shape_obj)
+            self.layout.shapes += (shape_obj,)
+
+            if augmented_annotation is not None:
+                ann_obj = _copy_props(augmented_annotation)
+                ann_obj["xref"] = shape_obj["xref"]
+                ann_obj["yref"] = shape_obj["yref"]
+                self.layout.annotations += (ann_obj,)
+        else:
+            if _is_select_subplot_coordinates_arg(row, col):
+                rows_cols = self._select_subplot_coordinates(row, col)
+                is_specific_subplot = False
+            else:
+                rows_cols = [(row, col)]
+                is_specific_subplot = True
+
+            for r, c in rows_cols:
+                axis_refs = self._resolve_subplot_axis_refs(
+                    r, c, secondary_y, user_yref
                 )
-            )
-            self.layout[layout_obj] = (
-                self.layout[layout_obj][:n_layout_objs_before] + new_layout_objs
-            )
+                if axis_refs is None:
+                    if is_specific_subplot:
+                        raise ValueError(
+                            "No subplot found at position ({r}, {c})".format(
+                                r=r, c=c
+                            )
+                        )
+                    continue
+                xref, yref = axis_refs
+
+                if user_xref is not None and user_xref not in (
+                    "x",
+                    "paper",
+                ) and "domain" not in user_xref:
+                    xref = user_xref
+
+                if exclude_empty_subplots and not self._subplot_not_empty(
+                    xref, yref, selector=bool(exclude_empty_subplots)
+                ):
+                    continue
+
+                shape_xref = xref
+                shape_yref = yref
+
+                if direction == "vertical":
+                    shape_yref += " domain"
+                elif direction == "horizontal":
+                    shape_xref += " domain"
+
+                shape_obj = dict(combined_shape_args)
+                shape_obj["xref"] = shape_xref
+                shape_obj["yref"] = shape_yref
+                self.layout.shapes += (shape_obj,)
+
+                if augmented_annotation is not None:
+                    ann_obj = _copy_props(augmented_annotation)
+                    ann_obj["xref"] = shape_xref
+                    ann_obj["yref"] = shape_yref
+                    self.layout.annotations += (ann_obj,)
 
     def add_vline(
         self,
