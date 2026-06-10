@@ -9,6 +9,7 @@ import pandas as pd
 
 import plotly.graph_objects as go
 from _plotly_utils.basevalidators import (
+    clean_nulls,
     copy_to_readonly_numpy_array,
     to_scalar_or_list,
     is_null_value,
@@ -17,6 +18,7 @@ from _plotly_utils.basevalidators import (
     DataArrayValidator,
 )
 from _plotly_utils.utils import PlotlyJSONEncoder
+import plotly.io as pio
 
 
 # =============================================================================
@@ -584,3 +586,225 @@ class TestNormalValuesPreserved:
         vals = parsed["data"][0]["cells"]["values"]
         assert vals[0] == [1, 2, 3]
         assert vals[1] == ["a", "b", "c"]
+
+
+# =============================================================================
+# Section 7: Unit tests for unified clean_nulls() public API
+# =============================================================================
+class TestUnifiedCleanNullsAPI:
+    def test_clean_nulls_python_scalars(self):
+        assert clean_nulls(None) is None
+        assert clean_nulls(42) == 42 and isinstance(clean_nulls(42), int)
+        assert clean_nulls(3.14) == 3.14 and isinstance(clean_nulls(3.14), float)
+        assert clean_nulls(float("nan")) is None
+        assert clean_nulls(True) is True
+        assert clean_nulls(False) is False
+        assert clean_nulls("hello") == "hello"
+
+    def test_clean_nulls_numpy_scalars(self):
+        assert clean_nulls(np.int64(42)) == 42 and isinstance(clean_nulls(np.int64(42)), int)
+        assert clean_nulls(np.float64(np.nan)) is None
+        assert clean_nulls(np.datetime64("NaT")) is None
+
+    def test_clean_nulls_pd_na_sentinels(self):
+        assert clean_nulls(pd.NA) is None
+        assert clean_nulls(pd.NaT) is None
+        assert clean_nulls(np.ma.core.masked) is None
+
+    def test_clean_nulls_container_recursive(self):
+        nested = {"a": [1, float("nan"), {"b": pd.NA}], "c": (True, float("inf"))}
+        result = clean_nulls(nested)
+        assert result["a"][1] is None
+        assert result["a"][2]["b"] is None
+        assert result["c"][0] is True
+        assert isinstance(result["c"], list)  # tuple -> list
+
+    def test_clean_nulls_pandas_extension_series(self):
+        s_int = pd.Series([1, pd.NA, 3], dtype="Int64")
+        r = clean_nulls(s_int)
+        assert r == [1, None, 3]
+        assert isinstance(r[0], int) and isinstance(r[2], int)
+
+        s_float = pd.Series([1.5, pd.NA, 3.5], dtype="Float64")
+        r2 = clean_nulls(s_float)
+        assert isinstance(r2[0], float) and r2[1] is None
+
+        s_bool = pd.Series([True, pd.NA, False], dtype="boolean")
+        assert clean_nulls(s_bool) == [True, None, False]
+
+        s_str = pd.Series(["a", pd.NA, "c"], dtype="string")
+        assert clean_nulls(s_str) == ["a", None, "c"]
+
+    def test_clean_nulls_masked_array_1d(self):
+        ma = np.ma.array([10, 20, 30], mask=[False, True, False])
+        r = clean_nulls(ma)
+        assert r == [10, None, 30]
+        assert isinstance(r[0], int)
+
+    def test_clean_nulls_masked_array_2d_shape(self):
+        data = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
+        ma = np.ma.masked_where(data % 3 == 0, data)
+        r = clean_nulls(ma)
+        assert len(r) == 2 and len(r[0]) == 3
+        assert r[0][2] is None
+        assert r[1][2] is None
+        assert isinstance(r[0][0], float)
+
+    def test_clean_nulls_numpy_array_2d_nan(self):
+        arr = np.array([[1.0, np.nan, 3.0], [np.nan, 5.0, np.nan]])
+        r = clean_nulls(arr)
+        assert r == [[1.0, None, 3.0], [None, 5.0, None]]
+        assert isinstance(r[0][0], float)
+
+    def test_clean_nulls_datetime64_with_nat(self):
+        arr = np.array(["2021-01-01", "NaT", "2021-01-03"], dtype="datetime64[us]")
+        r = clean_nulls(arr)
+        assert r[1] is None
+        assert hasattr(r[0], "isoformat")  # native datetime
+
+    def test_clean_nulls_nested_table_input(self):
+        cells = [
+            pd.Series([1, pd.NA, 3], dtype="Int64"),
+            np.ma.array([10, 20, 30], mask=[False, True, False]),
+            pd.Series([1.5, pd.NA, 3.5], dtype="Float64"),
+            pd.Series(["a", pd.NA, "c"], dtype="string"),
+            {"meta": pd.NA, "flags": [True, pd.NA, False]},
+        ]
+        r = clean_nulls(cells)
+        # Int64 column
+        assert r[0] == [1, None, 3] and isinstance(r[0][0], int)
+        # MaskedArray column
+        assert r[1] == [10, None, 30] and isinstance(r[1][0], int)
+        # Float64 column
+        assert isinstance(r[2][0], float) and r[2][1] is None
+        # string column
+        assert r[3] == ["a", None, "c"]
+        # nested dict
+        assert r[4]["meta"] is None
+        assert r[4]["flags"][1] is None
+
+    def test_clean_nulls_preserves_structure(self):
+        """Original outer container structure must be preserved."""
+        nested_3d = np.array([[[1, np.nan], [3, 4]], [[5, 6], [np.nan, 8]]], dtype=float)
+        r = clean_nulls(nested_3d)
+        assert len(r) == 2
+        assert len(r[0]) == 2
+        assert len(r[0][0]) == 2
+        assert r[0][0][1] is None
+        assert r[1][1][0] is None
+
+    def test_clean_nulls_json_serializable(self):
+        """clean_nulls output must be directly JSON-encodable."""
+        input_data = [
+            pd.Series([1, pd.NA, 3], dtype="Int64"),
+            pd.Series(pd.to_datetime(["2021-01-01", pd.NaT, "2021-01-03"])),
+            np.ma.array([10, 20, 30], mask=[False, True, False]),
+            {"nested": [float("nan"), pd.NA, "ok"]},
+        ]
+        cleaned = clean_nulls(input_data)
+        # datetimes in cleaned[1] are Python datetimes - format for JSON
+        class DTEncoder(json.JSONEncoder):
+            def default(self, obj):
+                if hasattr(obj, "isoformat"):
+                    return obj.isoformat()
+                return super().default(obj)
+        json_str = json.dumps(cleaned, cls=DTEncoder)
+        parsed = json.loads(json_str)
+        assert parsed[0][1] is None
+        assert parsed[1][1] is None
+        assert parsed[2][1] is None
+        assert parsed[3]["nested"][0] is None
+        assert parsed[3]["nested"][1] is None
+
+
+# =============================================================================
+# Section 8: Verify all three serialization paths use unified clean_nulls
+# =============================================================================
+class TestThreePathsReuseCleanNulls:
+    def build_figure(self):
+        return go.Figure(
+            data=[
+                go.Scatter(
+                    x=pd.Series([1, pd.NA, 3, pd.NA, 5], dtype="Int64"),
+                    y=pd.Series([1.5, pd.NA, 3.5, None, 5.5], dtype="Float64"),
+                    mode="markers",
+                ),
+                go.Table(
+                    header=dict(values=["Int", "Float", "Bool", "Str", "MA"]),
+                    cells=dict(values=[
+                        pd.Series([1, pd.NA, 3], dtype="Int64"),
+                        pd.Series([1.5, pd.NA, 3.5], dtype="Float64"),
+                        pd.Series([True, pd.NA, False], dtype="boolean"),
+                        pd.Series(["a", pd.NA, "c"], dtype="string"),
+                        np.ma.array([10, 20, 30], mask=[False, True, False]),
+                    ]),
+                ),
+                go.Heatmap(z=np.array([[1.0, np.nan], [np.nan, 4.0]])),
+            ]
+        )
+
+    def test_path1_json_engine(self):
+        """engine='json' uses PlotlyJSONEncoder -> clean_nulls."""
+        fig = self.build_figure()
+        p = json.loads(fig.to_json(engine="json"))
+
+        sc_x = p["data"][0]["x"]
+        assert isinstance(sc_x[0], int) and sc_x[1] is None
+
+        tc = p["data"][1]["cells"]["values"]
+        assert isinstance(tc[0][0], int) and tc[0][1] is None     # Int64
+        assert isinstance(tc[1][0], float) and tc[1][1] is None   # Float64
+        assert tc[2][1] is None and isinstance(tc[2][0], bool)     # boolean
+        assert tc[3][1] is None and isinstance(tc[3][0], str)      # string
+        assert isinstance(tc[4][0], int) and tc[4][1] is None      # MaskedArray
+
+        hm = p["data"][2]["z"]
+        assert hm[0][1] is None and hm[1][0] is None
+
+    def test_path2_orjson_engine(self):
+        """engine='orjson' uses clean_to_json_compatible -> clean_nulls."""
+        pytest.importorskip("orjson")
+        fig = self.build_figure()
+        p = json.loads(fig.to_json(engine="orjson"))
+
+        sc_x = p["data"][0]["x"]
+        assert isinstance(sc_x[0], int) and sc_x[1] is None
+
+        tc = p["data"][1]["cells"]["values"]
+        assert isinstance(tc[0][0], int) and tc[0][1] is None
+        assert isinstance(tc[4][0], int) and tc[4][1] is None
+
+        hm = p["data"][2]["z"]
+        assert hm[0][1] is None and hm[1][0] is None
+
+    def test_path3_write_json_roundtrip(self):
+        """write_json / read_json round-trip must preserve null semantics."""
+        fig = self.build_figure()
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False) as f:
+            fname = f.name
+        try:
+            fig.write_json(fname, engine="json")
+            loaded = pio.read_json(fname)
+            lp = json.loads(loaded.to_json())
+            tc = lp["data"][1]["cells"]["values"]
+            assert isinstance(tc[0][0], int) and tc[0][1] is None
+            assert isinstance(tc[4][0], int) and tc[4][1] is None
+            assert lp["data"][2]["z"][0][1] is None
+        finally:
+            os.unlink(fname)
+
+    def test_all_paths_consistent_output(self):
+        """json and orjson engines must produce semantically identical output."""
+        fig = self.build_figure()
+        p_json = json.loads(fig.to_json(engine="json"))
+
+        try:
+            import orjson  # noqa
+            p_orj = json.loads(fig.to_json(engine="orjson"))
+            # Structure and null positions must match exactly
+            assert p_json["data"][0]["x"] == p_orj["data"][0]["x"]
+            assert p_json["data"][0]["y"] == p_orj["data"][0]["y"]
+            assert p_json["data"][1]["cells"]["values"] == p_orj["data"][1]["cells"]["values"]
+            assert p_json["data"][2]["z"] == p_orj["data"][2]["z"]
+        except ImportError:
+            pytest.skip("orjson not installed")

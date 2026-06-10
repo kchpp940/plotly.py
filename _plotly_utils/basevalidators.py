@@ -92,7 +92,17 @@ def _clean_array_nulls(np_arr):
                     result[i] = None
                 else:
                     try:
-                        result[i] = val.item()
+                        # datetime64[ns] .item() returns int (nanoseconds) or
+                        # pd.Timestamp; cast to [us] so .item() returns a real
+                        # datetime object, which both orjson and the standard
+                        # json encoder can handle via isoformat().
+                        if val.dtype == np.dtype("datetime64[ns]"):
+                            val = val.astype("datetime64[us]")
+                        scalar = val.item()
+                        pd_mod = get_module("pandas", should_load=False)
+                        if pd_mod is not None and isinstance(scalar, pd_mod.Timestamp):
+                            scalar = scalar.to_pydatetime()
+                        result[i] = scalar
                     except Exception:
                         result[i] = val
             result = result.reshape(np_arr.shape)
@@ -162,6 +172,184 @@ def _clean_array_nulls(np_arr):
         return np_arr
 
     return np_arr
+
+
+def clean_nulls(v):
+    """
+    Unified public API for cleaning null/missing values from arbitrary
+    Python data structures before JSON serialization.
+
+    Recursively traverses the entire input structure (scalars, lists,
+    tuples, dicts, pandas Series/Index, numpy arrays including MaskedArray)
+    and replaces ALL null-like representations with Python None (JSON null).
+
+    Non-null values are converted to native Python scalar types:
+      - pandas Int* / UInt*  -> Python int
+      - pandas Float*        -> Python float
+      - pandas boolean       -> Python bool
+      - pandas string        -> Python str
+      - numpy scalars        -> via .item() to native Python types
+      - numpy arrays         -> nested Python lists with native scalars
+      - MaskedArray          -> nested Python lists, masked -> None
+      - datetime64 NaT       -> None, non-NaT -> str via .item()
+
+    The result is guaranteed to be JSON-serializable (no pd.NA, np.nan,
+    np.ma.core.masked, NaT strings, etc.) and preserves the original
+    container structure (nested list depth, dict keys, dimensions).
+
+    This single function replaces duplicated null-cleaning logic that
+    previously lived in three places:
+      1. basevalidators.py   (to_scalar_or_list, _clean_array_nulls)
+      2. _plotly_utils/utils.py  (PlotlyJSONEncoder.encode_as_list/_numpy)
+      3. plotly/io/_json.py      (clean_to_json_compatible helpers)
+    """
+    np = get_module("numpy", should_load=False)
+    pd = get_module("pandas", should_load=False)
+
+    # 1. Fast bail for JSON-native scalars
+    if v is None:
+        return None
+    if isinstance(v, (int, str)):
+        return v
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, float):
+        import math as _math
+        if _math.isnan(v):
+            return None
+        return v
+
+    # 2. Scalar null-like detection
+    if is_null_value(v):
+        return None
+
+    # 3. Numpy scalars (not arrays) -> native Python types via .item()
+    if np and np.isscalar(v) and hasattr(v, "item"):
+        if isinstance(v, np.datetime64):
+            if np.isnat(v):
+                return None
+            # datetime64[ns] .item() returns int (nanosecond epoch); cast to [us]
+            if v.dtype == np.dtype("datetime64[ns]"):
+                v = v.astype("datetime64[us]")
+        val = v.item()
+        # val may be pd.Timestamp if pandas is around; force to pydatetime
+        if pd is not None and isinstance(val, pd.Timestamp):
+            val = val.to_pydatetime()
+        if is_null_value(val):
+            return None
+        return val
+
+    # 4. Numpy MaskedArray -> build object array preserving native types
+    if np and isinstance(v, np.ma.MaskedArray):
+        mask = np.ma.getmaskarray(v)
+        data = np.asarray(v)
+        if mask.any():
+            flat_data = data.ravel()
+            flat_mask = mask.ravel()
+            obj_flat = [None] * flat_data.size
+            for i in range(flat_data.size):
+                if flat_mask[i]:
+                    obj_flat[i] = None
+                else:
+                    val = flat_data[i]
+                    obj_flat[i] = val.item() if hasattr(val, "item") else val
+            return _reshape_list(obj_flat, data.shape)
+        else:
+            return clean_nulls(np.asarray(v))
+
+    # 5. Pandas Series / Index (handle extension types before to_numpy)
+    if pd and isinstance(v, (pd.Series, pd.Index)):
+        orig_dtype = str(v.dtype)
+        nullable_extension = (
+            orig_dtype.startswith(("Int", "UInt", "Float"))
+            or orig_dtype in ("string", "boolean")
+        )
+        if nullable_extension:
+            out = [None] * len(v)
+            for i, val in enumerate(v):
+                if pd.isna(val):
+                    out[i] = None
+                elif orig_dtype.startswith(("Int", "UInt")):
+                    out[i] = int(val)
+                elif orig_dtype.startswith("Float"):
+                    out[i] = float(val)
+                elif orig_dtype == "boolean":
+                    out[i] = bool(val)
+                elif orig_dtype == "string":
+                    out[i] = str(val)
+                else:
+                    out[i] = val
+            return out
+        # Non-extension pandas type: go via numpy + _clean_array_nulls
+        try:
+            if hasattr(v, "to_numpy"):
+                np_arr = v.to_numpy()
+            else:
+                np_arr = np.array(v)
+            return clean_nulls(np_arr)
+        except Exception:
+            return [clean_nulls(x) for x in v]
+
+    # 6. numpy ndarray (including 2D+) -> _clean_array_nulls then tolist recursively
+    if np and isinstance(v, np.ndarray):
+        cleaned = _clean_array_nulls(v)
+        # _clean_array_nulls may return the original array if no nulls
+        if cleaned is v and v.dtype.kind in ("b", "i", "u", "f", "U"):
+            # No nulls: native tolist() directly
+            return v.tolist()
+        # Otherwise object or mixed: recursive tolist per element
+        if cleaned.ndim == 0:
+            return clean_nulls(cleaned.item() if hasattr(cleaned, "item") else cleaned)
+        return [clean_nulls(e) for e in cleaned]
+
+    # 7. dict -> recurse values, preserve keys
+    if isinstance(v, dict):
+        return {k: clean_nulls(val) for k, val in v.items()}
+
+    # 8. list / tuple -> recurse each element
+    if isinstance(v, (list, tuple)):
+        return [clean_nulls(x) for x in v]
+
+    # 9. Normalize any remaining pandas Timestamp to native datetime
+    # (Produced by pandas datetime Series via various conversion paths.)
+    if pd is not None and isinstance(v, pd.Timestamp):
+        try:
+            return v.to_pydatetime()
+        except Exception:
+            pass
+
+    # 10. Fallthrough: try .tolist() conversion
+    if hasattr(v, "tolist"):
+        try:
+            result = v.tolist()
+            return clean_nulls(result)
+        except Exception:
+            pass
+
+    # 11. Final: try to_plotly_json() hook
+    if hasattr(v, "to_plotly_json"):
+        try:
+            result = v.to_plotly_json()
+            return clean_nulls(result)
+        except Exception:
+            pass
+
+    return v
+
+
+def _reshape_list(flat_list, shape):
+    """Reshape a flat list into a nested list with the given numpy-style shape."""
+    if not shape:
+        return flat_list[0] if flat_list else None
+    if len(shape) == 1:
+        return list(flat_list)
+    stride = 1
+    for s in shape[1:]:
+        stride *= s
+    return [
+        _reshape_list(flat_list[i * stride:(i + 1) * stride], shape[1:])
+        for i in range(shape[0])
+    ]
 
 
 # back-port of fullmatch from Py3.4+

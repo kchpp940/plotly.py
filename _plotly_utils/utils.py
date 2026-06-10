@@ -8,6 +8,7 @@ from functools import reduce
 from _plotly_utils.optional_imports import get_module
 from _plotly_utils.basevalidators import (
     ImageUriValidator,
+    clean_nulls,
     copy_to_readonly_numpy_array,
     is_homogeneous_array,
 )
@@ -259,39 +260,10 @@ class PlotlyJSONEncoder(_json.JSONEncoder):
 
     @staticmethod
     def encode_as_list(obj):
-        """Attempt to use `tolist` method to convert to normal Python list, with null cleaning."""
+        """Use `tolist` method then clean all null values via unified API."""
         if hasattr(obj, "tolist"):
-            numpy = get_module("numpy", should_load=False)
-            pandas = get_module("pandas", should_load=False)
             result = obj.tolist()
-
-            def _clean(elem):
-                if isinstance(elem, list):
-                    return [_clean(x) for x in elem]
-                if elem is None:
-                    return None
-                if pandas is not None:
-                    if elem is pandas.NA or elem is pandas.NaT:
-                        return None
-                if numpy is not None:
-                    if elem is numpy.ma.core.masked:
-                        return None
-                    if isinstance(elem, numpy.datetime64):
-                        if numpy.isnat(elem):
-                            return None
-                    if isinstance(elem, (float, numpy.floating)):
-                        try:
-                            import math
-
-                            if math.isnan(elem):
-                                return None
-                        except (TypeError, ValueError):
-                            pass
-                return elem
-
-            if isinstance(result, list):
-                return _clean(result)
-            return _clean(result)
+            return clean_nulls(result)
         else:
             raise NotEncodable
 
@@ -327,61 +299,15 @@ class PlotlyJSONEncoder(_json.JSONEncoder):
 
     @staticmethod
     def encode_as_numpy(obj):
-        """Attempt to convert numpy.ma.core.masked, numpy arrays including datetime64 arrays."""
+        """Clean numpy scalar / array nulls via unified clean_nulls API."""
         numpy = get_module("numpy", should_load=False)
         if not numpy:
             raise NotEncodable
 
         if obj is numpy.ma.core.masked:
             return None
-        elif isinstance(obj, numpy.ndarray) and obj.dtype.kind == "M":
-            try:
-                strings = numpy.datetime_as_string(obj)
-                result = strings.tolist()
-
-                def _replace_nat_list(lst):
-                    if isinstance(lst, list):
-                        return [_replace_nat_list(x) for x in lst]
-                    elif lst == "NaT":
-                        return None
-                    else:
-                        return lst
-
-                if isinstance(result, list):
-                    return _replace_nat_list(result)
-                elif result == "NaT":
-                    return None
-                return result
-            except TypeError:
-                pass
         elif isinstance(obj, numpy.ndarray):
-            if obj.dtype.kind == "O":
-                pandas = get_module("pandas", should_load=False)
-
-                def _clean_obj_arr(elem):
-                    if isinstance(elem, list):
-                        return [_clean_obj_arr(x) for x in elem]
-                    if elem is None:
-                        return None
-                    if pandas is not None:
-                        if elem is pandas.NA or elem is pandas.NaT:
-                            return None
-                    if elem is numpy.ma.core.masked:
-                        return None
-                    if isinstance(elem, (float, numpy.floating)):
-                        try:
-                            import math
-
-                            if math.isnan(elem):
-                                return None
-                        except (TypeError, ValueError):
-                            pass
-                    if isinstance(elem, numpy.datetime64):
-                        if numpy.isnat(elem):
-                            return None
-                    return elem
-
-                return [_clean_obj_arr(e) for e in obj.tolist()]
+            return clean_nulls(obj)
 
         raise NotEncodable
 
