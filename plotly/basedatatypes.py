@@ -3778,14 +3778,9 @@ Invalid property path '{key_path_str}' for layout
             The image data
         """
         import plotly.io as pio
-        from plotly.io._kaleido import _handle_deprecation_warnings
-
-        _handle_deprecation_warnings(
-            kwargs.get("engine", None), stacklevel=2
-        )
 
         return pio.to_image(
-            self, *args, _skip_deprecation_warnings=True, **kwargs
+            self, *args, _deprecation_stacklevel=3, **kwargs
         )
 
     def write_image(self, *args, **kwargs):
@@ -3858,14 +3853,9 @@ Invalid property path '{key_path_str}' for layout
         None
         """
         import plotly.io as pio
-        from plotly.io._kaleido import _handle_deprecation_warnings
-
-        _handle_deprecation_warnings(
-            kwargs.get("engine", None), stacklevel=2
-        )
 
         return pio.write_image(
-            self, *args, _skip_deprecation_warnings=True, **kwargs
+            self, *args, _deprecation_stacklevel=3, **kwargs
         )
 
     # Static helpers

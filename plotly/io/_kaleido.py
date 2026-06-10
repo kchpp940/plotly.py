@@ -392,6 +392,7 @@ def to_image(
     engine: Union[str, None] = None,
     # Internal use
     _skip_deprecation_warnings: bool = False,
+    _deprecation_stacklevel: int = 2,
 ) -> bytes:
     """
     Convert a figure to a static image bytes string
@@ -458,15 +459,27 @@ def to_image(
     bytes
         The image data
     """
-    # Step 1: Emit deprecation warnings (pure local, no external deps)
-    if not _skip_deprecation_warnings:
-        _handle_deprecation_warnings(engine, stacklevel=2)
+    # ------------------------------------------------------------------
+    # Error chain order (from most-local/deterministic to external deps):
+    #   1. Format validation & normalization     (pure local, no side effects)
+    #   2. Engine resolution                     (pure logic, no warnings)
+    #   3. Orca delegation                       (if orca, orca handles warnings)
+    #   4. Deprecation warnings                  (only after format is good)
+    #   5. Kaleido installation check            (external dep #1)
+    #   6. Figure conversion + defaults apply    (local)
+    #   7. v0/v1 branch + EPS check              (local)
+    #   8. Chrome detection (via Kaleido call)   (external dep #2)
+    # ------------------------------------------------------------------
 
-    # Step 2: Validate and normalize format FIRST (pure local operation)
-    # This ensures format errors are shown before any installation hints
+    # Step 1: Validate and normalize format FIRST (pure local operation)
+    # Format errors must be visible before any deprecation or install hints
     format = validate_coerce_format(format)
 
-    # Handle engine selection
+    # Save original engine value BEFORE resolving defaults, so that
+    # deprecation warnings only fire when user explicitly passed engine
+    engine_original = engine
+
+    # Step 2: Resolve engine (pure logic, no side effects / no warnings)
     if engine is None:
         engine = "auto"
 
@@ -482,6 +495,7 @@ def to_image(
             except Exception:
                 engine = "kaleido"
 
+    # Step 3: If Orca, delegate immediately (orca handles its own warnings)
     if engine == "orca":
         from ._orca import to_image as to_image_orca
 
@@ -496,18 +510,21 @@ def to_image(
     elif engine != "kaleido":
         raise ValueError(f"Invalid image export engine specified: {repr(engine)}")
 
-    # Step 3: Check Kaleido availability (now format is already validated)
+    # Step 4: Emit deprecation warnings (only after format is validated,
+    # and only if caller hasn't already handled them)
+    if not _skip_deprecation_warnings:
+        _handle_deprecation_warnings(engine_original, stacklevel=_deprecation_stacklevel)
+
+    # Step 5: Check Kaleido availability
     _ensure_kaleido_available()
 
-    # Step 4: Convert figure to dict (and validate if requested)
+    # Step 6: Convert figure to dict and apply defaults consistently
     fig_dict = validate_coerce_fig_to_dict(fig, validate)
-
-    # Step 5: Apply defaults consistently
     resolved_format = format or defaults.default_format
     resolved_scale = scale or defaults.default_scale
     resolved_width, resolved_height = _resolve_image_dimensions(fig_dict, width, height)
 
-    # Step 6: Request image bytes (v0/v1 branching + Chrome detection)
+    # Step 7-8: Request image bytes (v0/v1 branching + Chrome detection)
     if kaleido_major() > 0:
         # Kaleido v1 - check EPS support before invoking
         if resolved_format == "eps":
@@ -562,6 +579,7 @@ def write_image(
     engine: Union[str, None] = None,
     # Internal use
     _skip_deprecation_warnings: bool = False,
+    _deprecation_stacklevel: int = 2,
 ):
     """
     Convert a figure to a static image and write it to a file or writeable
@@ -634,18 +652,62 @@ def write_image(
     -------
     None
     """
-    # Emit deprecation warnings at this level (correct stacklevel for write_image callers)
-    if not _skip_deprecation_warnings:
-        _handle_deprecation_warnings(engine, stacklevel=2)
+    # ------------------------------------------------------------------
+    # Error chain order (same as to_image):
+    #   1. Format inference + validation     (pure local, no side effects)
+    #   2. Engine resolution                  (pure logic, no warnings)
+    #   3. Orca delegation                    (if orca, orca handles warnings)
+    #   4. Deprecation warnings               (only after format is good)
+    #   5. Call to_image (handles the rest)
+    # ------------------------------------------------------------------
 
-    # Try to cast `file` as a pathlib object `path`.
+    # Step 1: Resolve path + infer + validate format FIRST (pure local)
     path = as_path_object(file)
-
-    # Infer image format if not specified
     format = infer_format(path, format)
+    format = validate_coerce_format(format)
 
-    # Request image
-    # Do this first so we don't create a file if image conversion fails
+    # Save original engine value BEFORE resolving defaults
+    engine_original = engine
+
+    # Step 2: Resolve engine (pure logic, no side effects / no warnings)
+    if engine is None:
+        engine = "auto"
+
+    if engine == "auto":
+        if kaleido_available():
+            engine = "kaleido"
+        else:
+            from ._orca import validate_executable
+
+            try:
+                validate_executable()
+                engine = "orca"
+            except Exception:
+                engine = "kaleido"
+
+    # Step 3: If Orca, delegate immediately (orca handles its own warnings)
+    if engine == "orca":
+        from ._orca import write_image as write_image_orca
+
+        return write_image_orca(
+            fig,
+            file=file,
+            format=format,
+            width=width,
+            height=height,
+            scale=scale,
+            validate=validate,
+        )
+    elif engine != "kaleido":
+        raise ValueError(f"Invalid image export engine specified: {repr(engine)}")
+
+    # Step 4: Emit deprecation warnings (only after format is validated,
+    # and only if caller hasn't already handled them)
+    if not _skip_deprecation_warnings:
+        _handle_deprecation_warnings(engine_original, stacklevel=_deprecation_stacklevel)
+
+    # Step 5: Request image bytes via to_image (skip duplicate warnings there,
+    # pass resolved format so to_image doesn't re-validate the extension)
     img_data = to_image(
         fig,
         format=format,
