@@ -13,6 +13,12 @@ from plotly.io._defaults import defaults
 ENGINE_SUPPORT_TIMELINE = "September 2025"
 ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS = True
 
+# Valid image format constants
+# ----------------------------
+valid_formats = ("png", "jpeg", "webp", "svg", "pdf", "eps")
+format_conversions = {fmt: fmt for fmt in valid_formats}
+format_conversions.update({"jpg": "jpeg"})
+
 PLOTLY_GET_CHROME_ERROR_MSG = """
 
 Kaleido requires Google Chrome to be installed.
@@ -35,6 +41,25 @@ Please install Kaleido (`pip install 'kaleido>=1.0.0'` or `pip install 'plotly[k
 ENGINE_PARAM_DEPRECATION_MSG = f"""
 Support for the 'engine' argument is deprecated and will be removed after {ENGINE_SUPPORT_TIMELINE}.
 Kaleido will be the only supported engine at that time.
+"""
+
+KALEIDO_NOT_INSTALLED_MSG = """
+Image export using the "kaleido" engine requires the Kaleido package,
+which can be installed using pip:
+
+    $ pip install --upgrade kaleido
+"""
+
+KALEIDO_V1_REQUIRED_MSG = f"""
+This operation requires Kaleido version 1.0.0 or greater.
+Please upgrade Kaleido (`pip install 'kaleido>=1.0.0'` or `pip install 'plotly[kaleido]'`).
+"""
+
+EPS_NOT_SUPPORTED_V1_MSG = f"""
+EPS export is not supported by Kaleido v1. Please use SVG or PDF instead.
+You can also downgrade to Kaleido v0, but support for Kaleido v0 will be removed after {ENGINE_SUPPORT_TIMELINE}.
+To downgrade to Kaleido v0, run:
+    $ pip install 'kaleido<1.0.0'
 """
 
 _KALEIDO_AVAILABLE = None
@@ -86,6 +111,140 @@ def kaleido_major() -> int:
     else:
         _KALEIDO_MAJOR = Version(importlib_metadata.version("kaleido")).major
     return _KALEIDO_MAJOR
+
+
+def raise_format_value_error(val):
+    raise ValueError(
+        """
+Invalid value of type {typ} receive as an image format specification.
+    Received value: {v}
+
+An image format must be specified as one of the following string values:
+    {valid_formats}""".format(
+            typ=type(val), v=val, valid_formats=sorted(format_conversions.keys())
+        )
+    )
+
+
+def validate_coerce_format(fmt):
+    """
+    Validate / coerce a user specified image format, and raise an informative
+    exception if format is invalid.
+
+    Parameters
+    ----------
+    fmt
+        A value that may or may not be a valid image format string.
+
+    Returns
+    -------
+    str or None
+        A valid image format string as supported by Kaleido. This may not
+        be identical to the input image designation. For example,
+        the resulting string will always be lower case and  'jpg' is
+        converted to 'jpeg'.
+
+        If the input format value is None, then no exception is raised and
+        None is returned.
+
+    Raises
+    ------
+    ValueError
+        if the input `fmt` cannot be interpreted as a valid image format.
+    """
+    if fmt is None:
+        return None
+
+    if not isinstance(fmt, str) or not fmt:
+        raise_format_value_error(fmt)
+
+    fmt = fmt.lower()
+
+    if fmt[0] == ".":
+        fmt = fmt[1:]
+
+    if fmt not in format_conversions:
+        raise_format_value_error(fmt)
+
+    return format_conversions[fmt]
+
+
+def _ensure_kaleido_available():
+    """
+    Check that Kaleido is installed, raise a consistent ValueError if not.
+    """
+    if not kaleido_available():
+        raise ValueError(KALEIDO_NOT_INSTALLED_MSG)
+
+
+def _ensure_kaleido_v1():
+    """
+    Check that Kaleido v1+ is installed, raise a consistent ValueError if not.
+    """
+    _ensure_kaleido_available()
+    if kaleido_major() < 1:
+        raise ValueError(KALEIDO_V1_REQUIRED_MSG)
+
+
+def _handle_deprecation_warnings(engine, stacklevel=2):
+    """
+    Emit deprecation warnings for engine parameter and orca/kaleido_v0 usage.
+
+    Parameters
+    ----------
+    engine: str or None
+        The engine parameter value
+    stacklevel: int
+        Stack level for warnings, relative to the caller of this function.
+        Default 2 means the warning points to the caller of the function
+        that called _handle_deprecation_warnings.
+    """
+    # +1 for this helper function itself
+    level = stacklevel + 1
+
+    if engine is not None and ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS:
+        warnings.warn(
+            ENGINE_PARAM_DEPRECATION_MSG, DeprecationWarning, stacklevel=level
+        )
+
+    if ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS:
+        if (
+            engine in {None, "auto", "kaleido"}
+            and kaleido_available()
+            and kaleido_major() < 1
+        ):
+            warnings.warn(
+                KALEIDO_DEPRECATION_MSG, DeprecationWarning, stacklevel=level
+            )
+
+    if engine == "orca" and ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS:
+        warnings.warn(ORCA_DEPRECATION_MSG, DeprecationWarning, stacklevel=level)
+
+
+def _resolve_image_dimensions(fig_dict, width, height):
+    """
+    Resolve width/height with cascading fallback:
+    explicit arg > layout.width/height > template.layout.width/height > defaults
+    """
+    width = (
+        width
+        or fig_dict.get("layout", {}).get("width")
+        or fig_dict.get("layout", {})
+        .get("template", {})
+        .get("layout", {})
+        .get("width")
+        or defaults.default_width
+    )
+    height = (
+        height
+        or fig_dict.get("layout", {}).get("height")
+        or fig_dict.get("layout", {})
+        .get("template", {})
+        .get("layout", {})
+        .get("height")
+        or defaults.default_height
+    )
+    return width, height
 
 
 try:
@@ -231,6 +390,8 @@ def to_image(
     validate: bool = True,
     # Deprecated
     engine: Union[str, None] = None,
+    # Internal use
+    _skip_deprecation_warnings: bool = False,
 ) -> bytes:
     """
     Convert a figure to a static image bytes string
@@ -297,36 +458,27 @@ def to_image(
     bytes
         The image data
     """
+    # Emit deprecation warnings (unless caller has already handled them)
+    if not _skip_deprecation_warnings:
+        _handle_deprecation_warnings(engine, stacklevel=2)
 
-    # Handle engine
-    if engine is not None:
-        if ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS:
-            warnings.warn(
-                ENGINE_PARAM_DEPRECATION_MSG, DeprecationWarning, stacklevel=2
-            )
-    else:
+    # Handle engine selection
+    if engine is None:
         engine = "auto"
 
     if engine == "auto":
         if kaleido_available():
-            # Default to kaleido if available
             engine = "kaleido"
         else:
-            # See if orca is available
             from ._orca import validate_executable
 
             try:
                 validate_executable()
                 engine = "orca"
             except Exception:
-                # If orca not configured properly, make sure we display the error
-                # message advising the installation of kaleido
                 engine = "kaleido"
 
     if engine == "orca":
-        if ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS:
-            warnings.warn(ORCA_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-        # Fall back to legacy orca image export path
         from ._orca import to_image as to_image_orca
 
         return to_image_orca(
@@ -340,33 +492,26 @@ def to_image(
     elif engine != "kaleido":
         raise ValueError(f"Invalid image export engine specified: {repr(engine)}")
 
-    # Raise informative error message if Kaleido is not installed
-    if not kaleido_available():
-        raise ValueError(
-            """
-Image export using the "kaleido" engine requires the Kaleido package,
-which can be installed using pip:
+    # Check Kaleido availability
+    _ensure_kaleido_available()
 
-    $ pip install --upgrade kaleido
-"""
-        )
+    # Validate and normalize format
+    format = validate_coerce_format(format)
 
     # Convert figure to dict (and validate if requested)
     fig_dict = validate_coerce_fig_to_dict(fig, validate)
 
+    # Apply defaults consistently
+    resolved_format = format or defaults.default_format
+    resolved_scale = scale or defaults.default_scale
+    resolved_width, resolved_height = _resolve_image_dimensions(fig_dict, width, height)
+
     # Request image bytes
     if kaleido_major() > 0:
         # Kaleido v1
-        # Check if trying to export to EPS format, which is not supported in Kaleido v1
-        if format == "eps":
-            raise ValueError(
-                f"""
-EPS export is not supported by Kaleido v1. Please use SVG or PDF instead.
-You can also downgrade to Kaleido v0, but support for Kaleido v0 will be removed after {ENGINE_SUPPORT_TIMELINE}.
-To downgrade to Kaleido v0, run:
-    $ pip install 'kaleido<1.0.0'
-"""
-            )
+        if resolved_format == "eps":
+            raise ValueError(EPS_NOT_SUPPORTED_V1_MSG)
+
         from kaleido.errors import ChromeNotFoundError
 
         try:
@@ -378,45 +523,27 @@ To downgrade to Kaleido v0, run:
             if defaults.headers:
                 kopts["headers"] = defaults.headers
 
-            width = (
-                width
-                or fig_dict.get("layout", {}).get("width")
-                or fig_dict.get("layout", {})
-                .get("template", {})
-                .get("layout", {})
-                .get("width")
-                or defaults.default_width
-            )
-            height = (
-                height
-                or fig_dict.get("layout", {}).get("height")
-                or fig_dict.get("layout", {})
-                .get("template", {})
-                .get("layout", {})
-                .get("height")
-                or defaults.default_height
-            )
-
             img_bytes = kaleido.calc_fig_sync(
                 fig_dict,
                 opts=dict(
-                    format=format or defaults.default_format,
-                    width=width,
-                    height=height,
-                    scale=scale or defaults.default_scale,
+                    format=resolved_format,
+                    width=resolved_width,
+                    height=resolved_height,
+                    scale=resolved_scale,
                 ),
                 topojson=defaults.topojson,
                 kopts=kopts,
             )
         except ChromeNotFoundError:
             raise RuntimeError(PLOTLY_GET_CHROME_ERROR_MSG)
-
     else:
         # Kaleido v0
-        if ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS:
-            warnings.warn(KALEIDO_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
         img_bytes = scope.transform(
-            fig_dict, format=format, width=width, height=height, scale=scale
+            fig_dict,
+            format=resolved_format,
+            width=resolved_width,
+            height=resolved_height,
+            scale=resolved_scale,
         )
 
     return img_bytes
@@ -432,6 +559,8 @@ def write_image(
     validate: bool = True,
     # Deprecated
     engine: Union[str, None] = None,
+    # Internal use
+    _skip_deprecation_warnings: bool = False,
 ):
     """
     Convert a figure to a static image and write it to a file or writeable
@@ -504,20 +633,9 @@ def write_image(
     -------
     None
     """
-    # Show Kaleido deprecation warning if needed
-    if ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS:
-        if (
-            engine in {None, "auto", "kaleido"}
-            and kaleido_available()
-            and kaleido_major() < 1
-        ):
-            warnings.warn(KALEIDO_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-        if engine == "orca":
-            warnings.warn(ORCA_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-        if engine not in {None, "auto"}:
-            warnings.warn(
-                ENGINE_PARAM_DEPRECATION_MSG, DeprecationWarning, stacklevel=2
-            )
+    # Emit deprecation warnings at this level (correct stacklevel for write_image callers)
+    if not _skip_deprecation_warnings:
+        _handle_deprecation_warnings(engine, stacklevel=2)
 
     # Try to cast `file` as a pathlib object `path`.
     path = as_path_object(file)
@@ -535,6 +653,7 @@ def write_image(
         height=height,
         validate=validate,
         engine=engine,
+        _skip_deprecation_warnings=True,
     )
 
     # Open file
@@ -647,27 +766,8 @@ def write_images(
     -------
     None
     """
-
-    # Raise informative error message if Kaleido v1 is not installed
-    if not kaleido_available():
-        raise ValueError(
-            """
-The `write_images()` function requires the Kaleido package,
-which can be installed using pip:
-
-    $ pip install --upgrade kaleido
-"""
-        )
-    elif kaleido_major() < 1:
-        raise ValueError(
-            f"""
-You have Kaleido version {Version(importlib_metadata.version("kaleido"))} installed.
-The `write_images()` function requires the Kaleido package version 1.0.0 or greater,
-which can be installed using pip:
-
-    $ pip install 'kaleido>=1.0.0'
-"""
-        )
+    # Check Kaleido v1 availability with consistent error message
+    _ensure_kaleido_v1()
 
     # Broadcast arguments into correct format for passing to Kaleido
     arg_dicts = broadcast_args_to_dicts(
@@ -683,22 +783,27 @@ which can be installed using pip:
     # For each dict:
     #   - convert figures to dicts (and validate if requested)
     #   - try to cast `file` as a Path object
+    #   - validate and normalize format
+    #   - resolve width/height with layout/template fallback
     for d in arg_dicts:
         d["fig"] = validate_coerce_fig_to_dict(d["fig"], d["validate"])
         d["file"] = as_path_object(d["file"])
+        d["format"] = validate_coerce_format(
+            infer_format(d["file"], d["format"])
+        )
+        d["width"], d["height"] = _resolve_image_dimensions(
+            d["fig"], d["width"], d["height"]
+        )
 
     # Reshape arg_dicts into correct format for passing to Kaleido
-    # We call infer_format() here rather than above so that the `file` argument
-    # has already been cast to a Path object.
-    # Also insert defaults for any missing arguments as needed
     kaleido_specs = [
         dict(
             fig=d["fig"],
             path=d["file"],
             opts=dict(
-                format=infer_format(d["file"], d["format"]) or defaults.default_format,
-                width=d["width"] or defaults.default_width,
-                height=d["height"] or defaults.default_height,
+                format=d["format"] or defaults.default_format,
+                width=d["width"],
+                height=d["height"],
                 scale=d["scale"] or defaults.default_scale,
             ),
             topojson=defaults.topojson,
@@ -753,17 +858,8 @@ def full_figure_for_development(
     plotly.graph_objects.Figure or dict
         The full figure
     """
-
-    # Raise informative error message if Kaleido is not installed
-    if not kaleido_available():
-        raise ValueError(
-            """
-Full figure generation requires the Kaleido package,
-which can be installed using pip:
-
-    $ pip install --upgrade kaleido
-"""
-        )
+    # Check Kaleido availability with consistent error message
+    _ensure_kaleido_available()
 
     if warn:
         warnings.warn(
@@ -772,7 +868,7 @@ which can be installed using pip:
             "To suppress this warning, set warn=False"
         )
 
-    if kaleido_available() and kaleido_major() > 0:
+    if kaleido_major() > 0:
         # Kaleido v1
         bytes = kaleido.calc_fig_sync(
             fig,
@@ -782,11 +878,7 @@ which can be installed using pip:
     else:
         # Kaleido v0
         if ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS:
-            warnings.warn(
-                f"Support for Kaleido versions less than 1.0.0 is deprecated and will be removed after {ENGINE_SUPPORT_TIMELINE}. "
-                + "Please upgrade Kaleido to version 1.0.0 or greater (`pip install 'kaleido>=1.0.0'`).",
-                DeprecationWarning,
-            )
+            warnings.warn(KALEIDO_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
         fig = json.loads(scope.transform(fig, format="json").decode("utf-8"))
 
     if as_dict:
@@ -817,13 +909,8 @@ Options:
   --help  Show this message and exit.
 """
 
-    if not kaleido_available() or kaleido_major() < 1:
-        raise ValueError(
-            """
-This command requires Kaleido v1.0.0 or greater.
-Install it using `pip install 'kaleido>=1.0.0'` or `pip install 'plotly[kaleido]'`."
-"""
-        )
+    # Check Kaleido v1 availability with consistent error message
+    _ensure_kaleido_v1()
 
     # Handle command line arguments
     import sys
@@ -877,13 +964,8 @@ def get_chrome(path: Union[str, Path, None] = None) -> Path:
         The path to the directory where Chrome should be installed.
         If None, the default download path will be used.
     """
-    if not kaleido_available() or kaleido_major() < 1:
-        raise ValueError(
-            """
-This command requires Kaleido v1.0.0 or greater.
-Install it using `pip install 'kaleido>=1.0.0'` or `pip install 'plotly[kaleido]'`."
-"""
-        )
+    # Check Kaleido v1 availability with consistent error message
+    _ensure_kaleido_v1()
 
     # Use default download path if no path was specified
     if path:
