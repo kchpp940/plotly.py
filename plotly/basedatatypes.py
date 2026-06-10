@@ -4227,6 +4227,11 @@ Invalid property path '{key_path_str}' for layout
                 ) and "domain" not in user_xref:
                     xref = user_xref
 
+                ref_key = (xref, yref)
+                if ref_key in seen_refs:
+                    continue
+                seen_refs.add(ref_key)
+
                 if exclude_empty_subplots and not self._subplot_not_empty(
                     xref, yref, selector=bool(exclude_empty_subplots)
                 ):
@@ -4240,10 +4245,6 @@ Invalid property path '{key_path_str}' for layout
                 elif direction == "horizontal":
                     shape_xref += " domain"
 
-                ref_key = (shape_xref, shape_yref)
-                if ref_key in seen_refs:
-                    continue
-                seen_refs.add(ref_key)
                 subplot_refs.append((r, c, shape_xref, shape_yref))
 
             for r, c, shape_xref, shape_yref in subplot_refs:
