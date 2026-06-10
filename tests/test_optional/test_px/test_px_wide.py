@@ -690,6 +690,7 @@ append_special_case(
         y="_value",
         color="_variable",
         orientation="v",
+        labels=dict(_index="index", _value="value", _variable="variable"),
     ),
     df_expect=pd.DataFrame(
         dict(
@@ -712,6 +713,7 @@ append_special_case(
         y="value",
         color="variable",
         orientation="v",
+        labels=dict(index="a", variable="b"),
     ),
     df_expect=pd.DataFrame(
         dict(
@@ -734,6 +736,7 @@ append_special_case(
         y="_value",
         color="variable",
         orientation="v",
+        labels=dict(_value="value", index="value", variable="value"),
     ),
     df_expect=pd.DataFrame(
         dict(

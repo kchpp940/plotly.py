@@ -3755,7 +3755,7 @@ Invalid property path '{key_path_str}' for layout
             less than 1.0 will decrease the image resolution.
 
             If not specified, will default to:
-                - `plotly.io.defaults.default_scale` if engine is "kaleido"
+                - `plotly.io.defaults.default_scale` if engine is "kaliedo"
                 - `plotly.io.orca.config.default_scale` if engine is "orca" (deprecated)
 
         validate: bool
@@ -3775,6 +3775,28 @@ Invalid property path '{key_path_str}' for layout
             The image data
         """
         import plotly.io as pio
+        from plotly.io.kaleido import (
+            kaleido_available,
+            kaleido_major,
+            ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS,
+            KALEIDO_DEPRECATION_MSG,
+            ORCA_DEPRECATION_MSG,
+            ENGINE_PARAM_DEPRECATION_MSG,
+        )
+
+        if ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS:
+            if (
+                kwargs.get("engine", None) in {None, "auto", "kaleido"}
+                and kaleido_available()
+                and kaleido_major() < 1
+            ):
+                warnings.warn(KALEIDO_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            if kwargs.get("engine", None) == "orca":
+                warnings.warn(ORCA_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            if kwargs.get("engine", None):
+                warnings.warn(
+                    ENGINE_PARAM_DEPRECATION_MSG, DeprecationWarning, stacklevel=2
+                )
 
         return pio.to_image(self, *args, **kwargs)
 
@@ -3848,7 +3870,28 @@ Invalid property path '{key_path_str}' for layout
         None
         """
         import plotly.io as pio
+        from plotly.io.kaleido import (
+            kaleido_available,
+            kaleido_major,
+            ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS,
+            KALEIDO_DEPRECATION_MSG,
+            ORCA_DEPRECATION_MSG,
+            ENGINE_PARAM_DEPRECATION_MSG,
+        )
 
+        if ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS:
+            if (
+                kwargs.get("engine", None) in {None, "auto", "kaleido"}
+                and kaleido_available()
+                and kaleido_major() < 1
+            ):
+                warnings.warn(KALEIDO_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            if kwargs.get("engine", None) == "orca":
+                warnings.warn(ORCA_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+            if kwargs.get("engine", None):
+                warnings.warn(
+                    ENGINE_PARAM_DEPRECATION_MSG, DeprecationWarning, stacklevel=2
+                )
         return pio.write_image(self, *args, **kwargs)
 
     # Static helpers

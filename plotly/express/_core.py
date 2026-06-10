@@ -1191,6 +1191,33 @@ def _escape_col_name(columns, col_name, extra):
     return col_name
 
 
+def _update_labels_for_rename(labels, old_name, new_name, auto_label=True):
+    if old_name != new_name and labels is not None:
+        if old_name in labels and new_name not in labels:
+            labels[new_name] = labels[old_name]
+        elif auto_label and new_name not in labels:
+            labels[new_name] = old_name
+
+
+def _deduplicate_columns(columns):
+    seen = {}
+    result = []
+    for col in columns:
+        col_str = str(col)
+        if col_str not in seen:
+            seen[col_str] = 0
+            result.append(col_str)
+        else:
+            seen[col_str] += 1
+            new_name = f"{col_str}_{seen[col_str]}"
+            while new_name in seen:
+                seen[col_str] += 1
+                new_name = f"{col_str}_{seen[col_str]}"
+            seen[new_name] = 0
+            result.append(new_name)
+    return result
+
+
 def to_named_series(x, name=None, native_namespace=None):
     """Assuming x is list-like or even an existing Series, returns a new Series named `name`."""
     # With `pass_through=True`, the original object will be returned if unable to convert
@@ -1231,6 +1258,7 @@ def process_args_into_dataframe(
     constants = {}
     ranges = []
     wide_id_vars = set()
+    wide_deferred_data = {}
     reserved_names = _get_reserved_col_names(args) if df_provided else set()
 
     # Case of functions with a "dimensions" kw: scatter_matrix, parcats, parcoords
@@ -1317,26 +1345,33 @@ def process_args_into_dataframe(
                     and hover_data_is_dict
                     and args["hover_data"][str(argument)][1] is not None
                 ):
-                    # hover_data has onboard data
-                    # previously-checked to have no name-conflict with data_frame
                     col_name = str(argument)
                     real_argument = args["hover_data"][col_name][1]
 
-                    if length and (real_length := len(real_argument)) != length:
-                        raise ValueError(
-                            "All arguments should have the same length. "
-                            "The length of hover_data key `%s` is %d, whereas the "
-                            "length of previously-processed arguments %s is %d"
-                            % (
-                                argument,
-                                real_length,
-                                str(list(df_output.keys())),
-                                length,
-                            )
+                    if length:
+                        real_length = len(real_argument)
+                        if real_length != length:
+                            if wide_mode and length > 0 and real_length % length == 0:
+                                wide_deferred_data[col_name] = (
+                                    real_argument,
+                                    native_namespace,
+                                )
+                            else:
+                                raise ValueError(
+                                    "All arguments should have the same length. "
+                                    "The length of hover_data key `%s` is %d, whereas the "
+                                    "length of previously-processed arguments %s is %d"
+                                    % (
+                                        argument,
+                                        real_length,
+                                        str(list(df_output.keys())),
+                                        length,
+                                    )
+                                )
+                    if col_name not in wide_deferred_data:
+                        df_output[col_name] = to_named_series(
+                            real_argument, col_name, native_namespace
                         )
-                    df_output[col_name] = to_named_series(
-                        real_argument, col_name, native_namespace
-                    )
                 elif not df_provided:
                     raise ValueError(
                         "String or int arguments are only possible when a "
@@ -1400,19 +1435,28 @@ def process_args_into_dataframe(
                 if col_name is None:  # numpy array, list...
                     col_name = _check_name_not_reserved(field, reserved_names)
 
-                if length and (len_arg := len(argument)) != length:
-                    raise ValueError(
-                        "All arguments should have the same length. "
-                        "The length of argument `%s` is %d, whereas the "
-                        "length of previously-processed arguments %s is %d"
-                        % (field, len_arg, str(list(df_output.keys())), length)
-                    )
+                if length:
+                    len_arg = len(argument)
+                    if len_arg != length:
+                        if wide_mode and length > 0 and len_arg % length == 0:
+                            wide_deferred_data[str(col_name)] = (
+                                argument,
+                                native_namespace,
+                            )
+                        else:
+                            raise ValueError(
+                                "All arguments should have the same length. "
+                                "The length of argument `%s` is %d, whereas the "
+                                "length of previously-processed arguments %s is %d"
+                                % (field, len_arg, str(list(df_output.keys())), length)
+                            )
 
-                df_output[str(col_name)] = to_named_series(
-                    x=argument,
-                    name=str(col_name),
-                    native_namespace=native_namespace,
-                )
+                if str(col_name) not in wide_deferred_data:
+                    df_output[str(col_name)] = to_named_series(
+                        x=argument,
+                        name=str(col_name),
+                        native_namespace=native_namespace,
+                    )
 
             # Finally, update argument with column name now that column exists
             assert col_name is not None, (
@@ -1427,7 +1471,7 @@ def process_args_into_dataframe(
                 pass
             else:
                 args[field_name][i] = str(col_name)
-            if field_name != "wide_variable":
+            if field_name != "wide_variable" and str(col_name) not in wide_deferred_data:
                 wide_id_vars.add(str(col_name))
 
     length = len(df_output[next(iter(df_output))]) if len(df_output) else 0
@@ -1474,7 +1518,7 @@ def process_args_into_dataframe(
             msg = "Pandas installation is required."
             raise NotImplementedError(msg)
         df_output = nw.from_native(pd.DataFrame({}), eager_only=True)
-    return df_output, wide_id_vars
+    return df_output, wide_id_vars, wide_deferred_data
 
 
 def build_dataframe(args, constructor):
@@ -1518,12 +1562,33 @@ def build_dataframe(args, constructor):
     # True if Ibis, DuckDB, Vaex, or implements __dataframe__
     needs_interchanging = False
 
+    _labels_provided = "labels" in args and args["labels"] is not None
+    _labels = {}
+    if _labels_provided and isinstance(args["labels"], dict):
+        _labels = dict(args["labels"])
+
+    _df_index_name = None
+    _df_columns_name = None
+    _intended_wide_cross_name = None
+    _intended_var_name = None
+
     # If data_frame is provided, we parse it into a narwhals DataFrame, while accounting
     # for compatibility with pandas specific paths (e.g. Index/MultiIndex case).
     if df_provided:
         # data_frame is pandas-like DataFrame (pandas, modin.pandas, cudf)
         if nw.dependencies.is_pandas_like_dataframe(args["data_frame"]):
             columns = args["data_frame"].columns  # This can be multi index
+            col_list = list(columns)
+            if len(set(str(c) for c in col_list)) != len(col_list):
+                new_cols = _deduplicate_columns(col_list)
+                for old, new in zip(col_list, new_cols):
+                    _update_labels_for_rename(_labels, str(old), new)
+                args["data_frame"].columns = new_cols
+                columns = args["data_frame"].columns
+            if hasattr(args["data_frame"].index, "name"):
+                _df_index_name = args["data_frame"].index.name
+            if hasattr(columns, "name"):
+                _df_columns_name = columns.name
             args["data_frame"] = nw.from_native(args["data_frame"], eager_only=True)
             is_pd_like = True
 
@@ -1631,8 +1696,11 @@ def build_dataframe(args, constructor):
 
     wide_mode = False
     var_name = None  # will likely be "variable" in wide_mode
+    _original_var_name = "variable"
     wide_cross_name = None  # will likely be "index" in wide_mode
+    _original_wide_cross_name = "index"
     value_name = None  # will likely be "value" in wide_mode
+    _original_value_name = "value"
     hist2d_types = [go.Histogram2d, go.Histogram2dContour]
     hist1d_orientation = constructor == go.Histogram or "ecdfmode" in args
     if constructor in cartesians:
@@ -1649,12 +1717,13 @@ def build_dataframe(args, constructor):
                     "express at the moment."
                 )
             args["wide_variable"] = list(columns)
-            if is_pd_like and isinstance(columns, native_namespace.Index):
-                var_name = columns.name
-            else:
-                var_name = None
-            if var_name in [None, "value", "index"] or var_name in columns:
+            var_name = _df_columns_name if _df_columns_name is not None else None
+            _intended_var_name = var_name
+            if var_name in [None, "value", "index"] or (
+                columns is not None and var_name in columns
+            ):
                 var_name = "variable"
+            _original_var_name = var_name
             if constructor == go.Funnel:
                 wide_orientation = args.get("orientation") or "h"
             else:
@@ -1665,13 +1734,15 @@ def build_dataframe(args, constructor):
             wide_mode = True
             args["wide_variable"] = args["y"] if wide_y else args["x"]
             if df_provided and is_pd_like and args["wide_variable"] is columns:
-                var_name = columns.name
+                var_name = _df_columns_name
+            _intended_var_name = var_name
             if is_pd_like and isinstance(args["wide_variable"], native_namespace.Index):
                 args["wide_variable"] = list(args["wide_variable"])
             if var_name in [None, "value", "index"] or (
-                df_provided and var_name in columns
+                df_provided and columns is not None and var_name in columns
             ):
                 var_name = "variable"
+            _original_var_name = var_name
             if hist1d_orientation:
                 wide_orientation = "v" if wide_x else "h"
             else:
@@ -1682,8 +1753,15 @@ def build_dataframe(args, constructor):
                 wide_cross_name = "__x__" if wide_y else "__y__"
 
     if wide_mode:
+        _intended_value_name = "value"
         value_name = _escape_col_name(columns, "value", [])
+        if value_name != _intended_value_name:
+            _update_labels_for_rename(_labels, _intended_value_name, value_name)
+        _original_value_name = "value"
+        _captured_intended_var_name = _intended_var_name if _intended_var_name is not None else var_name
         var_name = _escape_col_name(columns, var_name, [])
+        if _captured_intended_var_name is not None and var_name != _captured_intended_var_name:
+            _update_labels_for_rename(_labels, _captured_intended_var_name, var_name)
 
     # If the data_frame has interchange-only support levelin Narwhals, then we need to
     # convert it to a full support level backend.
@@ -1744,7 +1822,11 @@ def build_dataframe(args, constructor):
                         "plotly express at the moment."
                     )
                 args["wide_cross"] = index
+                _intended_wide_cross_name = (
+                    _df_index_name if _df_index_name is not None else "index"
+                )
             else:
+                _intended_wide_cross_name = "index"
                 args["wide_cross"] = Range(
                     label=_escape_col_name(columns, "index", [var_name, value_name])
                 )
@@ -1755,7 +1837,7 @@ def build_dataframe(args, constructor):
         args["color"] = None
     # now that things have been prepped, we do the systematic rewriting of `args`
 
-    df_output, wide_id_vars = process_args_into_dataframe(
+    df_output, wide_id_vars, wide_deferred_data = process_args_into_dataframe(
         args,
         wide_mode,
         var_name,
@@ -1767,6 +1849,14 @@ def build_dataframe(args, constructor):
     # now that `df_output` exists and `args` contains only references, we complete
     # the special-case and wide-mode handling by further rewriting args and/or mutating
     # df_output
+
+    if wide_mode:
+        _old_var_name = var_name
+        var_name = _escape_col_name(df_output.columns, var_name, [])
+        _update_labels_for_rename(_labels, _old_var_name, var_name)
+        _old_value_name = value_name
+        value_name = _escape_col_name(df_output.columns, value_name, [])
+        _update_labels_for_rename(_labels, _old_value_name, value_name)
 
     count_name = _escape_col_name(df_output.columns, "count", [var_name, value_name])
     if not wide_mode and missing_bar_dim and constructor == go.Bar:
@@ -1800,6 +1890,27 @@ def build_dataframe(args, constructor):
         else:
             wide_cross_name = args["wide_cross"]
         del args["wide_cross"]
+
+        if (
+            _intended_wide_cross_name is not None
+            and wide_cross_name != _intended_wide_cross_name
+        ):
+            _update_labels_for_rename(_labels, _intended_wide_cross_name, wide_cross_name)
+
+        if "variable" not in _labels and var_name in _labels:
+            if _labels[var_name] != "variable":
+                _labels["variable"] = _labels[var_name]
+        if "value" not in _labels and value_name in _labels:
+            if _labels[value_name] != "value":
+                _labels["value"] = _labels[value_name]
+        if (
+            "index" not in _labels
+            and _df_index_name is not None
+            and wide_cross_name in _labels
+            and _labels[wide_cross_name] != "index"
+        ):
+            _labels["index"] = _labels[wide_cross_name]
+
         dtype = None
         for v in wide_value_vars:
             v_dtype = df_output.get_column(v).dtype
@@ -1823,6 +1934,23 @@ def build_dataframe(args, constructor):
             "replicate and fix it."
         )
         df_output = df_output.with_columns(nw.col(var_name).cast(nw.String))
+
+        if wide_deferred_data:
+            for col_name, (data, native_ns) in wide_deferred_data.items():
+                escaped_name = _escape_col_name(
+                    df_output.columns, col_name, [var_name, value_name]
+                )
+                _update_labels_for_rename(_labels, col_name, escaped_name)
+                df_output = df_output.with_columns(
+                    nw.new_series(
+                        name=escaped_name,
+                        values=data,
+                        native_namespace=native_ns
+                        if native_ns is not None
+                        else nw.get_native_namespace(df_output),
+                    )
+                )
+
         orient_v = wide_orientation == "v"
 
         if hist1d_orientation:
@@ -1867,6 +1995,11 @@ def build_dataframe(args, constructor):
     if no_color:
         args["color"] = None
     args["data_frame"] = df_output
+    _labels = {k: v for k, v in _labels.items() if k != v}
+    if isinstance(args.get("labels"), dict) or _labels:
+        args["labels"] = _labels
+    elif not _labels_provided and "labels" in args:
+        del args["labels"]
     return args
 
 

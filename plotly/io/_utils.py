@@ -5,66 +5,6 @@ import plotly.graph_objs as go
 from plotly.offline import get_plotlyjs_version
 
 
-valid_formats = ("png", "jpeg", "webp", "svg", "pdf", "eps")
-format_conversions = {fmt: fmt for fmt in valid_formats}
-format_conversions.update({"jpg": "jpeg"})
-
-
-def raise_format_value_error(val):
-    raise ValueError(
-        """
-Invalid value of type {typ} received as an image format specification.
-    Received value: {v}
-
-An image format must be specified as one of the following string values:
-    {valid_formats}""".format(
-            typ=type(val), v=val, valid_formats=sorted(format_conversions.keys())
-        )
-    )
-
-
-def validate_coerce_format(fmt):
-    """
-    Validate / coerce a user specified image format, and raise an informative
-    exception if format is invalid.
-
-    Parameters
-    ----------
-    fmt
-        A value that may or may not be a valid image format string.
-
-    Returns
-    -------
-    str or None
-        A valid image format string. This may not be identical to the input
-        image designation. For example, the resulting string will always be
-        lower case and 'jpg' is converted to 'jpeg'.
-
-        If the input format value is None, then no exception is raised and
-        None is returned.
-
-    Raises
-    ------
-    ValueError
-        if the input `fmt` cannot be interpreted as a valid image format.
-    """
-    if fmt is None:
-        return None
-
-    if not isinstance(fmt, str) or not fmt:
-        raise_format_value_error(fmt)
-
-    fmt = fmt.lower()
-
-    if fmt[0] == ".":
-        fmt = fmt[1:]
-
-    if fmt not in format_conversions:
-        raise_format_value_error(fmt)
-
-    return format_conversions[fmt]
-
-
 def validate_coerce_fig_to_dict(fig, validate):
     from plotly.basedatatypes import BaseFigure
 
