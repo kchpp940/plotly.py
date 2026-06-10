@@ -549,7 +549,6 @@ def plot(
     ```
     """
     import plotly.io as pio
-    from plotly.io._html import _ensure_plotlyjs_bundle
 
     # Output type
     if output_type not in ["div", "file"]:
