@@ -461,19 +461,21 @@ def to_image(
     """
     # ------------------------------------------------------------------
     # Error chain order (from most-local/deterministic to external deps):
-    #   1. Format validation & normalization     (pure local, no side effects)
-    #   2. Engine resolution                     (pure logic, no warnings)
-    #   3. Orca delegation                       (if orca, orca handles warnings)
-    #   4. Deprecation warnings                  (only after format is good)
-    #   5. Kaleido installation check            (external dep #1)
-    #   6. Figure conversion + defaults apply    (local)
-    #   7. v0/v1 branch + EPS check              (local)
-    #   8. Chrome detection (via Kaleido call)   (external dep #2)
+    #   1. Format validation (incl. defaults)  (pure local, no side effects)
+    #   2. Engine resolution                    (pure logic, no warnings)
+    #   3. Orca delegation                      (if orca, orca handles warnings)
+    #   4. Deprecation warnings                 (only after format/defaults OK)
+    #   5. Kaleido installation check           (external dep #1)
+    #   6. Figure conversion + dim defaults     (local)
+    #   7. v0/v1 branch + EPS check             (local)
+    #   8. Chrome detection (via Kaleido call)  (external dep #2)
     # ------------------------------------------------------------------
 
-    # Step 1: Validate and normalize format FIRST (pure local operation)
-    # Format errors must be visible before any deprecation or install hints
-    format = validate_coerce_format(format)
+    # Step 1: Resolve and validate FINAL format FIRST (pure local operation).
+    # This includes the full cascade: explicit arg > defaults.default_format,
+    # so a bad defaults.default_format also fails before any warnings/install hints.
+    fmt_raw = validate_coerce_format(format)
+    resolved_format = fmt_raw or validate_coerce_format(defaults.default_format)
 
     # Save original engine value BEFORE resolving defaults, so that
     # deprecation warnings only fire when user explicitly passed engine
@@ -510,7 +512,7 @@ def to_image(
     elif engine != "kaleido":
         raise ValueError(f"Invalid image export engine specified: {repr(engine)}")
 
-    # Step 4: Emit deprecation warnings (only after format is validated,
+    # Step 4: Emit deprecation warnings (only after format is fully validated,
     # and only if caller hasn't already handled them)
     if not _skip_deprecation_warnings:
         _handle_deprecation_warnings(engine_original, stacklevel=_deprecation_stacklevel)
@@ -518,9 +520,8 @@ def to_image(
     # Step 5: Check Kaleido availability
     _ensure_kaleido_available()
 
-    # Step 6: Convert figure to dict and apply defaults consistently
+    # Step 6: Convert figure to dict and apply remaining defaults
     fig_dict = validate_coerce_fig_to_dict(fig, validate)
-    resolved_format = format or defaults.default_format
     resolved_scale = scale or defaults.default_scale
     resolved_width, resolved_height = _resolve_image_dimensions(fig_dict, width, height)
 
@@ -654,17 +655,21 @@ def write_image(
     """
     # ------------------------------------------------------------------
     # Error chain order (same as to_image):
-    #   1. Format inference + validation     (pure local, no side effects)
-    #   2. Engine resolution                  (pure logic, no warnings)
-    #   3. Orca delegation                    (if orca, orca handles warnings)
-    #   4. Deprecation warnings               (only after format is good)
+    #   1. Format inference + validation (incl. defaults)  (pure local)
+    #   2. Engine resolution                                 (pure logic, no warnings)
+    #   3. Orca delegation                                   (if orca, orca handles warnings)
+    #   4. Deprecation warnings                              (only after format/defaults OK)
     #   5. Call to_image (handles the rest)
     # ------------------------------------------------------------------
 
-    # Step 1: Resolve path + infer + validate format FIRST (pure local)
+    # Step 1: Resolve FINAL format FIRST (pure local).
+    # Full cascade: explicit arg > file extension > defaults.default_format.
+    # All three sources go through the same validate_coerce_format(),
+    # so a bad defaults.default_format also fails before any warnings.
     path = as_path_object(file)
-    format = infer_format(path, format)
-    format = validate_coerce_format(format)
+    fmt_inferred = infer_format(path, format)
+    fmt_raw = validate_coerce_format(fmt_inferred)
+    resolved_format = fmt_raw or validate_coerce_format(defaults.default_format)
 
     # Save original engine value BEFORE resolving defaults
     engine_original = engine
@@ -701,16 +706,16 @@ def write_image(
     elif engine != "kaleido":
         raise ValueError(f"Invalid image export engine specified: {repr(engine)}")
 
-    # Step 4: Emit deprecation warnings (only after format is validated,
+    # Step 4: Emit deprecation warnings (only after format is fully validated,
     # and only if caller hasn't already handled them)
     if not _skip_deprecation_warnings:
         _handle_deprecation_warnings(engine_original, stacklevel=_deprecation_stacklevel)
 
     # Step 5: Request image bytes via to_image (skip duplicate warnings there,
-    # pass resolved format so to_image doesn't re-validate the extension)
+    # pass fully-resolved format so to_image uses defaults.default_format we already validated)
     img_data = to_image(
         fig,
-        format=format,
+        format=resolved_format,
         scale=scale,
         width=width,
         height=height,
@@ -840,15 +845,17 @@ def write_images(
         validate=validate,
     )
 
-    # Step 2: Validate and normalize all formats FIRST (pure local operation)
-    # This ensures format errors are shown before any installation hints
+    # Step 2: Validate and normalize ALL formats FIRST (pure local operation),
+    # including defaults.default_format fallback — so bad defaults also fail
+    # before any Kaleido installation hints.
     for d in arg_dicts:
         d["file"] = as_path_object(d["file"])
-        d["format"] = validate_coerce_format(
+        fmt_raw = validate_coerce_format(
             infer_format(d["file"], d["format"])
         )
+        d["format"] = fmt_raw or validate_coerce_format(defaults.default_format)
 
-    # Step 3: Check Kaleido v1 availability (now format is already validated)
+    # Step 3: Check Kaleido v1 availability (now format is fully validated)
     _ensure_kaleido_v1()
 
     # Step 4: Convert figures to dicts and resolve dimensions
@@ -858,13 +865,13 @@ def write_images(
             d["fig"], d["width"], d["height"]
         )
 
-    # Step 5: Reshape for Kaleido and apply defaults
+    # Step 5: Reshape for Kaleido and apply remaining defaults
     kaleido_specs = [
         dict(
             fig=d["fig"],
             path=d["file"],
             opts=dict(
-                format=d["format"] or defaults.default_format,
+                format=d["format"],
                 width=d["width"],
                 height=d["height"],
                 scale=d["scale"] or defaults.default_scale,
