@@ -40,6 +40,11 @@ def to_typed_array_spec(v):
     """
     Convert numpy array to plotly.js typed array spec
     If not possible return the original value
+
+    Arrays that contain NaN values are NOT encoded as typed-array
+    (b64 binary) specs, because NaN in binary encoding loses null
+    semantics and may produce invalid JSON.  Such arrays are returned
+    as-is so they are serialized through the list/object path instead.
     """
     v = copy_to_readonly_numpy_array(v)
 
@@ -47,6 +52,13 @@ def to_typed_array_spec(v):
     # or if v is not a numpy array, or if v is empty
     np = get_module("numpy", should_load=False)
     if not np or not isinstance(v, np.ndarray) or v.size == 0:
+        return v
+
+    # Skip b64 encoding if the array contains NaN values.
+    # NaN in a binary typed-array spec does not map to JSON null,
+    # and orjson cannot encode NaN.  Fall through to list-based
+    # serialization where NaN → None (JSON null).
+    if v.dtype.kind == "f" and np.any(np.isnan(v)):
         return v
 
     dtype = str(v.dtype)

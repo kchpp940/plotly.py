@@ -63,12 +63,13 @@ def _clean_null_scalar(v):
 
 def _clean_array_nulls(np_arr):
     """
-    Clean a numpy array in-place (or return a copy if needed) so that all
-    null-like values become either:
-      - None for object arrays / datetime arrays (so they serialize as null)
-      - np.nan for numeric float arrays (native JSON path handles them)
+    Clean a numpy array so that all null-like values become None.
 
-    The dtype of the returned array is preserved when possible.
+    Arrays that contain any null values are always converted to object dtype
+    with None in null slots. This prevents NaN from leaking into typed-array
+    (base64 binary) encoding downstream, where null semantics would be lost.
+
+    Arrays with no nulls are returned unchanged.
     """
     import math as _math
 
@@ -90,11 +91,52 @@ def _clean_array_nulls(np_arr):
                 if np.isnat(val):
                     result[i] = None
                 else:
-                    # Convert numpy datetime64 scalar to native Python datetime
                     try:
                         result[i] = val.item()
                     except Exception:
                         result[i] = val
+            result = result.reshape(np_arr.shape)
+            result.flags["WRITEABLE"] = False
+            return result
+        return np_arr
+
+    # Numeric (u, i, f): if any NaN present, convert to object+None
+    # so that the array will NOT be eligible for typed-array (b64) encoding
+    if kind in ("u", "i", "f"):
+        has_nan = False
+        flat = np_arr.ravel()
+        for i in range(flat.size):
+            v = flat[i]
+            if isinstance(v, float) and _math.isnan(v):
+                has_nan = True
+                break
+            elif isinstance(v, np.floating) and np.isnan(v):
+                has_nan = True
+                break
+            elif pd is not None and (v is pd.NA or v is pd.NaT):
+                has_nan = True
+                break
+            elif v is np.ma.core.masked:
+                has_nan = True
+                break
+        if has_nan:
+            result = np.empty(flat.shape, dtype=object)
+            for i in range(flat.size):
+                v = flat[i]
+                if isinstance(v, (float, np.floating)):
+                    try:
+                        if _math.isnan(v):
+                            result[i] = None
+                        else:
+                            result[i] = float(v)
+                    except (TypeError, ValueError):
+                        result[i] = v
+                elif isinstance(v, (int, np.integer)):
+                    result[i] = int(v)
+                elif is_null_value(v):
+                    result[i] = None
+                else:
+                    result[i] = v
             result = result.reshape(np_arr.shape)
             result.flags["WRITEABLE"] = False
             return result
@@ -119,7 +161,6 @@ def _clean_array_nulls(np_arr):
             return result
         return np_arr
 
-    # Numeric float: keep np.nan as-is (PlotlyJSONEncoder converts to null)
     return np_arr
 
 
@@ -227,17 +268,28 @@ def copy_to_readonly_numpy_array(v, kind=None, force_numeric=False):
 
     assert np is not None
 
-    # Special-case numpy MaskedArray: convert masked values to NaN/None
-    # before any further processing. Otherwise the mask info is lost and
-    # underlying values leak through.
+    # Special-case numpy MaskedArray: convert masked positions to None
+    # in an object-dtype array.  We cannot use .filled(None) because
+    # numpy replaces None with the dtype's default fill_value for
+    # numeric dtypes (e.g. 1e+20 for float64).  Instead, build an
+    # object array manually so that null values are never encoded via
+    # typed-array (b64 binary) downstream.
     if isinstance(v, np.ma.MaskedArray):
-        if v.dtype.kind in ("u", "i"):
-            # Integer masked arrays can't hold NaN; promote to float first
-            v = v.astype(np.float64).filled(np.nan)
-        elif v.dtype.kind == "f":
-            v = v.filled(np.nan)
+        mask = np.ma.getmaskarray(v)
+        data = np.asarray(v)
+        if mask.any():
+            flat_data = data.ravel()
+            flat_mask = mask.ravel()
+            obj_flat = np.empty(flat_data.shape, dtype=object)
+            for i in range(flat_data.size):
+                if flat_mask[i]:
+                    obj_flat[i] = None
+                else:
+                    val = flat_data[i]
+                    obj_flat[i] = val.item() if hasattr(val, "item") else val
+            v = obj_flat.reshape(data.shape)
         else:
-            v = v.filled(None)
+            v = data
 
     # ### Process kind ###
     if not kind:

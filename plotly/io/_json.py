@@ -539,6 +539,20 @@ def clean_to_json_compatible(obj, **kwargs):
             return None
         elif isinstance(obj, np.ndarray):
             if numpy_allowed and obj.dtype.kind in ("b", "i", "u", "f"):
+                # If the numeric array contains NaN, it must be converted
+                # to a list with None values rather than passed through
+                # as a contiguous array. NaN in binary arrays loses null
+                # semantics, and orjson cannot encode NaN as JSON null.
+                if obj.dtype.kind == "f" and np.any(np.isnan(obj)):
+                    obj = obj.tolist()
+                    import math as _math
+                    def _nan_to_none(v):
+                        if isinstance(v, list):
+                            return [_nan_to_none(x) for x in v]
+                        if isinstance(v, float) and _math.isnan(v):
+                            return None
+                        return v
+                    return _nan_to_none(obj)
                 return np.ascontiguousarray(obj)
             elif obj.dtype.kind == "M":
                 # datetime64 array: convert strings, then replace 'NaT' entries with None

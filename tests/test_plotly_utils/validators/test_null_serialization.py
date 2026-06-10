@@ -97,11 +97,18 @@ class TestNullHelpers:
         assert cleaned[1] is None
         assert cleaned[0].year == 2021
 
-    def test_clean_array_nulls_float_nan_unchanged(self):
+    def test_clean_array_nulls_float_nan_to_object_none(self):
         arr = np.array([1.0, np.nan, 3.0])
         cleaned = _clean_array_nulls(arr)
+        assert cleaned.dtype == object
+        assert cleaned[1] is None
+        assert cleaned[0] == 1.0
+        assert cleaned[2] == 3.0
+
+    def test_clean_array_nulls_float_no_nan_unchanged(self):
+        arr = np.array([1.0, 2.0, 3.0])
+        cleaned = _clean_array_nulls(arr)
         assert cleaned is arr
-        assert np.isnan(cleaned[1])
 
 
 # =============================================================================
@@ -111,16 +118,16 @@ class TestCopyToReadonlyNullHandling:
     def test_int64_nullable_series(self):
         s = pd.Series([1, pd.NA, 3, pd.NA, 5], dtype="Int64")
         result = copy_to_readonly_numpy_array(s)
-        assert result.dtype.kind == "f"
+        assert result.dtype == object
         assert not result.flags["WRITEABLE"]
-        assert np.isnan(result[1])
-        assert np.isnan(result[3])
+        assert result[1] is None
+        assert result[3] is None
 
     def test_float64_nullable_series(self):
         s = pd.Series([1.0, pd.NA, 3.0], dtype="Float64")
         result = copy_to_readonly_numpy_array(s)
-        assert result.dtype.kind == "f"
-        assert np.isnan(result[1])
+        assert result.dtype == object
+        assert result[1] is None
 
     def test_string_nullable_series(self):
         s = pd.Series(["a", pd.NA, "c"], dtype="string")
@@ -149,15 +156,15 @@ class TestCopyToReadonlyNullHandling:
     def test_np_masked_array_int(self):
         arr = np.ma.array([1, 2, 3], mask=[False, True, False])
         result = copy_to_readonly_numpy_array(arr)
-        assert result.dtype.kind == "f"
-        assert np.isnan(result[1])
+        assert result.dtype == object
+        assert result[1] is None
 
     def test_np_masked_array_float(self):
         data = np.array([[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]])
         masked = np.ma.masked_where(data == 5.0, data)
         result = copy_to_readonly_numpy_array(masked)
-        assert result.dtype.kind == "f"
-        assert np.isnan(result[1, 1])
+        assert result.dtype == object
+        assert result[1, 1] is None
 
     def test_object_array_pd_na(self):
         arr = np.array([1, pd.NA, 3], dtype=object)
@@ -184,7 +191,7 @@ class TestToScalarOrListNulls:
 
         assert isinstance(result[0][0], (int, float))
         assert result[0][0] == 1
-        assert result[0][1] is None or (isinstance(result[0][1], float) and math.isnan(result[0][1]))
+        assert result[0][1] is None
 
         assert result[1][0] == "a"
         assert result[1][1] is None
@@ -253,17 +260,9 @@ class TestScatterNullsEndToEnd:
         parsed = json.loads(json_str)
 
         x = parsed["data"][0]["x"]
-        if isinstance(x, dict):
-            import base64
-
-            x_arr = np.frombuffer(
-                base64.b64decode(x["bdata"]), dtype=x["dtype"]
-            )
-            assert np.isnan(x_arr[1])
-            assert np.isnan(x_arr[3])
-        else:
-            assert x[1] is None
-            assert x[3] is None
+        assert isinstance(x, list), "Array with nulls must not be b64 encoded"
+        assert x[1] is None
+        assert x[3] is None
 
     def test_scatter_datetime_nat_json_roundtrip(self):
         dates = pd.to_datetime(
@@ -328,17 +327,8 @@ class TestHeatmapNullsEndToEnd:
         parsed = json.loads(json_str)
         z = parsed["data"][0]["z"]
 
-        if isinstance(z, dict):
-            import base64
-
-            z_arr = np.frombuffer(
-                base64.b64decode(z["bdata"]), dtype=z["dtype"]
-            ).reshape(3, 3)
-            assert np.isnan(z_arr[1, 1])
-        else:
-            assert z[1][1] is None or (
-                isinstance(z[1][1], float) and math.isnan(z[1][1])
-            )
+        assert isinstance(z, list), "Array with masked values must not be b64 encoded"
+        assert z[1][1] is None
 
 
 class TestTableNullsEndToEnd:
