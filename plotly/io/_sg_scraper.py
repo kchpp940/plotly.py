@@ -50,6 +50,8 @@ def plotly_sg_scraper(block, block_vars, gallery_conf, **kwargs):
     image_path_iterator = block_vars["image_path_iterator"]
     image_names = list()
     seen = set()
+    bundle_moved = False
+    bundle_src = os.path.join(examples_dir, "plotly.min.js")
     for html, png in zip(htmls, pngs):
         if png not in seen:
             seen |= set(png)
@@ -58,6 +60,16 @@ def plotly_sg_scraper(block, block_vars, gallery_conf, **kwargs):
             image_names.append(this_image_path_html)
             shutil.move(png, this_image_path_png)
             shutil.move(html, this_image_path_html)
+
+            # Handle plotly.min.js for include_plotlyjs='directory' mode
+            # Move the bundle to the images/ directory alongside HTML files
+            if os.path.exists(bundle_src) and not bundle_moved:
+                images_dir = os.path.dirname(this_image_path_html)
+                bundle_dst = os.path.join(images_dir, "plotly.min.js")
+                if not os.path.exists(bundle_dst):
+                    shutil.move(bundle_src, bundle_dst)
+                bundle_moved = True
+
     # Use the `figure_rst` helper function to generate rST for image files
     return figure_rst(image_names, gallery_conf["src_dir"])
 

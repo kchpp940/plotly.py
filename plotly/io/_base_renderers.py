@@ -4,6 +4,7 @@ import webbrowser
 import inspect
 import os
 from os.path import isdir
+from pathlib import Path
 
 from plotly import optional_imports
 from plotly.io import to_json, to_image, write_image, write_html
@@ -510,6 +511,10 @@ class IFrameRenderer(MimetypeRenderer):
 
     def to_mimebundle(self, fig_dict):
         from plotly.io import write_html
+        from plotly.io._html import (
+            _coerce_to_path,
+            _ensure_plotlyjs_bundle,
+        )
 
         # Make iframe size slightly larger than figure size to avoid
         # having iframe have its own scroll bar.
@@ -528,20 +533,33 @@ class IFrameRenderer(MimetypeRenderer):
 
         # Build filename using ipython cell number
         filename = self.build_filename()
+        html_path = _coerce_to_path(filename)
 
-        # Make directory for
-        try:
-            os.makedirs(self.html_directory)
-        except OSError:
-            if not isdir(self.html_directory):
-                raise
+        # Use unified bundle path handling.
+        # IFrameRenderer places HTML files in a subdirectory (e.g. iframe_figures/),
+        # while plotly.min.js should reside in the parent directory (cwd) so it's
+        # shared across all iframe HTML files. We use include_plotlyjs as a .js
+        # path (already supported by to_html) instead of 'directory', because
+        # 'directory' assumes bundle and HTML are in the same directory.
+        if self.include_plotlyjs == "directory":
+            # Copy bundle to cwd, not to the iframe subdirectory
+            _ensure_plotlyjs_bundle(
+                html_path=html_path,
+                include_plotlyjs="directory",
+                full_html=True,
+                bundle_dir=Path.cwd(),
+            )
+            # Reference bundle from subdirectory using relative path
+            effective_include_plotlyjs = "../plotly.min.js"
+        else:
+            effective_include_plotlyjs = self.include_plotlyjs
 
         write_html(
             fig_dict,
             filename,
             config=self.config,
             auto_play=self.auto_play,
-            include_plotlyjs=self.include_plotlyjs,
+            include_plotlyjs=effective_include_plotlyjs,
             include_mathjax="cdn",
             auto_open=False,
             post_script=self.post_script,
@@ -784,7 +802,10 @@ class SphinxGalleryHtmlRenderer(HtmlRenderer):
         auto_play=False,
         post_script=None,
         animation_opts=None,
+        include_plotlyjs=None,
     ):
+        if include_plotlyjs is None:
+            include_plotlyjs = "cdn" if connected else True
         super(SphinxGalleryHtmlRenderer, self).__init__(
             connected=connected,
             full_html=False,
@@ -793,12 +814,16 @@ class SphinxGalleryHtmlRenderer(HtmlRenderer):
             auto_play=auto_play,
             post_script=post_script,
             animation_opts=animation_opts,
+            include_plotlyjs=include_plotlyjs,
         )
 
     def to_mimebundle(self, fig_dict):
         from plotly.io import to_html
 
-        if self.connected:
+        if self.include_plotlyjs == "directory":
+            include_plotlyjs = "directory"
+            include_mathjax = "cdn"
+        elif self.connected:
             include_plotlyjs = "cdn"
             include_mathjax = "cdn"
         else:
@@ -822,7 +847,18 @@ class SphinxGalleryHtmlRenderer(HtmlRenderer):
 
 
 class SphinxGalleryOrcaRenderer(ExternalRenderer):
+    def __init__(
+        self,
+        include_plotlyjs="cdn",
+    ):
+        self.include_plotlyjs = include_plotlyjs
+
     def render(self, fig_dict):
+        from plotly.io._html import (
+            _coerce_to_path,
+            _ensure_plotlyjs_bundle,
+        )
+
         stack = inspect.stack()
         # Name of script from which plot function was called is retrieved
         try:
@@ -833,7 +869,21 @@ class SphinxGalleryOrcaRenderer(ExternalRenderer):
         filename_html = filename_root + ".html"
         filename_png = filename_root + ".png"
         figure = return_figure_from_figure_or_data(fig_dict, True)
-        _ = write_html(fig_dict, file=filename_html, include_plotlyjs="cdn")
+
+        html_path = _coerce_to_path(filename_html)
+
+        # Use unified bundle path handling for 'directory' mode
+        _ensure_plotlyjs_bundle(
+            html_path=html_path,
+            include_plotlyjs=self.include_plotlyjs,
+            full_html=True,
+        )
+
+        _ = write_html(
+            fig_dict,
+            file=filename_html,
+            include_plotlyjs=self.include_plotlyjs,
+        )
         try:
             write_image(figure, filename_png)
         except (ValueError, ImportError):
