@@ -7,6 +7,7 @@ from typing import Union
 from copy import deepcopy, copy
 import itertools
 from functools import reduce
+import inspect
 
 from _plotly_utils.utils import (
     _natural_sort_strings,
@@ -4390,6 +4391,23 @@ Invalid property path '{key_path_str}' for layout
         if self._has_subplots():
             raise ValueError("This figure already has subplots.")
         return _subplots.make_subplots(figure=self, **make_subplots_args)
+
+
+def _set_validate_signature(cls, method_name):
+    """Set public signature (validate=True) for image export methods."""
+    method = getattr(cls, method_name)
+    sig = inspect.signature(method)
+    params = []
+    for name, param in sig.parameters.items():
+        if name == "validate" and param.default is _IMAGE_EXPORT_VALIDATE_UNSET:
+            params.append(param.replace(default=True))
+        else:
+            params.append(param)
+    method.__signature__ = sig.replace(parameters=params)
+
+
+_set_validate_signature(BaseFigure, "to_image")
+_set_validate_signature(BaseFigure, "write_image")
 
 
 class BasePlotlyType(object):

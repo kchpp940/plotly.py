@@ -5,6 +5,7 @@ from typing import Union, List
 import importlib.metadata as importlib_metadata
 from packaging.version import Version
 import warnings
+import inspect
 
 import plotly
 from plotly.io._utils import (
@@ -389,6 +390,22 @@ To downgrade to Kaleido v0, run:
     return img_bytes
 
 
+def _public_signature(func, param_name, public_default):
+    """Replace a sentinel default in the function signature with a public value."""
+    sig = inspect.signature(func)
+    params = []
+    for name, param in sig.parameters.items():
+        if name == param_name and param.default is _UNSET:
+            params.append(param.replace(default=public_default))
+        else:
+            params.append(param)
+    func.__signature__ = sig.replace(parameters=params)
+    return func
+
+
+_public_signature(to_image, "validate", True)
+
+
 def write_image(
     fig: Union[dict, plotly.graph_objects.Figure],
     file: Union[str, Path],
@@ -535,6 +552,9 @@ The 'file' argument '{file}' is not a string, pathlib.Path object, or file descr
         # We previously succeeded in interpreting `file` as a pathlib object.
         # Now we can use `write_bytes()`.
         path.write_bytes(img_data)
+
+
+_public_signature(write_image, "validate", True)
 
 
 def write_images(
@@ -721,6 +741,9 @@ which can be installed using pip:
         )
     except ChromeNotFoundError:
         raise RuntimeError(PLOTLY_GET_CHROME_ERROR_MSG)
+
+
+_public_signature(write_images, "validate", True)
 
 
 def full_figure_for_development(
