@@ -1,8 +1,11 @@
 import plotly.graph_objs as go
 import plotly.io as pio
-from collections import namedtuple, OrderedDict
+from collections import namedtuple, OrderedDict, defaultdict
+from enum import Enum
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Union
+
 from ._special_inputs import IdentityMap, Constant, Range
-from ._naming import NamingContext, NamingResult, ONE_GROUP
 from .trendline_functions import ols, lowess, rolling, expanding, ewm
 
 from _plotly_utils.basevalidators import ColorscaleValidator
@@ -23,6 +26,301 @@ import narwhals.stable.v1 as nw
 # forbidding users to install them all together due to dependency conflicts.
 
 NO_COLOR = "px_no_color_constant"
+
+
+class AnnotationTarget(Enum):
+    INITIAL_LAYOUT = "initial_layout"
+    FRAME_LAYOUT = "frame_layout"
+    BOTH = "both"
+
+
+@dataclass
+class AnnotationSpec:
+    text: str
+    x: Optional[float] = None
+    y: Optional[float] = None
+    xref: str = "paper"
+    yref: str = "paper"
+    target: AnnotationTarget = AnnotationTarget.INITIAL_LAYOUT
+    frame_name: Optional[str] = None
+    showarrow: bool = False
+    font: Optional[Dict[str, Any]] = None
+    align: str = "center"
+    xanchor: Optional[str] = None
+    yanchor: Optional[str] = None
+    xshift: Optional[float] = None
+    yshift: Optional[float] = None
+    opacity: Optional[float] = None
+    textangle: Optional[float] = None
+    extra: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        result = {
+            "text": self.text,
+            "showarrow": self.showarrow,
+            "align": self.align,
+        }
+        if self.x is not None:
+            result["x"] = self.x
+        if self.y is not None:
+            result["y"] = self.y
+        if self.xref != "paper":
+            result["xref"] = self.xref
+        if self.yref != "paper":
+            result["yref"] = self.yref
+        if self.font is not None:
+            result["font"] = self.font
+        if self.xanchor is not None:
+            result["xanchor"] = self.xanchor
+        if self.yanchor is not None:
+            result["yanchor"] = self.yanchor
+        if self.xshift is not None:
+            result["xshift"] = self.xshift
+        if self.yshift is not None:
+            result["yshift"] = self.yshift
+        if self.opacity is not None:
+            result["opacity"] = self.opacity
+        if self.textangle is not None:
+            result["textangle"] = self.textangle
+        result.update(self.extra)
+        return result
+
+
+class AnnotationCollector:
+    def __init__(self):
+        self._annotations: List[AnnotationSpec] = []
+
+    def add(self, annotation: AnnotationSpec) -> None:
+        self._annotations.append(annotation)
+
+    def add_many(self, annotations: List[AnnotationSpec]) -> None:
+        self._annotations.extend(annotations)
+
+    def get_all(self) -> List[AnnotationSpec]:
+        return list(self._annotations)
+
+    def get_by_target(self, target: AnnotationTarget) -> List[AnnotationSpec]:
+        return [a for a in self._annotations if a.target == target]
+
+    def get_by_frame(self, frame_name: str) -> List[AnnotationSpec]:
+        return [
+            a for a in self._annotations
+            if (a.target == AnnotationTarget.FRAME_LAYOUT and a.frame_name == frame_name)
+            or (a.target == AnnotationTarget.BOTH and (a.frame_name is None or a.frame_name == frame_name))
+        ]
+
+
+class AnnotationApplier:
+    @staticmethod
+    def _dicts_to_annotations(
+        dicts: List[Dict[str, Any]]
+    ) -> List[go.layout.Annotation]:
+        return [go.layout.Annotation(d) for d in dicts]
+
+    @staticmethod
+    def apply_initial_layout(
+        fig: go.Figure,
+        collector: AnnotationCollector,
+    ) -> None:
+        initial_anns = collector.get_by_target(AnnotationTarget.INITIAL_LAYOUT)
+        both_anns = collector.get_by_target(AnnotationTarget.BOTH)
+        all_anns = initial_anns + both_anns
+
+        if all_anns:
+            ann_dicts = [a.to_dict() for a in all_anns]
+            existing = fig.layout.annotations or ()
+            fig.layout.annotations = list(existing) + ann_dicts
+
+    @staticmethod
+    def apply_frame_layouts(
+        fig: go.Figure,
+        collector: AnnotationCollector,
+        frame_names: List[str],
+    ) -> None:
+        for frame_name in frame_names:
+            frame_anns = collector.get_by_frame(frame_name)
+            both_anns = [
+                a for a in collector.get_by_target(AnnotationTarget.BOTH)
+                if a.frame_name is None or a.frame_name == frame_name
+            ]
+            all_anns = frame_anns + both_anns
+
+            if all_anns:
+                ann_dicts = [a.to_dict() for a in all_anns]
+                for frame in fig.frames:
+                    if frame.name == frame_name:
+                        if not hasattr(frame, "layout") or frame.layout is None:
+                            frame.layout = {}
+                        if "annotations" not in frame.layout or frame.layout["annotations"] is None:
+                            existing = []
+                        else:
+                            existing = list(frame.layout["annotations"])
+                        existing.extend(ann_dicts)
+                        frame.layout["annotations"] = existing
+                        break
+
+    @staticmethod
+    def apply_all(
+        fig: go.Figure,
+        collector: AnnotationCollector,
+        frame_names: Optional[List[str]] = None,
+    ) -> None:
+        AnnotationApplier.apply_initial_layout(fig, collector)
+        if frame_names:
+            AnnotationApplier.apply_frame_layouts(fig, collector, frame_names)
+
+
+def create_facet_annotations(
+    args: Dict[str, Any],
+    col_labels: List[str],
+    row_labels: List[str],
+    subplot_labels: Optional[List[str]] = None,
+    nrows: int = 1,
+    ncols: int = 1,
+    facet_col_wrap: int = 0,
+) -> List[AnnotationSpec]:
+    annotations: List[AnnotationSpec] = []
+    prefix_col = get_label(args, args["facet_col"]) + "=" if args.get("facet_col") else ""
+    prefix_row = get_label(args, args["facet_row"]) + "=" if args.get("facet_row") else ""
+
+    if facet_col_wrap and subplot_labels:
+        for i, label in enumerate(subplot_labels):
+            if label is None:
+                continue
+            row_idx = i // ncols
+            col_idx = i % ncols
+            x = (col_idx + 0.5) / ncols
+            y = 1 - (row_idx / nrows)
+            annotations.append(
+                AnnotationSpec(
+                    text=label,
+                    x=x,
+                    y=y,
+                    xref="paper",
+                    yref="paper",
+                    yanchor="bottom",
+                    yshift=10,
+                    target=AnnotationTarget.INITIAL_LAYOUT,
+                )
+            )
+    else:
+        for j, label in enumerate(col_labels):
+            x = (j + 0.5) / ncols
+            annotations.append(
+                AnnotationSpec(
+                    text=prefix_col + str(label) if prefix_col else str(label),
+                    x=x,
+                    y=1.0,
+                    xref="paper",
+                    yref="paper",
+                    yanchor="bottom",
+                    yshift=10,
+                    target=AnnotationTarget.INITIAL_LAYOUT,
+                )
+            )
+        for i, label in enumerate(reversed(row_labels)):
+            y = (i + 0.5) / nrows
+            annotations.append(
+                AnnotationSpec(
+                    text=prefix_row + str(label) if prefix_row else str(label),
+                    x=1.0,
+                    y=y,
+                    xref="paper",
+                    yref="paper",
+                    xanchor="left",
+                    xshift=10,
+                    textangle=-90,
+                    target=AnnotationTarget.INITIAL_LAYOUT,
+                )
+            )
+
+    return annotations
+
+
+def create_trendline_annotation(
+    fit_results: Any,
+    x: float,
+    y: float,
+    xref: str = "x",
+    yref: str = "y",
+    frame_name: Optional[str] = None,
+    target: AnnotationTarget = AnnotationTarget.INITIAL_LAYOUT,
+) -> AnnotationSpec:
+    text = f"R² = {fit_results.rsquared:.4f}" if hasattr(fit_results, "rsquared") else "Trendline"
+    return AnnotationSpec(
+        text=text,
+        x=x,
+        y=y,
+        xref=xref,
+        yref=yref,
+        showarrow=True,
+        frame_name=frame_name,
+        target=target,
+        extra=dict(arrowhead=1, ax=20, ay=-30),
+    )
+
+
+def create_stat_annotation(
+    text: str,
+    x: float,
+    y: float,
+    xref: str = "paper",
+    yref: str = "paper",
+    frame_name: Optional[str] = None,
+    target: AnnotationTarget = AnnotationTarget.INITIAL_LAYOUT,
+) -> AnnotationSpec:
+    return AnnotationSpec(
+        text=text,
+        x=x,
+        y=y,
+        xref=xref,
+        yref=yref,
+        showarrow=False,
+        align="left",
+        xanchor="left",
+        yanchor="top",
+        frame_name=frame_name,
+        target=target,
+        font=dict(size=10),
+    )
+
+
+def create_marginal_annotation(
+    text: str,
+    x: float,
+    y: float,
+    xref: str = "paper",
+    yref: str = "paper",
+) -> AnnotationSpec:
+    return AnnotationSpec(
+        text=text,
+        x=x,
+        y=y,
+        xref=xref,
+        yref=yref,
+        showarrow=False,
+        font=dict(size=9),
+        target=AnnotationTarget.INITIAL_LAYOUT,
+    )
+
+
+def create_frame_annotation(
+    text: str,
+    x: float,
+    y: float,
+    frame_name: str,
+    xref: str = "paper",
+    yref: str = "paper",
+) -> AnnotationSpec:
+    return AnnotationSpec(
+        text=text,
+        x=x,
+        y=y,
+        xref=xref,
+        yref=yref,
+        frame_name=frame_name,
+        target=AnnotationTarget.FRAME_LAYOUT,
+    )
 
 
 trendline_functions = dict(
@@ -138,6 +436,101 @@ Mapping = namedtuple(
     ],
 )
 TraceSpec = namedtuple("TraceSpec", ["constructor", "attrs", "trace_patch", "marginal"])
+
+
+class NamingContext:
+    _LEGENDLESS_CONSTRUCTORS = {
+        go.Parcats,
+        go.Parcoords,
+        go.Choropleth,
+        go.Choroplethmap,
+        go.Choroplethmapbox,
+        go.Densitymap,
+        go.Densitymapbox,
+        go.Histogram2d,
+        go.Sunburst,
+        go.Treemap,
+        go.Icicle,
+    }
+
+    def __init__(self, args, grouped_mappings, grouper, orders):
+        self.args = args
+        self.grouped_mappings = grouped_mappings
+        self.grouper = grouper
+        self.orders = orders
+        self._trace_names_by_frame = {}
+        self._last_trace_name_labels = None
+
+    def _build_labels(self, group_name):
+        mapping_labels = OrderedDict()
+        trace_name_labels = OrderedDict()
+        frame_name = ""
+        for col, val, m in zip(self.grouper, group_name, self.grouped_mappings):
+            if col != one_group:
+                key = get_label(self.args, col)
+                if not isinstance(m.val_map, IdentityMap):
+                    mapping_labels[key] = str(val)
+                    if m.show_in_trace_name:
+                        trace_name_labels[key] = str(val)
+                if m.variable == "animation_frame":
+                    frame_name = val
+        return mapping_labels, trace_name_labels, frame_name
+
+    def _get_or_create_frame_names(self, frame_name):
+        if frame_name not in self._trace_names_by_frame:
+            self._trace_names_by_frame[frame_name] = set()
+        return self._trace_names_by_frame[frame_name]
+
+    def get_base_naming(self, group_name, trace_spec):
+        mapping_labels, trace_name_labels, frame_name = self._build_labels(group_name)
+        trace_name = ", ".join(trace_name_labels.values())
+        trace_names = self._get_or_create_frame_names(frame_name)
+
+        constructor = trace_spec.constructor
+        should_have_legend = constructor not in self._LEGENDLESS_CONSTRUCTORS
+
+        result = {
+            "name": trace_name,
+            "frame_name": frame_name,
+            "mapping_labels": mapping_labels,
+            "trace_name_labels": trace_name_labels,
+        }
+
+        if should_have_legend:
+            result["legendgroup"] = trace_name
+            result["showlegend"] = trace_name != "" and trace_name not in trace_names
+        else:
+            result["legendgroup"] = None
+            result["showlegend"] = None
+
+        trace_names.add(trace_name)
+        self._last_trace_name_labels = trace_name_labels
+        return result
+
+    def get_trendline_naming(self, base_naming):
+        trace_name = base_naming["name"]
+        frame_name = base_naming["frame_name"]
+        trace_names = self._get_or_create_frame_names(frame_name)
+
+        trendline_name = trace_name + " Trendline" if trace_name else "Trendline"
+
+        return {
+            "name": trendline_name,
+            "legendgroup": trace_name,
+            "showlegend": trendline_name not in trace_names,
+        }
+
+    def get_overall_trendline_naming(self):
+        return {
+            "name": "Overall Trendline",
+            "legendgroup": "Overall Trendline",
+            "showlegend": False,
+        }
+
+    def get_legend_title(self):
+        if self._last_trace_name_labels:
+            return ", ".join(self._last_trace_name_labels)
+        return None
 
 
 def get_label(args, column):
@@ -1031,6 +1424,10 @@ def make_trendline_spec(args, constructor):
     if args["trendline_color_override"]:
         trace_spec.trace_patch["line"] = dict(color=args["trendline_color_override"])
     return trace_spec
+
+
+def one_group(x):
+    return ""
 
 
 def apply_default_cascade(args, constructor):
@@ -2624,7 +3021,7 @@ def get_groups_and_orders(args, grouper):
     unique_cache = dict()
 
     for i, col in enumerate(grouper):
-        if col is ONE_GROUP:
+        if col == one_group:
             single_group_name.append("")
         else:
             if col not in unique_cache:
@@ -2664,7 +3061,7 @@ def get_groups_and_orders(args, grouper):
                 [
                     (
                         ""
-                        if col is ONE_GROUP
+                        if col == one_group
                         else sub_group_names[required_grouper_semantic.index(col)]
                     )
                     for col in grouper
@@ -2687,6 +3084,8 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
     user_provided_colorscale = args.get("color_continuous_scale") is not None
     apply_default_cascade(args, constructor=constructor)
 
+    annotation_collector = AnnotationCollector()
+
     args = build_dataframe(args, constructor)
     if constructor in [go.Treemap, go.Sunburst, go.Icicle] and args["path"] is not None:
         args = process_dataframe_hierarchy(args)
@@ -2703,7 +3102,7 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
     trace_specs, grouped_mappings, sizeref, show_colorbar = infer_config(
         args, constructor, trace_patch, layout_patch
     )
-    grouper = [x.grouper or ONE_GROUP for x in grouped_mappings] or [ONE_GROUP]
+    grouper = [x.grouper or one_group for x in grouped_mappings] or [one_group]
     groups, orders = get_groups_and_orders(args, grouper)
 
     col_labels = []
@@ -2715,12 +3114,10 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
         else:
             sorted_values = orders[m.grouper]
             if m.facet == "col":
-                prefix = get_label(args, args["facet_col"]) + "="
-                col_labels = [prefix + str(s) for s in sorted_values]
+                col_labels = [str(s) for s in sorted_values]
                 ncols = len(col_labels)
             if m.facet == "row":
-                prefix = get_label(args, args["facet_row"]) + "="
-                row_labels = [prefix + str(s) for s in sorted_values]
+                row_labels = [str(s) for s in sorted_values]
                 nrows = len(row_labels)
             for val in sorted_values:
                 if val not in m.val_map:  # always False if it's an IdentityMap
@@ -2728,21 +3125,37 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
 
     subplot_type = _subplot_type_for_trace_type(constructor().type)
 
-    naming_ctx = NamingContext(args, grouped_mappings, grouper, orders, layout_patch)
+    naming_ctx = NamingContext(args, grouped_mappings, grouper, orders)
     frames = OrderedDict()
     trendline_rows = []
     facet_col_wrap = args.get("facet_col_wrap", 0)
     for group_name, group in groups.items():
-        base_naming = None
         for i, trace_spec in enumerate(trace_specs):
             if i == 0:
-                naming = naming_ctx.get_base_naming(group_name, trace_spec)
-                base_naming = naming
+                base_naming = naming_ctx.get_base_naming(group_name, trace_spec)
+                naming = base_naming
             else:
                 naming = naming_ctx.get_trendline_naming(base_naming)
 
-            trace = trace_spec.constructor()
-            naming.apply_to_trace(trace)
+            trace_name = naming["name"]
+            frame_name = naming["frame_name"] if i == 0 else base_naming["frame_name"]
+            mapping_labels = (
+                base_naming["mapping_labels"] if i == 0 else OrderedDict()
+            )
+
+            trace = trace_spec.constructor(name=trace_name)
+
+            if naming["legendgroup"] is not None:
+                trace.update(
+                    legendgroup=naming["legendgroup"],
+                    showlegend=naming["showlegend"],
+                )
+
+            barmode = layout_patch.get("barmode")
+            if trace_spec.constructor in [go.Bar, go.Box, go.Violin, go.Histogram] and (
+                barmode == "group" or barmode is None
+            ):
+                trace.update(alignmentgroup=True, offsetgroup=trace_name)
 
             # Init subplot row/col
             trace._subplot_row = 1
@@ -2843,15 +3256,33 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
                     group = group.with_columns((nw.col(var) / group_sum) * 100.0)
 
             patch, fit_results = make_trace_kwargs(
-                args, trace_spec, group, naming.mapping_labels.copy(), sizeref
+                args, trace_spec, group, mapping_labels.copy(), sizeref
             )
             trace.update(patch)
             if fit_results is not None:
-                trendline_rows.append(naming.mapping_labels.copy())
+                trendline_rows.append(mapping_labels.copy())
                 trendline_rows[-1]["px_fit_results"] = fit_results
-            if naming.frame_name not in frames:
-                frames[naming.frame_name] = dict(data=[], name=naming.frame_name)
-            frames[naming.frame_name]["data"].append(trace)
+                if trace_spec != trace_specs[0]:
+                    target = (
+                        AnnotationTarget.FRAME_LAYOUT
+                        if frame_name
+                        else AnnotationTarget.INITIAL_LAYOUT
+                    )
+                    xaxis = trace.xaxis or "x"
+                    yaxis = trace.yaxis or "y"
+                    trendline_ann = create_trendline_annotation(
+                        fit_results,
+                        x=0.05,
+                        y=0.95,
+                        xref=f"{xaxis} domain",
+                        yref=f"{yaxis} domain",
+                        frame_name=frame_name,
+                        target=target,
+                    )
+                    annotation_collector.add(trendline_ann)
+            if frame_name not in frames:
+                frames[frame_name] = dict(data=[], name=frame_name)
+            frames[frame_name]["data"].append(trace)
     frame_list = [f for f in frames.values()]
     if len(frame_list) > 1:
         frame_list = sorted(
@@ -2913,9 +3344,20 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
     if args.get("marginal_y") is not None:
         ncols += 1
 
-    fig = init_figure(
+    fig, subplot_labels = init_figure(
         args, subplot_type, frame_list, nrows, ncols, col_labels, row_labels
     )
+
+    facet_annotations = create_facet_annotations(
+        args,
+        col_labels,
+        row_labels,
+        subplot_labels,
+        nrows,
+        ncols,
+        facet_col_wrap,
+    )
+    annotation_collector.add_many(facet_annotations)
 
     # Position traces in subplots
     for frame in frame_list:
@@ -2943,9 +3385,12 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
 
     if args.get("trendline") and args.get("trendline_scope", "trace") == "overall":
         trendline_spec = make_trendline_spec(args, constructor)
-        overall = naming_ctx.get_overall_trendline_naming()
-        trendline_trace = trendline_spec.constructor()
-        overall.apply_to_trace(trendline_trace)
+        overall_naming = naming_ctx.get_overall_trendline_naming()
+        trendline_trace = trendline_spec.constructor(
+            name=overall_naming["name"],
+            legendgroup=overall_naming["legendgroup"],
+            showlegend=overall_naming["showlegend"],
+        )
         if "line" not in trendline_spec.trace_patch:  # no color override
             for m in grouped_mappings:
                 if m.variable == "color":
@@ -2961,6 +3406,15 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
         fig.update_traces(selector=-1, showlegend=True)
         if fit_results is not None:
             trendline_rows.append(dict(px_fit_results=fit_results))
+            trendline_ann = create_trendline_annotation(
+                fit_results,
+                x=0.05,
+                y=0.95,
+                xref="paper",
+                yref="paper",
+                target=AnnotationTarget.INITIAL_LAYOUT,
+            )
+            annotation_collector.add(trendline_ann)
 
     if trendline_rows:
         try:
@@ -2975,6 +3429,10 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
 
     configure_axes(args, constructor, fig, orders)
     configure_animation_controls(args, constructor, fig)
+
+    frame_names = [f["name"] for f in frame_list] if len(frames) > 1 else None
+    AnnotationApplier.apply_all(fig, annotation_collector, frame_names)
+
     return fig
 
 
@@ -3024,6 +3482,7 @@ def init_figure(args, subplot_type, frame_list, nrows, ncols, col_labels, row_la
             vertical_spacing = args.get("facet_row_spacing") or 0.03
         horizontal_spacing = args.get("facet_col_spacing") or 0.02
 
+    subplot_labels = None
     if facet_col_wrap:
         subplot_labels = [None] * nrows * ncols
         while len(col_labels) < nrows * ncols:
@@ -3045,7 +3504,7 @@ Use the {facet_arg} argument to adjust this spacing.""".format(facet_arg=facet_a
             )
             raise e
 
-    # Create figure with subplots
+    # Create figure with subplots - no titles passed, they will be added via annotation builder
     try:
         fig = make_subplots(
             rows=nrows,
@@ -3053,9 +3512,9 @@ Use the {facet_arg} argument to adjust this spacing.""".format(facet_arg=facet_a
             specs=specs,
             shared_xaxes="all",
             shared_yaxes="all",
-            row_titles=[] if facet_col_wrap else list(reversed(row_labels)),
-            column_titles=[] if facet_col_wrap else col_labels,
-            subplot_titles=subplot_labels if facet_col_wrap else [],
+            row_titles=[],
+            column_titles=[],
+            subplot_titles=[],
             horizontal_spacing=horizontal_spacing,
             vertical_spacing=vertical_spacing,
             row_heights=row_heights,
@@ -3067,8 +3526,4 @@ Use the {facet_arg} argument to adjust this spacing.""".format(facet_arg=facet_a
         _spacing_error_translator(e, "Vertical", "facet_row_spacing")
         raise
 
-    # Remove explicit font size of row/col titles so template can take over
-    for annot in fig.layout.annotations:
-        annot.update(font=None)
-
-    return fig
+    return fig, subplot_labels
