@@ -18,6 +18,21 @@ if TYPE_CHECKING:
     from ._renderers import renderers, show
     from . import base_renderers
     from ._kaleido import defaults, get_chrome
+    from ._resource_policy import (
+        ResourcePolicySet,
+        ResourceType,
+        PolicyType,
+        BaseResourcePolicy,
+        InlinePolicy,
+        CdnPolicy,
+        DirectoryPolicy,
+        UrlPolicy,
+        ManifestPolicy,
+        ExcludePolicy,
+        create_policy_set,
+        policy_from_include_plotlyjs,
+        policy_from_include_mathjax,
+    )
 
     __all__ = [
         "to_image",
@@ -39,11 +54,24 @@ if TYPE_CHECKING:
         "full_figure_for_development",
         "defaults",
         "get_chrome",
+        "ResourcePolicySet",
+        "ResourceType",
+        "PolicyType",
+        "BaseResourcePolicy",
+        "InlinePolicy",
+        "CdnPolicy",
+        "DirectoryPolicy",
+        "UrlPolicy",
+        "ManifestPolicy",
+        "ExcludePolicy",
+        "create_policy_set",
+        "policy_from_include_plotlyjs",
+        "policy_from_include_mathjax",
     ]
 else:
     __all__, __getattr__, __dir__ = relative_import(
         __name__,
-        [".orca", ".kaleido", ".json", ".base_renderers"],
+        [".orca", ".kaleido", ".json", ".base_renderers", "._resource_policy"],
         [
             "._kaleido.to_image",
             "._kaleido.write_image",
@@ -61,6 +89,19 @@ else:
             "._renderers.show",
             "._kaleido.defaults",
             "._kaleido.get_chrome",
+            "._resource_policy.ResourcePolicySet",
+            "._resource_policy.ResourceType",
+            "._resource_policy.PolicyType",
+            "._resource_policy.BaseResourcePolicy",
+            "._resource_policy.InlinePolicy",
+            "._resource_policy.CdnPolicy",
+            "._resource_policy.DirectoryPolicy",
+            "._resource_policy.UrlPolicy",
+            "._resource_policy.ManifestPolicy",
+            "._resource_policy.ExcludePolicy",
+            "._resource_policy.create_policy_set",
+            "._resource_policy.policy_from_include_plotlyjs",
+            "._resource_policy.policy_from_include_mathjax",
         ],
     )
 

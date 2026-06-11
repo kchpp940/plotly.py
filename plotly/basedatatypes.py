@@ -3,11 +3,9 @@ from collections import OrderedDict
 import re
 import warnings
 from contextlib import contextmanager
-from typing import Union
 from copy import deepcopy, copy
 import itertools
 from functools import reduce
-import inspect
 
 from _plotly_utils.utils import (
     _natural_sort_strings,
@@ -29,10 +27,6 @@ from . import _subplots
 #   - Setting a property to None removes any existing value
 #   - Setting a property to Undefined leaves existing value unmodified
 Undefined = object()
-
-# Sentinel for image export validate parameter: distinguishes "user did not pass"
-# from user explicitly passing True/False. Used by to_image/write_image methods.
-_IMAGE_EXPORT_VALIDATE_UNSET = object()
 
 
 def _len_dict_item(item):
@@ -3720,16 +3714,7 @@ Invalid property path '{key_path_str}' for layout
 
         return pio.write_html(self, *args, **kwargs)
 
-    def to_image(
-        self,
-        format: Union[str, None] = None,
-        width: Union[int, None] = None,
-        height: Union[int, None] = None,
-        scale: Union[int, float, None] = None,
-        validate: bool = _IMAGE_EXPORT_VALIDATE_UNSET,
-        engine: Union[str, None] = None,
-        profile: Union[str, None] = None,
-    ):
+    def to_image(self, *args, **kwargs):
         """
         Convert a figure to a static image bytes string
 
@@ -3744,8 +3729,7 @@ Invalid property path '{key_path_str}' for layout
               - 'pdf'
               - 'eps' (deprecated) (Requires the poppler library to be installed)
 
-            If not specified, will default to the value from the named profile
-            (if provided), or:
+            If not specified, will default to:
                 - `plotly.io.defaults.default_format` if engine is "kaleido"
                 - `plotly.io.orca.config.default_format` if engine is "orca" (deprecated)
 
@@ -3754,8 +3738,7 @@ Invalid property path '{key_path_str}' for layout
             property is 1.0, this will also be the width of the exported image
             in physical pixels.
 
-            If not specified, will default to the value from the named profile
-            (if provided), or:
+            If not specified, will default to:
                 - `plotly.io.defaults.default_width` if engine is "kaleido"
                 - `plotly.io.orca.config.default_width` if engine is "orca" (deprecated)
 
@@ -3764,8 +3747,7 @@ Invalid property path '{key_path_str}' for layout
             property is 1.0, this will also be the height of the exported image
             in physical pixels.
 
-            If not specified, will default to the value from the named profile
-            (if provided), or:
+            If not specified, will default to:
                 - `plotly.io.defaults.default_height` if engine is "kaleido"
                 - `plotly.io.orca.config.default_height` if engine is "orca" (deprecated)
 
@@ -3775,8 +3757,7 @@ Invalid property path '{key_path_str}' for layout
             to the figure's layout pixel dimensions. Whereas as scale factor of
             less than 1.0 will decrease the image resolution.
 
-            If not specified, will default to the value from the named profile
-            (if provided), or:
+            If not specified, will default to:
                 - `plotly.io.defaults.default_scale` if engine is "kaliedo"
                 - `plotly.io.orca.config.default_scale` if engine is "orca" (deprecated)
 
@@ -3790,14 +3771,6 @@ Invalid property path '{key_path_str}' for layout
             - "kaleido": Use Kaleido for image export
             - "orca": Use Orca for image export
             - "auto" (default): Use Kaleido if installed, otherwise use Orca
-
-        profile: str or None
-            The name of an export profile to use for default values. If provided,
-            values from the profile are used for any parameters not explicitly
-            specified. Explicit parameters always override profile values.
-            Profiles can be configured via ``plotly.io.defaults.profiles``.
-
-            Built-in profiles include: 'web', 'print', 'retina', 'thumbnail'.
 
         Returns
         -------
@@ -3816,42 +3789,21 @@ Invalid property path '{key_path_str}' for layout
 
         if ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS:
             if (
-                engine in {None, "auto", "kaleido"}
+                kwargs.get("engine", None) in {None, "auto", "kaleido"}
                 and kaleido_available()
                 and kaleido_major() < 1
             ):
                 warnings.warn(KALEIDO_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-            if engine == "orca":
+            if kwargs.get("engine", None) == "orca":
                 warnings.warn(ORCA_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-            if engine is not None and engine != "auto":
+            if kwargs.get("engine", None):
                 warnings.warn(
                     ENGINE_PARAM_DEPRECATION_MSG, DeprecationWarning, stacklevel=2
                 )
 
-        kwargs = dict(
-            format=format,
-            width=width,
-            height=height,
-            scale=scale,
-            engine=engine,
-            profile=profile,
-        )
-        if validate is not _IMAGE_EXPORT_VALIDATE_UNSET:
-            kwargs["validate"] = validate
+        return pio.to_image(self, *args, **kwargs)
 
-        return pio.to_image(self, **kwargs)
-
-    def write_image(
-        self,
-        file,
-        format: Union[str, None] = None,
-        scale: Union[int, float, None] = None,
-        width: Union[int, None] = None,
-        height: Union[int, None] = None,
-        validate: bool = _IMAGE_EXPORT_VALIDATE_UNSET,
-        engine: Union[str, None] = None,
-        profile: Union[str, None] = None,
-    ):
+    def write_image(self, *args, **kwargs):
         """
         Convert a figure to a static image and write it to a file or writeable
         object
@@ -3873,7 +3825,7 @@ Invalid property path '{key_path_str}' for layout
 
             If not specified and `file` is a string then this will default to the
             file extension. If not specified and `file` is not a string then this
-            will default to the value from the named profile (if provided), or:
+            will default to:
                 - `plotly.io.defaults.default_format` if engine is "kaleido"
                 - `plotly.io.orca.config.default_format` if engine is "orca" (deprecated)
 
@@ -3882,8 +3834,7 @@ Invalid property path '{key_path_str}' for layout
             property is 1.0, this will also be the width of the exported image
             in physical pixels.
 
-            If not specified, will default to the value from the named profile
-            (if provided), or:
+            If not specified, will default to:
                 - `plotly.io.defaults.default_width` if engine is "kaleido"
                 - `plotly.io.orca.config.default_width` if engine is "orca" (deprecated)
 
@@ -3892,8 +3843,7 @@ Invalid property path '{key_path_str}' for layout
             property is 1.0, this will also be the height of the exported image
             in physical pixels.
 
-            If not specified, will default to the value from the named profile
-            (if provided), or:
+            If not specified, will default to:
                 - `plotly.io.defaults.default_height` if engine is "kaleido"
                 - `plotly.io.orca.config.default_height` if engine is "orca" (deprecated)
 
@@ -3903,8 +3853,7 @@ Invalid property path '{key_path_str}' for layout
             to the figure's layout pixel dimensions. Whereas as scale factor of
             less than 1.0 will decrease the image resolution.
 
-            If not specified, will default to the value from the named profile
-            (if provided), or:
+            If not specified, will default to:
                 - `plotly.io.defaults.default_scale` if engine is "kaleido"
                 - `plotly.io.orca.config.default_scale` if engine is "orca" (deprecated)
 
@@ -3918,14 +3867,6 @@ Invalid property path '{key_path_str}' for layout
             - "kaleido": Use Kaleido for image export
             - "orca": Use Orca for image export
             - "auto" (default): Use Kaleido if installed, otherwise use Orca
-
-        profile: str or None
-            The name of an export profile to use for default values. If provided,
-            values from the profile are used for any parameters not explicitly
-            specified. Explicit parameters always override profile values.
-            Profiles can be configured via ``plotly.io.defaults.profiles``.
-
-            Built-in profiles include: 'web', 'print', 'retina', 'thumbnail'.
 
         Returns
         -------
@@ -3943,30 +3884,18 @@ Invalid property path '{key_path_str}' for layout
 
         if ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS:
             if (
-                engine in {None, "auto", "kaleido"}
+                kwargs.get("engine", None) in {None, "auto", "kaleido"}
                 and kaleido_available()
                 and kaleido_major() < 1
             ):
                 warnings.warn(KALEIDO_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-            if engine == "orca":
+            if kwargs.get("engine", None) == "orca":
                 warnings.warn(ORCA_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-            if engine is not None and engine != "auto":
+            if kwargs.get("engine", None):
                 warnings.warn(
                     ENGINE_PARAM_DEPRECATION_MSG, DeprecationWarning, stacklevel=2
                 )
-
-        kwargs = dict(
-            format=format,
-            scale=scale,
-            width=width,
-            height=height,
-            engine=engine,
-            profile=profile,
-        )
-        if validate is not _IMAGE_EXPORT_VALIDATE_UNSET:
-            kwargs["validate"] = validate
-
-        return pio.write_image(self, file, **kwargs)
+        return pio.write_image(self, *args, **kwargs)
 
     # Static helpers
     # --------------
@@ -4391,23 +4320,6 @@ Invalid property path '{key_path_str}' for layout
         if self._has_subplots():
             raise ValueError("This figure already has subplots.")
         return _subplots.make_subplots(figure=self, **make_subplots_args)
-
-
-def _set_validate_signature(cls, method_name):
-    """Set public signature (validate=True) for image export methods."""
-    method = getattr(cls, method_name)
-    sig = inspect.signature(method)
-    params = []
-    for name, param in sig.parameters.items():
-        if name == "validate" and param.default is _IMAGE_EXPORT_VALIDATE_UNSET:
-            params.append(param.replace(default=True))
-        else:
-            params.append(param)
-    method.__signature__ = sig.replace(parameters=params)
-
-
-_set_validate_signature(BaseFigure, "to_image")
-_set_validate_signature(BaseFigure, "write_image")
 
 
 class BasePlotlyType(object):

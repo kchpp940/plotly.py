@@ -5,16 +5,9 @@ from typing import Union, List
 import importlib.metadata as importlib_metadata
 from packaging.version import Version
 import warnings
-import inspect
 
 import plotly
-from plotly.io._utils import (
-    broadcast_args_to_dicts,
-    ImageExportOptions,
-    as_path_object,
-    infer_format,
-    _UNSET,
-)
+from plotly.io._utils import validate_coerce_fig_to_dict, broadcast_args_to_dicts
 from plotly.io._defaults import defaults
 
 ENGINE_SUPPORT_TIMELINE = "September 2025"
@@ -191,16 +184,53 @@ except ImportError:
     scope = None
 
 
+def as_path_object(file: Union[str, Path]) -> Union[Path, None]:
+    """
+    Cast the `file` argument, which may be either a string or a Path object,
+    to a Path object.
+    If `file` is neither a string nor a Path object, None will be returned.
+    """
+    if isinstance(file, str):
+        # Use the standard Path constructor to make a pathlib object.
+        path = Path(file)
+    elif isinstance(file, Path):
+        # `file` is already a Path object.
+        path = file
+    else:
+        # We could not make a Path object out of file. Either `file` is an open file
+        # descriptor with a `write()` method or it's an invalid object.
+        path = None
+    return path
+
+
+def infer_format(path: Union[Path, None], format: Union[str, None]) -> Union[str, None]:
+    if path is not None and format is None:
+        ext = path.suffix
+        if ext:
+            format = ext.lstrip(".")
+        else:
+            raise ValueError(
+                f"""
+Cannot infer image type from output path '{path}'.
+Please specify the type using the format parameter, or add a file extension.
+For example:
+
+    >>> import plotly.io as pio
+    >>> pio.write_image(fig, file_path, format='png')
+"""
+            )
+    return format
+
+
 def to_image(
     fig: Union[dict, plotly.graph_objects.Figure],
     format: Union[str, None] = None,
     width: Union[int, None] = None,
     height: Union[int, None] = None,
     scale: Union[int, float, None] = None,
-    validate: bool = _UNSET,
+    validate: bool = True,
     # Deprecated
     engine: Union[str, None] = None,
-    profile: Union[str, None] = None,
 ) -> bytes:
     """
     Convert a figure to a static image bytes string
@@ -219,8 +249,7 @@ def to_image(
             - 'pdf'
             - 'eps' (deprecated) (Requires the poppler library to be installed and on the PATH)
 
-        If not specified, will default to the value from the named profile
-        (if provided), or:
+        If not specified, will default to:
             - `plotly.io.defaults.default_format` if engine is "kaleido"
             - `plotly.io.orca.config.default_format` if engine is "orca" (deprecated)
 
@@ -229,8 +258,7 @@ def to_image(
         property is 1.0, this will also be the width of the exported image
         in physical pixels.
 
-        If not specified, will default to the value from the named profile
-        (if provided), or:
+        If not specified, will default to:
             - `plotly.io.defaults.default_width` if engine is "kaleido"
             - `plotly.io.orca.config.default_width` if engine is "orca" (deprecated)
 
@@ -239,8 +267,7 @@ def to_image(
         property is 1.0, this will also be the height of the exported image
         in physical pixels.
 
-        If not specified, will default to the value from the named profile
-        (if provided), or:
+        If not specified, will default to:
             - `plotly.io.defaults.default_height` if engine is "kaleido"
             - `plotly.io.orca.config.default_height` if engine is "orca" (deprecated)
 
@@ -250,8 +277,7 @@ def to_image(
         to the figure's layout pixel dimensions. Whereas as scale factor of
         less than 1.0 will decrease the image resolution.
 
-        If not specified, will default to the value from the named profile
-        (if provided), or:
+        If not specified, will default to:
             - `plotly.io.defaults.default_scale` if engine is "kaleido"
             - `plotly.io.orca.config.default_scale` if engine is "orca" (deprecated)
 
@@ -266,60 +292,41 @@ def to_image(
           - "orca": Use Orca for image export
           - "auto" (default): Use Kaleido if installed, otherwise use Orca
 
-    profile: str or None
-        The name of an export profile to use for default values. If provided,
-        values from the profile are used for any parameters not explicitly
-        specified. Explicit parameters always override profile values.
-        Profiles can be configured via ``plotly.io.defaults.profiles``.
-
-        Built-in profiles include: 'web', 'print', 'retina', 'thumbnail'.
-
     Returns
     -------
     bytes
         The image data
     """
 
-    resolved = ImageExportOptions(
-        fig=fig,
-        format=format,
-        width=width,
-        height=height,
-        scale=scale,
-        validate=validate,
-        engine=engine,
-        profile=profile,
-    ).resolve()
-
-    format = resolved.format
-    width = resolved.width
-    height = resolved.height
-    scale = resolved.scale
-    validate = resolved.validate
-    engine = resolved.engine
-
     # Handle engine
-    if engine is not None and engine != "auto":
+    if engine is not None:
         if ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS:
             warnings.warn(
                 ENGINE_PARAM_DEPRECATION_MSG, DeprecationWarning, stacklevel=2
             )
+    else:
+        engine = "auto"
 
     if engine == "auto":
         if kaleido_available():
+            # Default to kaleido if available
             engine = "kaleido"
         else:
+            # See if orca is available
             from ._orca import validate_executable
 
             try:
                 validate_executable()
                 engine = "orca"
             except Exception:
+                # If orca not configured properly, make sure we display the error
+                # message advising the installation of kaleido
                 engine = "kaleido"
 
     if engine == "orca":
         if ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS:
             warnings.warn(ORCA_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
+        # Fall back to legacy orca image export path
         from ._orca import to_image as to_image_orca
 
         return to_image_orca(
@@ -344,7 +351,8 @@ which can be installed using pip:
 """
         )
 
-    fig_dict = resolved.fig_dict
+    # Convert figure to dict (and validate if requested)
+    fig_dict = validate_coerce_fig_to_dict(fig, validate)
 
     # Request image bytes
     if kaleido_major() > 0:
@@ -370,9 +378,33 @@ To downgrade to Kaleido v0, run:
             if defaults.headers:
                 kopts["headers"] = defaults.headers
 
+            width = (
+                width
+                or fig_dict.get("layout", {}).get("width")
+                or fig_dict.get("layout", {})
+                .get("template", {})
+                .get("layout", {})
+                .get("width")
+                or defaults.default_width
+            )
+            height = (
+                height
+                or fig_dict.get("layout", {}).get("height")
+                or fig_dict.get("layout", {})
+                .get("template", {})
+                .get("layout", {})
+                .get("height")
+                or defaults.default_height
+            )
+
             img_bytes = kaleido.calc_fig_sync(
                 fig_dict,
-                opts=resolved.opts,
+                opts=dict(
+                    format=format or defaults.default_format,
+                    width=width,
+                    height=height,
+                    scale=scale or defaults.default_scale,
+                ),
                 topojson=defaults.topojson,
                 kopts=kopts,
             )
@@ -390,22 +422,6 @@ To downgrade to Kaleido v0, run:
     return img_bytes
 
 
-def _public_signature(func, param_name, public_default):
-    """Replace a sentinel default in the function signature with a public value."""
-    sig = inspect.signature(func)
-    params = []
-    for name, param in sig.parameters.items():
-        if name == param_name and param.default is _UNSET:
-            params.append(param.replace(default=public_default))
-        else:
-            params.append(param)
-    func.__signature__ = sig.replace(parameters=params)
-    return func
-
-
-_public_signature(to_image, "validate", True)
-
-
 def write_image(
     fig: Union[dict, plotly.graph_objects.Figure],
     file: Union[str, Path],
@@ -413,10 +429,9 @@ def write_image(
     scale: Union[int, float, None] = None,
     width: Union[int, None] = None,
     height: Union[int, None] = None,
-    validate: bool = _UNSET,
+    validate: bool = True,
     # Deprecated
     engine: Union[str, None] = None,
-    profile: Union[str, None] = None,
 ):
     """
     Convert a figure to a static image and write it to a file or writeable
@@ -442,7 +457,7 @@ def write_image(
 
         If not specified and `file` is a string then this will default to the
         file extension. If not specified and `file` is not a string then this
-        will default to the value from the named profile (if provided), or:
+        will default to:
             - `plotly.io.defaults.default_format` if engine is "kaleido"
             - `plotly.io.orca.config.default_format` if engine is "orca" (deprecated)
 
@@ -451,8 +466,7 @@ def write_image(
         property is 1.0, this will also be the width of the exported image
         in physical pixels.
 
-        If not specified, will default to the value from the named profile
-        (if provided), or:
+        If not specified, will default to:
             - `plotly.io.defaults.default_width` if engine is "kaleido"
             - `plotly.io.orca.config.default_width` if engine is "orca" (deprecated)
 
@@ -461,8 +475,7 @@ def write_image(
         property is 1.0, this will also be the height of the exported image
         in physical pixels.
 
-        If not specified, will default to the value from the named profile
-        (if provided), or:
+        If not specified, will default to:
             - `plotly.io.defaults.default_height` if engine is "kaleido"
             - `plotly.io.orca.config.default_height` if engine is "orca" (deprecated)
 
@@ -472,8 +485,7 @@ def write_image(
         to the figure's layout pixel dimensions. Whereas as scale factor of
         less than 1.0 will decrease the image resolution.
 
-        If not specified, will default to the value from the named profile
-        (if provided), or:
+        If not specified, will default to:
             - `plotly.io.defaults.default_scale` if engine is "kaleido"
             - `plotly.io.orca.config.default_scale` if engine is "orca" (deprecated)
 
@@ -487,14 +499,6 @@ def write_image(
           - "kaleido": Use Kaleido for image export
           - "orca": Use Orca for image export
           - "auto" (default): Use Kaleido if installed, otherwise use Orca
-
-    profile: str or None
-        The name of an export profile to use for default values. If provided,
-        values from the profile are used for any parameters not explicitly
-        specified. Explicit parameters always override profile values.
-        Profiles can be configured via ``plotly.io.defaults.profiles``.
-
-        Built-in profiles include: 'web', 'print', 'retina', 'thumbnail'.
 
     Returns
     -------
@@ -531,7 +535,6 @@ def write_image(
         height=height,
         validate=validate,
         engine=engine,
-        profile=profile,
     )
 
     # Open file
@@ -554,9 +557,6 @@ The 'file' argument '{file}' is not a string, pathlib.Path object, or file descr
         path.write_bytes(img_data)
 
 
-_public_signature(write_image, "validate", True)
-
-
 def write_images(
     fig: Union[
         List[Union[dict, plotly.graph_objects.Figure]],
@@ -567,8 +567,7 @@ def write_images(
     scale: Union[List[Union[int, float, None]], Union[int, float, None]] = None,
     width: Union[List[Union[int, None]], Union[int, None]] = None,
     height: Union[List[Union[int, None]], Union[int, None]] = None,
-    validate: Union[List[bool], bool] = _UNSET,
-    profile: Union[List[Union[str, None]], Union[str, None]] = None,
+    validate: Union[List[bool], bool] = True,
 ) -> None:
     """
     Write multiple images to files or writeable objects. This is much faster than
@@ -603,8 +602,7 @@ def write_images(
         provided to the `fig` argument.
         Specify format as a `str` to apply the same format to all exported images.
         If not specified, and the corresponding `file` argument has a file extension, then `format` will default to the
-        file extension. Otherwise, will default to the value from the named profile (if provided), or
-        `plotly.io.defaults.default_format`.
+        file extension. Otherwise, will default to `plotly.io.defaults.default_format`.
 
     width: int, None, or list of (int or None)
         The width of the exported image in layout pixels. If the `scale`
@@ -614,8 +612,7 @@ def write_images(
         Use a list to specify widths for each figure or dict in the list
         provided to the `fig` argument.
         Specify width as an `int` to apply the same width to all exported images.
-        If not specified, will default to the value from the named profile (if provided), or
-        `plotly.io.defaults.default_width`.
+        If not specified, will default to `plotly.io.defaults.default_width`.
 
     height: int, None, or list of (int or None)
         The height of the exported image in layout pixels. If the `scale`
@@ -625,8 +622,7 @@ def write_images(
         Use a list to specify heights for each figure or dict in the list
         provided to the `fig` argument.
         Specify height as an `int` to apply the same height to all exported images.
-        If not specified, will default to the value from the named profile (if provided), or
-        `plotly.io.defaults.default_height`.
+        If not specified, will default to `plotly.io.defaults.default_height`.
 
     scale: int, float, None, or list of (int, float, or None)
         The scale factor to use when exporting the figure. A scale factor
@@ -637,8 +633,7 @@ def write_images(
         Use a list to specify scale for each figure or dict in the list
         provided to the `fig` argument.
         Specify scale as an `int` or `float` to apply the same scale to all exported images.
-        If not specified, will default to the value from the named profile (if provided), or
-        `plotly.io.defaults.default_scale`.
+        If not specified, will default to `plotly.io.defaults.default_scale`.
 
     validate: bool or list of bool
         True if the figure should be validated before being converted to
@@ -647,16 +642,6 @@ def write_images(
         Use a list to specify validation setting for each figure in the list
         provided to the `fig` argument.
         Specify validate as a boolean to apply the same validation setting to all figures.
-
-    profile: str, None, or list of (str or None)
-        The name of an export profile to use for default values. If provided,
-        values from the profile are used for any parameters not explicitly
-        specified. Explicit parameters always override profile values.
-
-        Use a list to specify a different profile for each figure in the list
-        provided to the `fig` argument.
-        Specify profile as a `str` to apply the same profile to all exported images.
-        A value of None means no profile is applied for that figure.
 
     Returns
     -------
@@ -693,36 +678,32 @@ which can be installed using pip:
         width=width,
         height=height,
         validate=validate,
-        profile=profile,
     )
 
-    # For each dict, use the unified ImageExportOptions resolver.
-    # This covers profile resolution, path conversion, format inference,
-    # fig_dict coercion with validation, and layout/template/defaults fallback,
-    # all with the same priority rules as to_image().
-    resolved_items = []
+    # For each dict:
+    #   - convert figures to dicts (and validate if requested)
+    #   - try to cast `file` as a Path object
     for d in arg_dicts:
-        opts = ImageExportOptions(
-            fig=d["fig"],
-            format=d.get("format"),
-            width=d.get("width"),
-            height=d.get("height"),
-            scale=d.get("scale"),
-            validate=d.get("validate"),
-            profile=d.get("profile"),
-            file=d["file"],
-        ).resolve()
-        resolved_items.append(opts)
+        d["fig"] = validate_coerce_fig_to_dict(d["fig"], d["validate"])
+        d["file"] = as_path_object(d["file"])
 
-    # Reshape into Kaleido's expected format
+    # Reshape arg_dicts into correct format for passing to Kaleido
+    # We call infer_format() here rather than above so that the `file` argument
+    # has already been cast to a Path object.
+    # Also insert defaults for any missing arguments as needed
     kaleido_specs = [
         dict(
-            fig=item.fig_dict,
-            path=item.path,
-            opts=item.opts,
+            fig=d["fig"],
+            path=d["file"],
+            opts=dict(
+                format=infer_format(d["file"], d["format"]) or defaults.default_format,
+                width=d["width"] or defaults.default_width,
+                height=d["height"] or defaults.default_height,
+                scale=d["scale"] or defaults.default_scale,
+            ),
             topojson=defaults.topojson,
         )
-        for item in resolved_items
+        for d in arg_dicts
     ]
 
     from kaleido.errors import ChromeNotFoundError
@@ -741,9 +722,6 @@ which can be installed using pip:
         )
     except ChromeNotFoundError:
         raise RuntimeError(PLOTLY_GET_CHROME_ERROR_MSG)
-
-
-_public_signature(write_images, "validate", True)
 
 
 def full_figure_for_development(
