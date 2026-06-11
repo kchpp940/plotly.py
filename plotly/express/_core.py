@@ -385,6 +385,8 @@ def _resolve_col(args, attr_name_or_col):
             return col_map[attr_name_or_col]
         if attr_name_or_col in args:
             arg_val = args[attr_name_or_col]
+            if arg_val is None:
+                return attr_name_or_col
             if isinstance(arg_val, str) and arg_val in col_map:
                 return col_map[arg_val]
             return arg_val
@@ -449,7 +451,8 @@ def _generate_temporary_column_name(n_bytes, columns) -> str:
 def get_decorated_label(args, column, role):
     ctx = args.get("_field_display_ctx")
     if ctx is not None:
-        original_label = label = ctx.get_display_name(role=role, column=column)
+        resolved_col = _resolve_col(args, column) if isinstance(column, str) else column
+        original_label = label = ctx.get_display_name(role=role, column=resolved_col)
     else:
         original_label = label = column
     if "histfunc" in args and (
@@ -601,7 +604,7 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
             trace_patch["dimensions"] = [
                 dict(
                     label=(
-                        _ctx.get_display_name(role="dimensions", column=name)
+                        _ctx.get_display_name(role="dimensions", column=_rc(name))
                         if _ctx is not None
                         else name
                     ),
@@ -700,8 +703,8 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
                     trace_patch["y"] = y_out
                     _ctx = args.get("_field_display_ctx")
                     if _ctx is not None:
-                        mapping_labels[_ctx.get_display_name(role="x", column=args["x"])] = "%{x}"
-                        mapping_labels[_ctx.get_display_name(role="y", column=args["y"])] = "%{y} <b>(trend)</b>"
+                        mapping_labels[_ctx.get_display_name(role="x", column=_rc(args["x"]))] = "%{x}"
+                        mapping_labels[_ctx.get_display_name(role="y", column=_rc(args["y"]))] = "%{y} <b>(trend)</b>"
             elif attr_name.startswith("error"):
                 error_xy = attr_name[:7]
                 arr = "arrayminus" if attr_name.endswith("minus") else "array"
@@ -741,7 +744,7 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
                         ]:
                             continue
                         _ctx = args.get("_field_display_ctx")
-                        if _ctx is not None and _ctx.is_hidden(role="hover_data", column=col):
+                        if _ctx is not None and _ctx.is_hidden(role="hover_data", column=_rc(col)):
                             continue
                         try:
                             position = args["custom_data"].index(col)
@@ -1021,9 +1024,9 @@ def configure_cartesian_axes(args, fig, orders):
 def configure_ternary_axes(args, fig, orders):
     _ctx = args.get("_field_display_ctx")
     fig.update_ternaries(
-        aaxis=dict(title_text=_ctx.get_display_name(role="a", column=args["a"]) if _ctx else args["a"]),
-        baxis=dict(title_text=_ctx.get_display_name(role="b", column=args["b"]) if _ctx else args["b"]),
-        caxis=dict(title_text=_ctx.get_display_name(role="c", column=args["c"]) if _ctx else args["c"]),
+        aaxis=dict(title_text=_ctx.get_display_name(role="a", column=_resolve_col(args, args["a"])) if _ctx else args["a"]),
+        baxis=dict(title_text=_ctx.get_display_name(role="b", column=_resolve_col(args, args["b"])) if _ctx else args["b"]),
+        caxis=dict(title_text=_ctx.get_display_name(role="c", column=_resolve_col(args, args["c"])) if _ctx else args["c"]),
     )
 
 
@@ -1055,9 +1058,9 @@ def configure_polar_axes(args, fig, orders):
 def configure_3d_axes(args, fig, orders):
     _ctx = args.get("_field_display_ctx")
     patch = dict(
-        xaxis=dict(title_text=_ctx.get_display_name(role="x", column=args["x"]) if _ctx else args["x"]),
-        yaxis=dict(title_text=_ctx.get_display_name(role="y", column=args["y"]) if _ctx else args["y"]),
-        zaxis=dict(title_text=_ctx.get_display_name(role="z", column=args["z"]) if _ctx else args["z"]),
+        xaxis=dict(title_text=_ctx.get_display_name(role="x", column=_resolve_col(args, args["x"])) if _ctx else args["x"]),
+        yaxis=dict(title_text=_ctx.get_display_name(role="y", column=_resolve_col(args, args["y"])) if _ctx else args["y"]),
+        zaxis=dict(title_text=_ctx.get_display_name(role="z", column=_resolve_col(args, args["z"])) if _ctx else args["z"]),
     )
 
     for letter in ["x", "y", "z"]:
@@ -1154,8 +1157,8 @@ def configure_animation_controls(args, constructor, fig):
                 "yanchor": "top",
                 "xanchor": "left",
                 "currentvalue": {
-                    "prefix": (args.get("_field_display_ctx") or FieldDisplayContext()).get_display_name(role="animation_frame", column=args["animation_frame"]) + "="
-                },
+                        "prefix": (args.get("_field_display_ctx") or FieldDisplayContext()).get_display_name(role="animation_frame", column=_resolve_col(args, args["animation_frame"])) + "="
+                    },
                 "pad": {"b": 10, "t": 60},
                 "len": 0.9,
                 "x": 0.1,
@@ -2961,12 +2964,12 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
         else:
             sorted_values = orders[m.grouper]
             if m.facet == "col":
-                fc = _ctx.get_display_name(role="facet_col", column=args["facet_col"]) if _ctx else args["facet_col"]
+                fc = _ctx.get_display_name(role="facet_col", column=_resolve_col(args, args["facet_col"])) if _ctx else args["facet_col"]
                 prefix = fc + "="
                 col_labels = [prefix + str(s) for s in sorted_values]
                 ncols = len(col_labels)
             if m.facet == "row":
-                fr = _ctx.get_display_name(role="facet_row", column=args["facet_row"]) if _ctx else args["facet_row"]
+                fr = _ctx.get_display_name(role="facet_row", column=_resolve_col(args, args["facet_row"])) if _ctx else args["facet_row"]
                 prefix = fr + "="
                 row_labels = [prefix + str(s) for s in sorted_values]
                 nrows = len(row_labels)
@@ -2990,7 +2993,7 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
                 role = None
                 if hasattr(m, 'variable') and m.variable:
                     role = m.variable
-                key = _ctx.get_display_name(role=role, column=col) if _ctx else col
+                key = _ctx.get_display_name(role=role, column=_resolve_col(args, col)) if _ctx else col
                 if not isinstance(m.val_map, IdentityMap):
                     mapping_labels[key] = str(val)
                     if m.show_in_trace_name:
