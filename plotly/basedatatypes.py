@@ -29,6 +29,10 @@ from . import _subplots
 #   - Setting a property to Undefined leaves existing value unmodified
 Undefined = object()
 
+# Sentinel for image export validate parameter: distinguishes "user did not pass"
+# from user explicitly passing True/False. Used by to_image/write_image methods.
+_IMAGE_EXPORT_VALIDATE_UNSET = object()
+
 
 def _len_dict_item(item):
     """
@@ -3721,7 +3725,7 @@ Invalid property path '{key_path_str}' for layout
         width: Union[int, None] = None,
         height: Union[int, None] = None,
         scale: Union[int, float, None] = None,
-        validate: Union[bool, None] = None,
+        validate: bool = _IMAGE_EXPORT_VALIDATE_UNSET,
         engine: Union[str, None] = None,
         profile: Union[str, None] = None,
     ):
@@ -3823,16 +3827,18 @@ Invalid property path '{key_path_str}' for layout
                     ENGINE_PARAM_DEPRECATION_MSG, DeprecationWarning, stacklevel=2
                 )
 
-        return pio.to_image(
-            self,
+        kwargs = dict(
             format=format,
             width=width,
             height=height,
             scale=scale,
-            validate=validate,
             engine=engine,
             profile=profile,
         )
+        if validate is not _IMAGE_EXPORT_VALIDATE_UNSET:
+            kwargs["validate"] = validate
+
+        return pio.to_image(self, **kwargs)
 
     def write_image(
         self,
@@ -3841,7 +3847,7 @@ Invalid property path '{key_path_str}' for layout
         scale: Union[int, float, None] = None,
         width: Union[int, None] = None,
         height: Union[int, None] = None,
-        validate: Union[bool, None] = None,
+        validate: bool = _IMAGE_EXPORT_VALIDATE_UNSET,
         engine: Union[str, None] = None,
         profile: Union[str, None] = None,
     ):
@@ -3948,17 +3954,18 @@ Invalid property path '{key_path_str}' for layout
                     ENGINE_PARAM_DEPRECATION_MSG, DeprecationWarning, stacklevel=2
                 )
 
-        return pio.write_image(
-            self,
-            file,
+        kwargs = dict(
             format=format,
             scale=scale,
             width=width,
             height=height,
-            validate=validate,
             engine=engine,
             profile=profile,
         )
+        if validate is not _IMAGE_EXPORT_VALIDATE_UNSET:
+            kwargs["validate"] = validate
+
+        return pio.write_image(self, file, **kwargs)
 
     # Static helpers
     # --------------

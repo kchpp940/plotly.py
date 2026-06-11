@@ -12,6 +12,7 @@ from plotly.io._utils import (
     ImageExportOptions,
     as_path_object,
     infer_format,
+    _UNSET,
 )
 from plotly.io._defaults import defaults
 
@@ -195,7 +196,7 @@ def to_image(
     width: Union[int, None] = None,
     height: Union[int, None] = None,
     scale: Union[int, float, None] = None,
-    validate: Union[bool, None] = None,
+    validate: bool = _UNSET,
     # Deprecated
     engine: Union[str, None] = None,
     profile: Union[str, None] = None,
@@ -395,7 +396,7 @@ def write_image(
     scale: Union[int, float, None] = None,
     width: Union[int, None] = None,
     height: Union[int, None] = None,
-    validate: Union[bool, None] = None,
+    validate: bool = _UNSET,
     # Deprecated
     engine: Union[str, None] = None,
     profile: Union[str, None] = None,
@@ -546,7 +547,7 @@ def write_images(
     scale: Union[List[Union[int, float, None]], Union[int, float, None]] = None,
     width: Union[List[Union[int, None]], Union[int, None]] = None,
     height: Union[List[Union[int, None]], Union[int, None]] = None,
-    validate: Union[List[Union[bool, None]], Union[bool, None]] = None,
+    validate: Union[List[bool], bool] = _UNSET,
     profile: Union[List[Union[str, None]], Union[str, None]] = None,
 ) -> None:
     """

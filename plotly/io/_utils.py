@@ -5,6 +5,8 @@ import plotly
 import plotly.graph_objs as go
 from plotly.offline import get_plotlyjs_version
 
+_UNSET = object()
+
 
 def as_path_object(file: Union[str, Path]) -> Union[Path, None]:
     if isinstance(file, str):
@@ -53,7 +55,7 @@ class ImageExportOptions:
         width=None,
         height=None,
         scale=None,
-        validate=None,
+        validate=_UNSET,
         engine=None,
         profile=None,
         file=None,
@@ -100,8 +102,8 @@ class ImageExportOptions:
         width = self._width if self._width is not None else profile_dict.get("width")
         height = self._height if self._height is not None else profile_dict.get("height")
         scale = self._scale if self._scale is not None else profile_dict.get("scale")
-        # For validate: explicit (non-None) > profile > True
-        validate = self._validate if self._validate is not None else profile_dict.get("validate")
+        # For validate: explicit (not _UNSET) > profile > True
+        validate = self._validate if self._validate is not _UNSET else profile_dict.get("validate")
         if validate is None:
             validate = True
         # For engine: explicit (non-None) > profile > "auto"
