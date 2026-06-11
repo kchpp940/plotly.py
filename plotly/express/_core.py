@@ -372,12 +372,46 @@ class FieldDisplayContext:
         return ", ".join(parts)
 
 
-def _resolve_col(args, attr_name_or_col):
-    """Resolve a semantic column name to the actual DataFrame column name.
+def resolve_column_key(args, col_name):
+    """Resolve a real DataFrame column name to its internal name (if remapped).
 
-    If the name is tracked in args["_col_map"], return the internal name.
-    Otherwise return the name as-is (for backward compatibility).
-    Accepts either an attribute name (like "x") or a direct column name.
+    Use this when you already have a column-name string (e.g. from
+    ``labels`` keys, ``hover_data`` entries, ``by_column`` lookups, or
+    the value of a role argument like ``args["color"]``).
+
+    **Never** consults ``args`` by key — that would risk confusing a
+    column name that happens to collide with a Plotly parameter name.
+    """
+    col_map = args.get("_col_map", {})
+    if isinstance(col_name, str) and col_name in col_map:
+        return col_map[col_name]
+    return col_name
+
+
+def resolve_role_arg(args, role_name):
+    """Resolve a *role parameter name* (like ``"x"``, ``"color"``) to the
+    actual DataFrame column name it refers to.
+
+    Use this only when you know the input is a semantic role key that
+    should be looked up in ``args`` first.
+    """
+    try:
+        col_map = args.get("_col_map", {})
+        if role_name in col_map:
+            return col_map[role_name]
+        if role_name in args:
+            arg_val = args[role_name]
+            if isinstance(arg_val, str) and arg_val in col_map:
+                return col_map[arg_val]
+            return arg_val
+        return role_name
+    except Exception:
+        return role_name
+
+
+def _resolve_col(args, attr_name_or_col):
+    """Deprecated alias — callers should pick :func:`resolve_column_key` or
+    :func:`resolve_role_arg` explicitly depending on what they are passing.
     """
     try:
         col_map = args.get("_col_map", {})
@@ -451,7 +485,7 @@ def _generate_temporary_column_name(n_bytes, columns) -> str:
 def get_decorated_label(args, column, role):
     ctx = args.get("_field_display_ctx")
     if ctx is not None:
-        resolved_col = _resolve_col(args, column) if isinstance(column, str) else column
+        resolved_col = resolve_column_key(args, column) if isinstance(column, str) else column
         original_label = label = ctx.get_display_name(role=role, column=resolved_col)
     else:
         original_label = label = column
@@ -569,7 +603,7 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
     df: nw.DataFrame = args["data_frame"]
 
     def _rc(name):
-        return _resolve_col(args, name)
+        return resolve_column_key(args, name)
 
     def _rc_list(lst):
         if lst is None:
@@ -1024,9 +1058,9 @@ def configure_cartesian_axes(args, fig, orders):
 def configure_ternary_axes(args, fig, orders):
     _ctx = args.get("_field_display_ctx")
     fig.update_ternaries(
-        aaxis=dict(title_text=_ctx.get_display_name(role="a", column=_resolve_col(args, args["a"])) if _ctx else args["a"]),
-        baxis=dict(title_text=_ctx.get_display_name(role="b", column=_resolve_col(args, args["b"])) if _ctx else args["b"]),
-        caxis=dict(title_text=_ctx.get_display_name(role="c", column=_resolve_col(args, args["c"])) if _ctx else args["c"]),
+        aaxis=dict(title_text=_ctx.get_display_name(role="a", column=resolve_column_key(args, args["a"])) if _ctx else args["a"]),
+        baxis=dict(title_text=_ctx.get_display_name(role="b", column=resolve_column_key(args, args["b"])) if _ctx else args["b"]),
+        caxis=dict(title_text=_ctx.get_display_name(role="c", column=resolve_column_key(args, args["c"])) if _ctx else args["c"]),
     )
 
 
@@ -1058,9 +1092,9 @@ def configure_polar_axes(args, fig, orders):
 def configure_3d_axes(args, fig, orders):
     _ctx = args.get("_field_display_ctx")
     patch = dict(
-        xaxis=dict(title_text=_ctx.get_display_name(role="x", column=_resolve_col(args, args["x"])) if _ctx else args["x"]),
-        yaxis=dict(title_text=_ctx.get_display_name(role="y", column=_resolve_col(args, args["y"])) if _ctx else args["y"]),
-        zaxis=dict(title_text=_ctx.get_display_name(role="z", column=_resolve_col(args, args["z"])) if _ctx else args["z"]),
+        xaxis=dict(title_text=_ctx.get_display_name(role="x", column=resolve_column_key(args, args["x"])) if _ctx else args["x"]),
+        yaxis=dict(title_text=_ctx.get_display_name(role="y", column=resolve_column_key(args, args["y"])) if _ctx else args["y"]),
+        zaxis=dict(title_text=_ctx.get_display_name(role="z", column=resolve_column_key(args, args["z"])) if _ctx else args["z"]),
     )
 
     for letter in ["x", "y", "z"]:
@@ -1157,7 +1191,7 @@ def configure_animation_controls(args, constructor, fig):
                 "yanchor": "top",
                 "xanchor": "left",
                 "currentvalue": {
-                        "prefix": (args.get("_field_display_ctx") or FieldDisplayContext()).get_display_name(role="animation_frame", column=_resolve_col(args, args["animation_frame"])) + "="
+                        "prefix": (args.get("_field_display_ctx") or FieldDisplayContext()).get_display_name(role="animation_frame", column=resolve_column_key(args, args["animation_frame"])) + "="
                     },
                 "pad": {"b": 10, "t": 60},
                 "len": 0.9,
@@ -2876,7 +2910,7 @@ def get_groups_and_orders(args, grouper):
             single_group_name.append("")
         else:
             if col not in unique_cache:
-                internal_col = _resolve_col(args, col)
+                internal_col = resolve_column_key(args, col)
                 unique_cache[col] = (
                     df.get_column(internal_col).unique(maintain_order=True).to_list()
                 )
@@ -2894,7 +2928,7 @@ def get_groups_and_orders(args, grouper):
     else:
         required_grouper_semantic = [group for group in orders if group in grouper]
         required_grouper_internal = [
-            _resolve_col(args, g) for g in required_grouper_semantic
+            resolve_column_key(args, g) for g in required_grouper_semantic
         ]
         grouped = dict(df.group_by(required_grouper_internal, drop_null_keys=True).__iter__())
 
@@ -2964,12 +2998,12 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
         else:
             sorted_values = orders[m.grouper]
             if m.facet == "col":
-                fc = _ctx.get_display_name(role="facet_col", column=_resolve_col(args, args["facet_col"])) if _ctx else args["facet_col"]
+                fc = _ctx.get_display_name(role="facet_col", column=resolve_column_key(args, args["facet_col"])) if _ctx else args["facet_col"]
                 prefix = fc + "="
                 col_labels = [prefix + str(s) for s in sorted_values]
                 ncols = len(col_labels)
             if m.facet == "row":
-                fr = _ctx.get_display_name(role="facet_row", column=_resolve_col(args, args["facet_row"])) if _ctx else args["facet_row"]
+                fr = _ctx.get_display_name(role="facet_row", column=resolve_column_key(args, args["facet_row"])) if _ctx else args["facet_row"]
                 prefix = fr + "="
                 row_labels = [prefix + str(s) for s in sorted_values]
                 nrows = len(row_labels)
@@ -2993,7 +3027,7 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
                 role = None
                 if hasattr(m, 'variable') and m.variable:
                     role = m.variable
-                key = _ctx.get_display_name(role=role, column=_resolve_col(args, col)) if _ctx else col
+                key = _ctx.get_display_name(role=role, column=resolve_column_key(args, col)) if _ctx else col
                 if not isinstance(m.val_map, IdentityMap):
                     mapping_labels[key] = str(val)
                     if m.show_in_trace_name:
