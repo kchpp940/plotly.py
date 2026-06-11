@@ -230,11 +230,23 @@ class DirectoryPolicy(BaseResourcePolicy):
         else:
             html = f'<script src="{relative_path}"{attr_str}></script>'
 
+        missing_hint = None
+        has_source = self._source_path is not None and self._source_path.exists()
+        has_content = self.content is not None
+
+        if not has_source and not has_content:
+            missing_hint = (
+                f"Directory policy for {self.resource_type} has no usable source: "
+                f"source_path '{self._source_path}' does not exist and no content "
+                f"was provided. The resource file cannot be written to {target_path}."
+            )
+
         return ResourceRef(
             html=html,
-            copy_source=self._source_path,
+            copy_source=self._source_path if self._source_path and self._source_path.exists() else None,
             copy_target=target_path,
             relative_path=relative_path,
+            missing_hint=missing_hint,
             needs_copy=True,
         )
 
@@ -312,6 +324,10 @@ class ManifestPolicy(BaseResourcePolicy):
 
     Records resource information in a JSON manifest file for
     integration with build tools and asset pipelines.
+
+    When a source_path is provided, the policy also supports copying
+    the source file to a target location (via copy_target in the ref)
+    and recording it in the manifest with a content hash.
     """
 
     def __init__(
@@ -320,6 +336,8 @@ class ManifestPolicy(BaseResourcePolicy):
         manifest_path: Union[str, Path],
         source_path: Optional[Union[str, Path]] = None,
         public_path: Optional[str] = None,
+        target_filename: Optional[str] = None,
+        subdir: Optional[str] = None,
         **kwargs,
     ):
         super().__init__(resource_type=resource_type, **kwargs)
@@ -327,15 +345,40 @@ class ManifestPolicy(BaseResourcePolicy):
         self._source_path = Path(source_path) if source_path else None
         self._public_path = public_path
 
+        filename = target_filename or self._default_filename()
+        if subdir:
+            filename = os.path.join(subdir, filename)
+        self._target_filename = filename
+
+    def _default_filename(self) -> str:
+        if self.resource_type == ResourceType.PLOTLYJS:
+            return "plotly.min.js"
+        elif self.resource_type == ResourceType.MATHJAX:
+            return "mathjax.js"
+        elif self.resource_type == ResourceType.CSS:
+            return "style.css"
+        else:
+            return f"resource"
+
+    def needs_copy(self) -> bool:
+        return self._source_path is not None and self._target_filename is not None
+
     def get_ref(
         self,
         output_path: Optional[Path] = None,
         html_dir: Optional[Path] = None,
     ) -> ResourceRef:
         base_dir = html_dir or (output_path.parent if output_path else Path("."))
+
         manifest_path = self._manifest_path
         if not manifest_path.is_absolute():
             manifest_path = base_dir / manifest_path
+
+        target_path = None
+        relative_path = None
+        if self._target_filename:
+            target_path = base_dir / self._target_filename
+            relative_path = self._target_filename
 
         resource_entry = {
             "type": self.resource_type,
@@ -348,21 +391,39 @@ class ManifestPolicy(BaseResourcePolicy):
 
         if self._public_path:
             resource_entry["url"] = self._public_path
+        elif relative_path:
+            resource_entry["url"] = relative_path
+
+        if target_path:
+            resource_entry["target"] = str(target_path)
 
         self._update_manifest(manifest_path, resource_entry)
 
-        if self._public_path:
+        ref_url = self._public_path or relative_path or ""
+        if ref_url:
             attr_str = self._format_attributes()
             if self.resource_type == ResourceType.CSS:
-                html = f'<link rel="stylesheet" href="{self._public_path}"{attr_str} />'
+                html = f'<link rel="stylesheet" href="{ref_url}"{attr_str} />'
             else:
-                html = f'<script src="{self._public_path}"{attr_str}></script>'
+                html = f'<script src="{ref_url}"{attr_str}></script>'
         else:
             html = ""
 
+        missing_hint = None
+        if self._source_path and not self._source_path.exists():
+            missing_hint = (
+                f"Manifest policy source file not found for {self.resource_type}: "
+                f"{self._source_path}. The resource will be recorded in the manifest "
+                f"but the file cannot be copied."
+            )
+
         return ResourceRef(
             html=html,
-            relative_path=self._public_path,
+            copy_source=self._source_path if self._source_path and self._source_path.exists() else None,
+            copy_target=target_path,
+            relative_path=relative_path or self._public_path,
+            missing_hint=missing_hint,
+            needs_copy=self.needs_copy(),
         )
 
     def _compute_hash(self) -> str:
@@ -389,6 +450,18 @@ class ManifestPolicy(BaseResourcePolicy):
     def _format_attributes(self) -> str:
         attrs = " ".join(f'{k}="{v}"' for k, v in self.attributes.items())
         return " " + attrs if attrs else ""
+
+    @property
+    def manifest_path(self) -> Path:
+        return self._manifest_path
+
+    @property
+    def source_path(self) -> Optional[Path]:
+        return self._source_path
+
+    @property
+    def public_path(self) -> Optional[str]:
+        return self._public_path
 
 
 class ExcludePolicy(BaseResourcePolicy):
