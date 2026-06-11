@@ -8,6 +8,7 @@ from plotly.offline.offline import _get_jconfig, get_plotlyjs
 from plotly.io._resource_policy import (
     create_policy_set,
     ResourcePolicySet,
+    ResourcePolicyContext,
     ResourceType,
     DirectoryPolicy,
     CdnPolicy,
@@ -18,6 +19,49 @@ from plotly.io._resource_policy import (
 )
 
 _json = get_module("json")
+
+
+def _build_resource_context(
+    include_plotlyjs=True,
+    include_mathjax=False,
+    resource_policy=None,
+    resource_context=None,
+    output_path=None,
+    html_dir=None,
+    overwrite_resources=False,
+    include_meta_charset=True,
+) -> ResourcePolicyContext:
+    """
+    Build a ResourcePolicyContext from various input formats.
+
+    Handles the priority: resource_context > resource_policy > legacy params.
+
+    Returns
+    -------
+    ResourcePolicyContext
+    """
+    if resource_context is not None:
+        return resource_context
+
+    if resource_policy is not None:
+        return ResourcePolicyContext.from_policy_set(
+            resource_policy,
+            output_path=output_path,
+            html_dir=html_dir,
+            overwrite=overwrite_resources,
+        )
+
+    plotlyjs_content = get_plotlyjs()
+    return ResourcePolicyContext.from_legacy_params(
+        include_plotlyjs=include_plotlyjs,
+        include_mathjax=include_mathjax,
+        plotlyjs_cdn_url=plotly_cdn_url(),
+        plotlyjs_content=plotlyjs_content,
+        include_meta_charset=include_meta_charset,
+        output_path=output_path,
+        html_dir=html_dir,
+        overwrite=overwrite_resources,
+    )
 
 
 def to_html(
@@ -34,6 +78,7 @@ def to_html(
     validate=True,
     div_id=None,
     resource_policy=None,
+    resource_context=None,
 ):
     """
     Convert a figure to an HTML string representation.
@@ -121,6 +166,10 @@ def to_html(
         A ResourcePolicySet object specifying how to include plotly.js,
         MathJax, CSS, and meta tags. If provided, this overrides
         include_plotlyjs and include_mathjax parameters.
+    resource_context : ResourcePolicyContext or None (default None)
+        A ResourcePolicyContext object. If provided, this takes highest
+        priority and overrides both resource_policy and the legacy
+        include_plotlyjs/include_mathjax parameters.
 
     Returns
     -------
@@ -238,29 +287,28 @@ def to_html(
         then_post_script=then_post_script,
     )
 
-    # ## Build resource policy ##
-    if resource_policy is None:
-        plotlyjs_content = get_plotlyjs()
-        resource_policy = create_policy_set(
-            include_plotlyjs=include_plotlyjs,
-            include_mathjax=include_mathjax,
-            plotlyjs_cdn_url=plotly_cdn_url(),
-            plotlyjs_content=plotlyjs_content,
-            include_meta_charset=False,
-        )
+    # ## Build resource context ##
+    # For to_html (no file output), we don't know output_path yet
+    ctx = _build_resource_context(
+        include_plotlyjs=include_plotlyjs,
+        include_mathjax=include_mathjax,
+        resource_policy=resource_policy,
+        resource_context=resource_context,
+        include_meta_charset=False,
+    )
 
     # ## Generate resource HTML ##
     # For div output, resources go inside the div
     # For full_html output, resources go in <head>
     if full_html:
-        head_html = resource_policy.get_head_html()
+        head_html = ctx.get_head_html()
         # Add meta charset if not already in policy
-        if resource_policy.meta is None:
+        if ctx.meta is None:
             head_html = '<meta charset="utf-8" />\n' + head_html
         resources_in_div = ""
     else:
         head_html = ""
-        resources_in_div = resource_policy.get_head_html()
+        resources_in_div = ctx.get_head_html()
 
     plotly_html_div = """\
 <div style="height:{height}; width:{width};">\
@@ -310,6 +358,7 @@ def write_html(
     auto_open=False,
     div_id=None,
     resource_policy=None,
+    resource_context=None,
     overwrite_resources=False,
 ):
     """
@@ -414,6 +463,10 @@ def write_html(
         A ResourcePolicySet object specifying how to include plotly.js,
         MathJax, CSS, and meta tags. If provided, this overrides
         include_plotlyjs and include_mathjax parameters.
+    resource_context : ResourcePolicyContext or None (default None)
+        A ResourcePolicyContext object. If provided, this takes highest
+        priority and overrides both resource_policy and the legacy
+        include_plotlyjs/include_mathjax parameters.
     overwrite_resources : bool (default False)
         If True, overwrite existing resource files when copying to the
         output directory. If False, skip copying if the file already exists.
@@ -422,25 +475,24 @@ def write_html(
     -------
     None
     """
-
-    # Build resource policy if not provided
-    if resource_policy is None:
-        plotlyjs_content = get_plotlyjs()
-        resource_policy = create_policy_set(
-            include_plotlyjs=include_plotlyjs,
-            include_mathjax=include_mathjax,
-            plotlyjs_cdn_url=plotly_cdn_url(),
-            plotlyjs_content=plotlyjs_content,
-            include_meta_charset=True,
-        )
-
-    # Check if file is a string
+    # Check if file is a string/Path (has a path)
     if isinstance(file, str):
         path = Path(file)
     elif isinstance(file, Path):
         path = file
     else:
         path = None
+
+    # Build resource context
+    ctx = _build_resource_context(
+        include_plotlyjs=include_plotlyjs,
+        include_mathjax=include_mathjax,
+        resource_policy=resource_policy,
+        resource_context=resource_context,
+        output_path=path,
+        overwrite_resources=overwrite_resources,
+        include_meta_charset=True,
+    )
 
     # Build HTML string
     html_str = to_html(
@@ -456,7 +508,7 @@ def write_html(
         default_height=default_height,
         validate=validate,
         div_id=div_id,
-        resource_policy=resource_policy,
+        resource_context=ctx,
     )
 
     # Write HTML string
@@ -465,12 +517,10 @@ def write_html(
     else:
         file.write(html_str)
 
-    # Execute resource copies using the policy
+    # Execute resource copies using the context
     if path is not None and full_html:
-        resource_policy.execute_copies(
-            output_path=path,
-            overwrite=overwrite_resources,
-        )
+        ctx.execute_copies()
+        ctx.warn_on_missing()
 
     # Handle auto_open
     if path is not None and full_html and auto_open:

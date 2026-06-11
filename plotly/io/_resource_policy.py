@@ -812,3 +812,244 @@ def create_policy_set(
         )
 
     return policy_set
+
+
+@dataclass
+class ResourcePolicyContext:
+    """
+    Unified context for resource policy operations.
+
+    This class brings together the policy set, output paths, and configuration
+    to provide a single entry point for all resource-related operations:
+    generating HTML references, executing file copies, computing relative paths,
+    and reporting missing resource hints.
+
+    All HTML export entry points (to_html, write_html, offline.plot,
+    IFrameRenderer, SphinxGalleryHtmlRenderer) should use this context rather
+    than directly manipulating ResourcePolicySet.
+    """
+
+    policy_set: ResourcePolicySet
+    output_path: Optional[Path] = None
+    html_dir: Optional[Path] = None
+    overwrite: bool = False
+
+    def __post_init__(self):
+        if self.html_dir is None and self.output_path is not None:
+            self.html_dir = self.output_path.parent
+
+    @classmethod
+    def from_legacy_params(
+        cls,
+        include_plotlyjs: Union[bool, str] = True,
+        include_mathjax: Union[bool, str] = False,
+        plotlyjs_source: Optional[Union[str, Path]] = None,
+        plotlyjs_cdn_url: Optional[str] = None,
+        plotlyjs_content: Optional[str] = None,
+        mathjax_cdn_url: Optional[str] = None,
+        css_content: Optional[str] = None,
+        css_url: Optional[str] = None,
+        meta_tags: Optional[Dict[str, str]] = None,
+        include_meta_charset: bool = True,
+        output_path: Optional[Union[str, Path]] = None,
+        html_dir: Optional[Union[str, Path]] = None,
+        overwrite: bool = False,
+    ) -> "ResourcePolicyContext":
+        """
+        Create a ResourcePolicyContext from legacy parameters.
+
+        This is the main compatibility entry point. Callers with legacy
+        parameters should use this method to build a context.
+
+        Parameters
+        ----------
+        include_plotlyjs, include_mathjax, etc.
+            Legacy resource parameters, same as in create_policy_set.
+        output_path : str or Path, optional
+            Path to the HTML output file.
+        html_dir : str or Path, optional
+            Directory for relative path calculation.
+            Defaults to output_path.parent if output_path is provided.
+        overwrite : bool, default False
+            Whether to overwrite existing resource files.
+
+        Returns
+        -------
+        ResourcePolicyContext
+        """
+        policy_set = create_policy_set(
+            include_plotlyjs=include_plotlyjs,
+            include_mathjax=include_mathjax,
+            plotlyjs_source=plotlyjs_source,
+            plotlyjs_cdn_url=plotlyjs_cdn_url,
+            plotlyjs_content=plotlyjs_content,
+            mathjax_cdn_url=mathjax_cdn_url,
+            css_content=css_content,
+            css_url=css_url,
+            meta_tags=meta_tags,
+            include_meta_charset=include_meta_charset,
+        )
+
+        output = Path(output_path) if output_path else None
+        directory = Path(html_dir) if html_dir else None
+
+        return cls(
+            policy_set=policy_set,
+            output_path=output,
+            html_dir=directory,
+            overwrite=overwrite,
+        )
+
+    @classmethod
+    def from_policy_set(
+        cls,
+        policy_set: ResourcePolicySet,
+        output_path: Optional[Union[str, Path]] = None,
+        html_dir: Optional[Union[str, Path]] = None,
+        overwrite: bool = False,
+    ) -> "ResourcePolicyContext":
+        """
+        Create a ResourcePolicyContext from an existing ResourcePolicySet.
+
+        Parameters
+        ----------
+        policy_set : ResourcePolicySet
+            An existing policy set to wrap.
+        output_path : str or Path, optional
+            Path to the HTML output file.
+        html_dir : str or Path, optional
+            Directory for relative path calculation.
+        overwrite : bool, default False
+            Whether to overwrite existing resource files.
+
+        Returns
+        -------
+        ResourcePolicyContext
+        """
+        output = Path(output_path) if output_path else None
+        directory = Path(html_dir) if html_dir else None
+
+        return cls(
+            policy_set=policy_set,
+            output_path=output,
+            html_dir=directory,
+            overwrite=overwrite,
+        )
+
+    def get_head_html(self) -> str:
+        """
+        Generate HTML for the <head> section.
+
+        Returns
+        -------
+        str
+            All resource reference HTML strings joined with newlines.
+        """
+        return self.policy_set.get_head_html(
+            output_path=self.output_path,
+            html_dir=self.html_dir,
+        )
+
+    def get_all_refs(self) -> List[ResourceRef]:
+        """
+        Get all resource references.
+
+        Returns
+        -------
+        list of ResourceRef
+        """
+        return self.policy_set.get_all_refs(
+            output_path=self.output_path,
+            html_dir=self.html_dir,
+        )
+
+    def get_copy_tasks(self) -> List[ResourceRef]:
+        """
+        Get all copy tasks.
+
+        Returns
+        -------
+        list of ResourceRef
+            Only resources that need to be copied.
+        """
+        return self.policy_set.get_copy_tasks(
+            output_path=self.output_path,
+            html_dir=self.html_dir,
+        )
+
+    def execute_copies(self) -> List[Path]:
+        """
+        Execute all file copy operations.
+
+        Returns
+        -------
+        list of Path
+            Paths of files that were copied.
+        """
+        return self.policy_set.execute_copies(
+            output_path=self.output_path,
+            html_dir=self.html_dir,
+            overwrite=self.overwrite,
+        )
+
+    def get_missing_hints(self) -> List[str]:
+        """
+        Get all missing resource hints.
+
+        Returns
+        -------
+        list of str
+            Warning messages for missing or misconfigured resources.
+        """
+        return self.policy_set.get_missing_hints()
+
+    def warn_on_missing(self) -> None:
+        """
+        Issue warnings for any missing resources.
+
+        Uses Python's warnings module to report each missing hint.
+        """
+        import warnings
+
+        for hint in self.get_missing_hints():
+            warnings.warn(hint)
+
+    def get_policy(self, resource_type: str) -> Optional[BaseResourcePolicy]:
+        """Get the policy for a specific resource type."""
+        return self.policy_set.get_policy(resource_type)
+
+    def set_policy(self, resource_type: str, policy: BaseResourcePolicy) -> None:
+        """Set the policy for a specific resource type."""
+        self.policy_set.set_policy(resource_type, policy)
+
+    @property
+    def plotlyjs(self) -> Optional[BaseResourcePolicy]:
+        return self.policy_set.plotlyjs
+
+    @plotlyjs.setter
+    def plotlyjs(self, value: Optional[BaseResourcePolicy]) -> None:
+        self.policy_set.plotlyjs = value
+
+    @property
+    def mathjax(self) -> Optional[BaseResourcePolicy]:
+        return self.policy_set.mathjax
+
+    @mathjax.setter
+    def mathjax(self, value: Optional[BaseResourcePolicy]) -> None:
+        self.policy_set.mathjax = value
+
+    @property
+    def css(self) -> Optional[BaseResourcePolicy]:
+        return self.policy_set.css
+
+    @css.setter
+    def css(self, value: Optional[BaseResourcePolicy]) -> None:
+        self.policy_set.css = value
+
+    @property
+    def meta(self) -> Optional[BaseResourcePolicy]:
+        return self.policy_set.meta
+
+    @meta.setter
+    def meta(self, value: Optional[BaseResourcePolicy]) -> None:
+        self.policy_set.meta = value

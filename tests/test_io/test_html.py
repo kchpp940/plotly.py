@@ -14,6 +14,7 @@ from plotly.offline.offline import get_plotlyjs
 from plotly.io._resource_policy import (
     _generate_sri_hash,
     ResourcePolicySet,
+    ResourcePolicyContext,
     ResourceType,
     PolicyType,
     InlinePolicy,
@@ -26,6 +27,7 @@ from plotly.io._resource_policy import (
     policy_from_include_plotlyjs,
     policy_from_include_mathjax,
 )
+import warnings
 
 
 @pytest.fixture
@@ -755,4 +757,260 @@ class TestBackwardCompatibility:
         result = renderer.to_mimebundle(fig1.to_dict())
         assert "text/html" in result
         assert custom_css in result["text/html"]
+
+
+class TestResourcePolicyContext:
+    def test_from_legacy_params_cdn(self, fig1):
+        ctx = ResourcePolicyContext.from_legacy_params(
+            include_plotlyjs="cdn",
+            include_mathjax="cdn",
+        )
+        assert isinstance(ctx, ResourcePolicyContext)
+        assert isinstance(ctx.policy_set, ResourcePolicySet)
+        head_html = ctx.get_head_html()
+        assert plotly_cdn_url() in head_html
+        assert "mathjax" in head_html.lower()
+
+    def test_from_legacy_params_directory(self, fig1):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "test.html"
+            ctx = ResourcePolicyContext.from_legacy_params(
+                include_plotlyjs="directory",
+                output_path=output_path,
+            )
+            copy_tasks = ctx.get_copy_tasks()
+            assert len(copy_tasks) > 0
+
+    def test_from_policy_set(self, fig1):
+        policy_set = create_policy_set(include_plotlyjs="cdn")
+        ctx = ResourcePolicyContext.from_policy_set(policy_set)
+        assert ctx.policy_set is policy_set
+        assert plotly_cdn_url() in ctx.get_head_html()
+
+    def test_get_all_refs(self, fig1):
+        ctx = ResourcePolicyContext.from_legacy_params(
+            include_plotlyjs="cdn",
+            include_mathjax="cdn",
+        )
+        refs = ctx.get_all_refs()
+        assert len(refs) > 0
+
+    def test_get_missing_hints(self, fig1):
+        ctx = ResourcePolicyContext.from_legacy_params(
+            include_plotlyjs="cdn",
+        )
+        hints = ctx.get_missing_hints()
+        assert isinstance(hints, list)
+
+    def test_warn_on_missing(self, fig1):
+        ctx = ResourcePolicyContext.from_legacy_params(
+            include_plotlyjs="cdn",
+        )
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            ctx.warn_on_missing()
+            # No warnings expected for valid CDN config
+            assert len(w) == 0
+
+    def test_policy_property_accessors(self, fig1):
+        ctx = ResourcePolicyContext.from_legacy_params(
+            include_plotlyjs="cdn",
+            include_mathjax="cdn",
+        )
+        assert ctx.plotlyjs is not None
+        assert ctx.mathjax is not None
+        assert ctx.meta is not None
+        assert ctx.css is None
+
+    def test_get_and_set_policy(self, fig1):
+        ctx = ResourcePolicyContext.from_legacy_params(
+            include_plotlyjs="cdn",
+        )
+        policy = ctx.get_policy(ResourceType.PLOTLYJS)
+        assert policy is not None
+
+        new_policy = InlinePolicy(resource_type=ResourceType.CSS, content="body {}")
+        ctx.set_policy(ResourceType.CSS, new_policy)
+        assert ctx.css is not None
+
+    def test_output_path_defaults_html_dir(self, fig1):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_path = Path(tmpdir) / "sub/test.html"
+            ctx = ResourcePolicyContext.from_legacy_params(
+                include_plotlyjs="directory",
+                output_path=output_path,
+            )
+            assert ctx.html_dir == output_path.parent
+
+
+class TestToHtmlWithContext:
+    def test_resource_context_override(self, fig1):
+        ctx = ResourcePolicyContext.from_legacy_params(
+            include_plotlyjs="cdn",
+            include_mathjax="cdn",
+        )
+        html = pio.to_html(
+            fig1,
+            include_plotlyjs=False,
+            include_mathjax=False,
+            resource_context=ctx,
+            full_html=True,
+        )
+        assert plotly_cdn_url() in html
+
+    def test_resource_policy_vs_context_priority(self, fig1):
+        policy_set = create_policy_set(include_plotlyjs=False)
+        ctx = ResourcePolicyContext.from_legacy_params(
+            include_plotlyjs="cdn",
+        )
+        html = pio.to_html(
+            fig1,
+            resource_policy=policy_set,
+            resource_context=ctx,
+            full_html=True,
+        )
+        # context should take highest priority
+        assert plotly_cdn_url() in html
+
+
+class TestWriteHtmlWithContext:
+    def test_with_resource_context(self, fig1):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_file = Path(tmpdir) / "test.html"
+            ctx = ResourcePolicyContext.from_legacy_params(
+                include_plotlyjs="directory",
+                output_path=output_file,
+            )
+            pio.write_html(
+                fig1,
+                output_file,
+                include_plotlyjs=False,
+                resource_context=ctx,
+                full_html=True,
+                auto_open=False,
+            )
+            assert output_file.exists()
+            assert (Path(tmpdir) / "plotly.min.js").exists()
+
+
+class TestOfflinePlotWithContext:
+    def test_plot_with_resource_policy(self, fig1):
+        from plotly.offline import plot
+
+        policy_set = create_policy_set(
+            include_plotlyjs="cdn",
+            include_mathjax="cdn",
+        )
+        div = plot(
+            fig1,
+            output_type="div",
+            include_plotlyjs=False,
+            resource_policy=policy_set,
+            auto_open=False,
+        )
+        assert plotly_cdn_url() in div
+
+    def test_plot_with_resource_context(self, fig1):
+        from plotly.offline import plot
+
+        ctx = ResourcePolicyContext.from_legacy_params(
+            include_plotlyjs="cdn",
+        )
+        div = plot(
+            fig1,
+            output_type="div",
+            include_plotlyjs=False,
+            resource_context=ctx,
+            auto_open=False,
+        )
+        assert plotly_cdn_url() in div
+
+    def test_plot_file_with_overwrite_resources(self, fig1):
+        from plotly.offline import plot
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            filename = str(Path(tmpdir) / "test_plot.html")
+            result = plot(
+                fig1,
+                output_type="file",
+                filename=filename,
+                include_plotlyjs="directory",
+                overwrite_resources=True,
+                auto_open=False,
+            )
+            assert result == filename
+            assert Path(filename).exists()
+            assert (Path(tmpdir) / "plotly.min.js").exists()
+
+
+class TestRendererWithContext:
+    def test_iframe_renderer_with_resource_context(self, fig1):
+        from plotly.io._base_renderers import IFrameRenderer
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            os.chdir(tmpdir)
+
+            custom_css = ".ctx-figure { max-width: 800px; }"
+            ctx = ResourcePolicyContext.from_legacy_params(
+                include_plotlyjs="cdn",
+                include_mathjax="cdn",
+                css_content=custom_css,
+            )
+
+            renderer = IFrameRenderer(
+                resource_context=ctx,
+                html_directory="ctx_figures",
+            )
+
+            result = renderer.to_mimebundle(fig1.to_dict())
+            assert "text/html" in result
+
+            html_files = list(Path(tmpdir).glob("ctx_figures/*.html"))
+            assert len(html_files) > 0
+
+            html_content = html_files[0].read_text()
+            assert custom_css in html_content
+            assert plotly_cdn_url() in html_content
+
+    def test_sphinx_gallery_renderer_with_resource_context(self, fig1):
+        from plotly.io._base_renderers import SphinxGalleryHtmlRenderer
+
+        custom_css = ".sg-ctx-figure { margin: 10px; }"
+        ctx = ResourcePolicyContext.from_legacy_params(
+            include_plotlyjs="cdn",
+            include_mathjax="cdn",
+            css_content=custom_css,
+        )
+
+        renderer = SphinxGalleryHtmlRenderer(
+            connected=True, resource_context=ctx
+        )
+
+        result = renderer.to_mimebundle(fig1.to_dict())
+        assert "text/html" in result
+        assert custom_css in result["text/html"]
+
+    def test_browser_renderer_with_resource_context(self, fig1):
+        from plotly.io._base_renderers import BrowserRenderer
+
+        custom_css = ".browser-figure { border: 1px solid red; }"
+        ctx = ResourcePolicyContext.from_legacy_params(
+            include_plotlyjs="cdn",
+            css_content=custom_css,
+        )
+
+        renderer = BrowserRenderer(resource_context=ctx)
+        assert renderer.resource_context is ctx
+
+    def test_databricks_renderer_with_resource_context(self, fig1):
+        from plotly.io._base_renderers import DatabricksRenderer
+
+        custom_css = ".databricks-figure { padding: 10px; }"
+        ctx = ResourcePolicyContext.from_legacy_params(
+            include_plotlyjs="cdn",
+            css_content=custom_css,
+        )
+
+        renderer = DatabricksRenderer(resource_context=ctx)
+        assert renderer.resource_context is ctx
 

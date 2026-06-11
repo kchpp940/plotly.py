@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     from ._kaleido import defaults, get_chrome
     from ._resource_policy import (
         ResourcePolicySet,
+        ResourcePolicyContext,
         ResourceType,
         PolicyType,
         BaseResourcePolicy,
@@ -55,6 +56,7 @@ if TYPE_CHECKING:
         "defaults",
         "get_chrome",
         "ResourcePolicySet",
+        "ResourcePolicyContext",
         "ResourceType",
         "PolicyType",
         "BaseResourcePolicy",
@@ -90,6 +92,7 @@ else:
             "._kaleido.defaults",
             "._kaleido.get_chrome",
             "._resource_policy.ResourcePolicySet",
+            "._resource_policy.ResourcePolicyContext",
             "._resource_policy.ResourceType",
             "._resource_policy.PolicyType",
             "._resource_policy.BaseResourcePolicy",

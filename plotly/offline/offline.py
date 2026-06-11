@@ -414,6 +414,9 @@ def plot(
     include_mathjax=False,
     auto_play=True,
     animation_opts=None,
+    resource_policy=None,
+    resource_context=None,
+    overwrite_resources=False,
 ):
     """Create a plotly graph locally as an HTML document or string.
 
@@ -533,6 +536,16 @@ def plot(
         https://github.com/plotly/plotly.js/blob/master/src/plots/animation_attributes.js
         for available options. Has no effect if the figure
         does not contain frames, or auto_play is False.
+    resource_policy (default=None) -- A ResourcePolicySet object specifying
+        how to include plotly.js, MathJax, CSS, and meta tags. If provided,
+        this overrides include_plotlyjs and include_mathjax parameters.
+    resource_context (default=None) -- A ResourcePolicyContext object. If
+        provided, this takes highest priority and overrides both
+        resource_policy and the legacy include_plotlyjs/include_mathjax
+        parameters.
+    overwrite_resources (default=False) -- If True, overwrite existing
+        resource files when copying to the output directory. If False, skip
+        copying if the file already exists.
 
     Example:
     ```
@@ -593,6 +606,9 @@ def plot(
             validate=validate,
             animation_opts=animation_opts,
             auto_open=auto_open,
+            resource_policy=resource_policy,
+            resource_context=resource_context,
+            overwrite_resources=overwrite_resources,
         )
         return filename
     else:
@@ -606,6 +622,8 @@ def plot(
             full_html=False,
             validate=validate,
             animation_opts=animation_opts,
+            resource_policy=resource_policy,
+            resource_context=resource_context,
         )
 
 

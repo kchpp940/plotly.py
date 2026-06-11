@@ -11,6 +11,7 @@ from plotly.io._utils import plotly_cdn_url
 from plotly.io._resource_policy import (
     create_policy_set,
     ResourcePolicySet,
+    ResourcePolicyContext,
 )
 from plotly.offline.offline import _get_jconfig, get_plotlyjs
 from plotly.tools import return_figure_from_figure_or_data
@@ -506,6 +507,7 @@ class IFrameRenderer(MimetypeRenderer):
         include_mathjax="cdn",
         html_directory="iframe_figures",
         resource_policy=None,
+        resource_context=None,
         overwrite_resources=False,
     ):
         self.config = config
@@ -516,7 +518,33 @@ class IFrameRenderer(MimetypeRenderer):
         self.include_mathjax = include_mathjax
         self.html_directory = html_directory
         self.resource_policy = resource_policy
+        self.resource_context = resource_context
         self.overwrite_resources = overwrite_resources
+
+    def _build_context(self, filename) -> ResourcePolicyContext:
+        """Build a ResourcePolicyContext for this renderer."""
+        if self.resource_context is not None:
+            return self.resource_context
+
+        if self.resource_policy is not None:
+            return ResourcePolicyContext.from_policy_set(
+                self.resource_policy,
+                output_path=filename,
+                html_dir=self.html_directory,
+                overwrite=self.overwrite_resources,
+            )
+
+        plotlyjs_content = get_plotlyjs()
+        return ResourcePolicyContext.from_legacy_params(
+            include_plotlyjs=self.include_plotlyjs,
+            include_mathjax=self.include_mathjax,
+            plotlyjs_cdn_url=plotly_cdn_url(),
+            plotlyjs_content=plotlyjs_content,
+            include_meta_charset=True,
+            output_path=filename,
+            html_dir=self.html_directory,
+            overwrite=self.overwrite_resources,
+        )
 
     def to_mimebundle(self, fig_dict):
         from plotly.io import write_html
@@ -546,16 +574,8 @@ class IFrameRenderer(MimetypeRenderer):
             if not isdir(self.html_directory):
                 raise
 
-        # Build resource policy if not provided
-        if self.resource_policy is None:
-            plotlyjs_content = get_plotlyjs()
-            self.resource_policy = create_policy_set(
-                include_plotlyjs=self.include_plotlyjs,
-                include_mathjax=self.include_mathjax,
-                plotlyjs_cdn_url=plotly_cdn_url(),
-                plotlyjs_content=plotlyjs_content,
-                include_meta_charset=True,
-            )
+        # Build resource context
+        ctx = self._build_context(filename)
 
         write_html(
             fig_dict,
@@ -570,8 +590,7 @@ class IFrameRenderer(MimetypeRenderer):
             default_width="100%",
             default_height=525,
             validate=False,
-            resource_policy=self.resource_policy,
-            overwrite_resources=self.overwrite_resources,
+            resource_context=ctx,
         )
 
         # Build IFrame
@@ -715,6 +734,7 @@ class BrowserRenderer(ExternalRenderer):
         include_plotlyjs=True,
         include_mathjax="cdn",
         resource_policy=None,
+        resource_context=None,
     ):
         self.config = config
         self.auto_play = auto_play
@@ -726,20 +746,29 @@ class BrowserRenderer(ExternalRenderer):
         self.include_plotlyjs = include_plotlyjs
         self.include_mathjax = include_mathjax
         self.resource_policy = resource_policy
+        self.resource_context = resource_context
+
+    def _build_context(self) -> ResourcePolicyContext:
+        """Build a ResourcePolicyContext for this renderer."""
+        if self.resource_context is not None:
+            return self.resource_context
+
+        if self.resource_policy is not None:
+            return ResourcePolicyContext.from_policy_set(self.resource_policy)
+
+        plotlyjs_content = get_plotlyjs()
+        return ResourcePolicyContext.from_legacy_params(
+            include_plotlyjs=self.include_plotlyjs,
+            include_mathjax=self.include_mathjax,
+            plotlyjs_cdn_url=plotly_cdn_url(),
+            plotlyjs_content=plotlyjs_content,
+            include_meta_charset=True,
+        )
 
     def render(self, fig_dict):
         from plotly.io import to_html
 
-        # Build resource policy if not provided
-        if self.resource_policy is None:
-            plotlyjs_content = get_plotlyjs()
-            self.resource_policy = create_policy_set(
-                include_plotlyjs=self.include_plotlyjs,
-                include_mathjax=self.include_mathjax,
-                plotlyjs_cdn_url=plotly_cdn_url(),
-                plotlyjs_content=plotlyjs_content,
-                include_meta_charset=True,
-            )
+        ctx = self._build_context()
 
         html = to_html(
             fig_dict,
@@ -753,7 +782,7 @@ class BrowserRenderer(ExternalRenderer):
             default_width="100%",
             default_height="100%",
             validate=False,
-            resource_policy=self.resource_policy,
+            resource_context=ctx,
         )
         open_html_in_browser(html, self.using, self.new, self.autoraise)
 
@@ -768,6 +797,7 @@ class DatabricksRenderer(ExternalRenderer):
         include_plotlyjs="cdn",
         include_mathjax="cdn",
         resource_policy=None,
+        resource_context=None,
     ):
         self.config = config
         self.auto_play = auto_play
@@ -776,6 +806,7 @@ class DatabricksRenderer(ExternalRenderer):
         self.include_plotlyjs = include_plotlyjs
         self.include_mathjax = include_mathjax
         self.resource_policy = resource_policy
+        self.resource_context = resource_context
         self._displayHTML = None
 
     @property
@@ -800,19 +831,27 @@ supported when called from within the Databricks notebook environment."""
 
         return self._displayHTML
 
+    def _build_context(self) -> ResourcePolicyContext:
+        """Build a ResourcePolicyContext for this renderer."""
+        if self.resource_context is not None:
+            return self.resource_context
+
+        if self.resource_policy is not None:
+            return ResourcePolicyContext.from_policy_set(self.resource_policy)
+
+        plotlyjs_content = get_plotlyjs()
+        return ResourcePolicyContext.from_legacy_params(
+            include_plotlyjs=self.include_plotlyjs,
+            include_mathjax=self.include_mathjax,
+            plotlyjs_cdn_url=plotly_cdn_url(),
+            plotlyjs_content=plotlyjs_content,
+            include_meta_charset=True,
+        )
+
     def render(self, fig_dict):
         from plotly.io import to_html
 
-        # Build resource policy if not provided
-        if self.resource_policy is None:
-            plotlyjs_content = get_plotlyjs()
-            self.resource_policy = create_policy_set(
-                include_plotlyjs=self.include_plotlyjs,
-                include_mathjax=self.include_mathjax,
-                plotlyjs_cdn_url=plotly_cdn_url(),
-                plotlyjs_content=plotlyjs_content,
-                include_meta_charset=True,
-            )
+        ctx = self._build_context()
 
         html = to_html(
             fig_dict,
@@ -826,7 +865,7 @@ supported when called from within the Databricks notebook environment."""
             default_width="100%",
             default_height="100%",
             validate=False,
-            resource_policy=self.resource_policy,
+            resource_context=ctx,
         )
 
         # displayHTML is a Databricks notebook built-in function
@@ -842,6 +881,7 @@ class SphinxGalleryHtmlRenderer(HtmlRenderer):
         post_script=None,
         animation_opts=None,
         resource_policy=None,
+        resource_context=None,
     ):
         super(SphinxGalleryHtmlRenderer, self).__init__(
             connected=connected,
@@ -853,9 +893,15 @@ class SphinxGalleryHtmlRenderer(HtmlRenderer):
             animation_opts=animation_opts,
         )
         self.resource_policy = resource_policy
+        self.resource_context = resource_context
 
-    def to_mimebundle(self, fig_dict):
-        from plotly.io import to_html
+    def _build_context(self) -> ResourcePolicyContext:
+        """Build a ResourcePolicyContext for this renderer."""
+        if self.resource_context is not None:
+            return self.resource_context
+
+        if self.resource_policy is not None:
+            return ResourcePolicyContext.from_policy_set(self.resource_policy)
 
         if self.connected:
             include_plotlyjs = "cdn"
@@ -864,16 +910,26 @@ class SphinxGalleryHtmlRenderer(HtmlRenderer):
             include_plotlyjs = True
             include_mathjax = "cdn"
 
-        # Build resource policy if not provided
-        if self.resource_policy is None:
-            plotlyjs_content = get_plotlyjs()
-            self.resource_policy = create_policy_set(
-                include_plotlyjs=include_plotlyjs,
-                include_mathjax=include_mathjax,
-                plotlyjs_cdn_url=plotly_cdn_url(),
-                plotlyjs_content=plotlyjs_content,
-                include_meta_charset=False,
-            )
+        plotlyjs_content = get_plotlyjs()
+        return ResourcePolicyContext.from_legacy_params(
+            include_plotlyjs=include_plotlyjs,
+            include_mathjax=include_mathjax,
+            plotlyjs_cdn_url=plotly_cdn_url(),
+            plotlyjs_content=plotlyjs_content,
+            include_meta_charset=False,
+        )
+
+    def to_mimebundle(self, fig_dict):
+        from plotly.io import to_html
+
+        ctx = self._build_context()
+
+        if self.connected:
+            include_plotlyjs = "cdn"
+            include_mathjax = "cdn"
+        else:
+            include_plotlyjs = True
+            include_mathjax = "cdn"
 
         html = to_html(
             fig_dict,
@@ -886,7 +942,7 @@ class SphinxGalleryHtmlRenderer(HtmlRenderer):
             default_width="100%",
             default_height=525,
             validate=False,
-            resource_policy=self.resource_policy,
+            resource_context=ctx,
         )
 
         return {"text/html": html}
@@ -896,10 +952,35 @@ class SphinxGalleryOrcaRenderer(ExternalRenderer):
     def __init__(
         self,
         resource_policy=None,
+        resource_context=None,
         overwrite_resources=False,
     ):
         self.resource_policy = resource_policy
+        self.resource_context = resource_context
         self.overwrite_resources = overwrite_resources
+
+    def _build_context(self, filename_html) -> ResourcePolicyContext:
+        """Build a ResourcePolicyContext for this renderer."""
+        if self.resource_context is not None:
+            return self.resource_context
+
+        if self.resource_policy is not None:
+            return ResourcePolicyContext.from_policy_set(
+                self.resource_policy,
+                output_path=filename_html,
+                overwrite=self.overwrite_resources,
+            )
+
+        plotlyjs_content = get_plotlyjs()
+        return ResourcePolicyContext.from_legacy_params(
+            include_plotlyjs="cdn",
+            include_mathjax="cdn",
+            plotlyjs_cdn_url=plotly_cdn_url(),
+            plotlyjs_content=plotlyjs_content,
+            include_meta_charset=True,
+            output_path=filename_html,
+            overwrite=self.overwrite_resources,
+        )
 
     def render(self, fig_dict):
         stack = inspect.stack()
@@ -913,23 +994,13 @@ class SphinxGalleryOrcaRenderer(ExternalRenderer):
         filename_png = filename_root + ".png"
         figure = return_figure_from_figure_or_data(fig_dict, True)
 
-        # Build resource policy if not provided
-        if self.resource_policy is None:
-            plotlyjs_content = get_plotlyjs()
-            self.resource_policy = create_policy_set(
-                include_plotlyjs="cdn",
-                include_mathjax="cdn",
-                plotlyjs_cdn_url=plotly_cdn_url(),
-                plotlyjs_content=plotlyjs_content,
-                include_meta_charset=True,
-            )
+        ctx = self._build_context(filename_html)
 
         _ = write_html(
             fig_dict,
             file=filename_html,
             include_plotlyjs="cdn",
-            resource_policy=self.resource_policy,
-            overwrite_resources=self.overwrite_resources,
+            resource_context=ctx,
         )
         try:
             write_image(figure, filename_png)
