@@ -2,6 +2,7 @@ import plotly.graph_objs as go
 import plotly.io as pio
 from collections import namedtuple, OrderedDict
 from ._special_inputs import IdentityMap, Constant, Range
+from ._naming import NamingContext, NamingResult
 from .trendline_functions import ols, lowess, rolling, expanding, ewm
 
 from _plotly_utils.basevalidators import ColorscaleValidator
@@ -137,143 +138,6 @@ Mapping = namedtuple(
     ],
 )
 TraceSpec = namedtuple("TraceSpec", ["constructor", "attrs", "trace_patch", "marginal"])
-
-
-NamingResult = namedtuple(
-    "NamingResult",
-    [
-        "name",
-        "legendgroup",
-        "showlegend",
-        "offsetgroup",
-        "alignmentgroup",
-        "frame_name",
-        "mapping_labels",
-        "legend_title_labels",
-    ],
-)
-
-
-class NamingContext:
-    _LEGENDLESS_CONSTRUCTORS = {
-        go.Parcats,
-        go.Parcoords,
-        go.Choropleth,
-        go.Choroplethmap,
-        go.Choroplethmapbox,
-        go.Densitymap,
-        go.Densitymapbox,
-        go.Histogram2d,
-        go.Sunburst,
-        go.Treemap,
-        go.Icicle,
-    }
-
-    _ALIGNED_CONSTRUCTORS = {go.Bar, go.Box, go.Violin, go.Histogram}
-
-    def __init__(self, args, grouped_mappings, grouper, orders, layout_patch):
-        self.args = args
-        self.grouped_mappings = grouped_mappings
-        self.grouper = grouper
-        self.orders = orders
-        self.layout_patch = layout_patch
-        self._trace_names_by_frame = {}
-        self._last_legend_title_labels = None
-
-    def _build_labels(self, group_name):
-        mapping_labels = OrderedDict()
-        trace_name_labels = OrderedDict()
-        frame_name = ""
-        for col, val, m in zip(self.grouper, group_name, self.grouped_mappings):
-            if col != one_group:
-                key = get_label(self.args, col)
-                if not isinstance(m.val_map, IdentityMap):
-                    mapping_labels[key] = str(val)
-                    if m.show_in_trace_name:
-                        trace_name_labels[key] = str(val)
-                if m.variable == "animation_frame":
-                    frame_name = val
-        return mapping_labels, trace_name_labels, frame_name
-
-    def _get_or_create_frame_names(self, frame_name):
-        if frame_name not in self._trace_names_by_frame:
-            self._trace_names_by_frame[frame_name] = set()
-        return self._trace_names_by_frame[frame_name]
-
-    def _compute_legend_fields(self, trace_name, trace_names, constructor):
-        if constructor in self._LEGENDLESS_CONSTRUCTORS:
-            return None, None
-        return trace_name, (trace_name != "" and trace_name not in trace_names)
-
-    def _compute_alignment_fields(self, trace_name, constructor):
-        if constructor in self._ALIGNED_CONSTRUCTORS:
-            barmode = self.layout_patch.get("barmode")
-            if barmode == "group" or barmode is None:
-                return trace_name, True
-        return None, None
-
-    def get_base_naming(self, group_name, trace_spec):
-        mapping_labels, legend_title_labels, frame_name = self._build_labels(
-            group_name
-        )
-        trace_name = ", ".join(legend_title_labels.values())
-        trace_names = self._get_or_create_frame_names(frame_name)
-
-        constructor = trace_spec.constructor
-        legendgroup, showlegend = self._compute_legend_fields(
-            trace_name, trace_names, constructor
-        )
-        offsetgroup, alignmentgroup = self._compute_alignment_fields(
-            trace_name, constructor
-        )
-
-        trace_names.add(trace_name)
-        self._last_legend_title_labels = legend_title_labels
-
-        return NamingResult(
-            name=trace_name,
-            legendgroup=legendgroup,
-            showlegend=showlegend,
-            offsetgroup=offsetgroup,
-            alignmentgroup=alignmentgroup,
-            frame_name=frame_name,
-            mapping_labels=mapping_labels,
-            legend_title_labels=legend_title_labels,
-        )
-
-    def get_trendline_naming(self, base):
-        trace_names = self._get_or_create_frame_names(base.frame_name)
-        trendline_name = (
-            base.name + " Trendline" if base.name else "Trendline"
-        )
-
-        return NamingResult(
-            name=trendline_name,
-            legendgroup=base.name if base.name else None,
-            showlegend=trendline_name not in trace_names,
-            offsetgroup=None,
-            alignmentgroup=None,
-            frame_name=base.frame_name,
-            mapping_labels=OrderedDict(),
-            legend_title_labels=base.legend_title_labels,
-        )
-
-    def get_overall_trendline_naming(self):
-        return NamingResult(
-            name="Overall Trendline",
-            legendgroup="Overall Trendline",
-            showlegend=False,
-            offsetgroup=None,
-            alignmentgroup=None,
-            frame_name="",
-            mapping_labels=OrderedDict(),
-            legend_title_labels=OrderedDict(),
-        )
-
-    def get_legend_title(self):
-        if self._last_legend_title_labels:
-            return ", ".join(self._last_legend_title_labels)
-        return None
 
 
 def get_label(args, column):
@@ -2868,7 +2732,11 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
 
     subplot_type = _subplot_type_for_trace_type(constructor().type)
 
-    naming_ctx = NamingContext(args, grouped_mappings, grouper, orders, layout_patch)
+    naming_ctx = NamingContext(
+        args, grouped_mappings, grouper, orders, layout_patch,
+        get_label_fn=get_label, one_group_fn=one_group,
+    )
+    last_naming = None
     frames = OrderedDict()
     trendline_rows = []
     facet_col_wrap = args.get("facet_col_wrap", 0)
@@ -2878,22 +2746,12 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
             if i == 0:
                 naming = naming_ctx.get_base_naming(group_name, trace_spec)
                 base_naming = naming
+                last_naming = naming
             else:
                 naming = naming_ctx.get_trendline_naming(base_naming)
 
-            trace = trace_spec.constructor(name=naming.name)
-
-            if naming.legendgroup is not None:
-                trace.update(
-                    legendgroup=naming.legendgroup,
-                    showlegend=naming.showlegend,
-                )
-
-            if naming.alignmentgroup is not None:
-                trace.update(
-                    alignmentgroup=naming.alignmentgroup,
-                    offsetgroup=naming.offsetgroup,
-                )
+            trace = trace_spec.constructor()
+            naming.apply_to_trace(trace)
 
             # Init subplot row/col
             trace._subplot_row = 1
@@ -3038,7 +2896,7 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
         if args[v]:
             layout_patch[v] = args[v]
     layout_patch["legend"] = dict(tracegroupgap=0)
-    legend_title = naming_ctx.get_legend_title()
+    legend_title = last_naming.legend_title() if last_naming else None
     if legend_title:
         layout_patch["legend"]["title_text"] = legend_title
     if args["title"]:
@@ -3095,11 +2953,8 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
     if args.get("trendline") and args.get("trendline_scope", "trace") == "overall":
         trendline_spec = make_trendline_spec(args, constructor)
         overall = naming_ctx.get_overall_trendline_naming()
-        trendline_trace = trendline_spec.constructor(
-            name=overall.name,
-            legendgroup=overall.legendgroup,
-            showlegend=overall.showlegend,
-        )
+        trendline_trace = trendline_spec.constructor()
+        overall.apply_to_trace(trendline_trace)
         if "line" not in trendline_spec.trace_patch:  # no color override
             for m in grouped_mappings:
                 if m.variable == "color":
