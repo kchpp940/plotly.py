@@ -2829,7 +2829,7 @@ class SummaryContext:
         if group_name in self._text_cache:
             return self._text_cache[group_name]
 
-        stats = self.compute_stats(group_name, None)
+        stats = self._stats_cache.get(group_name, {})
         parts = []
         for spec in self.specs:
             stype = spec["type"]
@@ -2886,9 +2886,9 @@ class SummaryContext:
         row = 1
         col = 1
         for _, g_val, m in zip(self.grouper, group_name, self.grouped_mappings):
-            if m.facet == "row":
+            if m.facet == "row" and g_val in m.val_map:
                 row = m.val_map[g_val]
-            elif m.facet == "col":
+            elif m.facet == "col" and g_val in m.val_map:
                 col = m.val_map[g_val]
 
         trace_name = self.get_group_trace_name(group_name)
@@ -3069,6 +3069,10 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
                     frame_name = val
 
         base_trace_name = ", ".join(trace_name_labels.values())
+
+        if summary_ctx.is_active():
+            summary_ctx.compute_stats(group_name, group)
+
         trace_name = summary_ctx.get_trace_name_with_summary(base_trace_name, group_name) if summary_ctx.is_active() else base_trace_name
 
         if frame_name not in trace_names_by_frame:
