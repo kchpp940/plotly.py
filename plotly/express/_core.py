@@ -346,7 +346,7 @@ def _extract_customdata_columns(args, mapping_labels):
             col_map[label] = col_idx
 
     hover_data = args.get("hover_data")
-    if hover_data:
+    if isinstance(hover_data, (dict, list, tuple)):
         for col in hover_data:
             if isinstance(hover_data, dict) and not hover_data[col]:
                 continue
