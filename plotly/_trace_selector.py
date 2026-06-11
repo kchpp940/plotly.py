@@ -2,6 +2,17 @@ import re
 import warnings
 
 
+def _is_array_like(obj):
+    """Return True if *obj* is a list, tuple, or numpy ndarray."""
+    if isinstance(obj, (list, tuple)):
+        return True
+    try:
+        import numpy as np
+        return isinstance(obj, np.ndarray)
+    except ImportError:
+        return False
+
+
 def _values_equal(a, b):
     """
     Compare two values for equality, normalising tuple/list mismatches
@@ -12,14 +23,14 @@ def _values_equal(a, b):
         return True
     if a is None or b is None:
         return False
-    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+    if _is_array_like(a) and _is_array_like(b):
         if len(a) != len(b):
             return False
         return all(_values_equal(ai, bi) for ai, bi in zip(a, b))
     return a == b
 
 
-def _resolve_path(obj, path):
+def _resolve_path(obj, path, col_map=None):
     """
     Resolve a dot-separated *path* against *obj*, returning the value
     at that path or a ``_MISSING`` sentinel if any segment is absent.
@@ -30,15 +41,28 @@ def _resolve_path(obj, path):
     1
     >>> _resolve_path({"items": [10, 20]}, "items.1")
     20
+
+    When *col_map* is provided (a dict of ``field_name -> column_index``,
+    as used for ``customdata``), the **first** path segment is checked
+    against the column map before being tried as a literal dict key or
+    numeric index.
     """
     parts = path.split(".")
     cur = obj
-    for part in parts:
+    for i, part in enumerate(parts):
+        if col_map is not None and i == 0 and part in col_map:
+            idx = col_map[part]
+            if not _is_array_like(cur):
+                return _MISSING
+            if idx < 0 or idx >= len(cur):
+                return _MISSING
+            cur = cur[idx]
+            continue
         if isinstance(cur, dict):
             if part not in cur:
                 return _MISSING
             cur = cur[part]
-        elif isinstance(cur, (list, tuple)):
+        elif _is_array_like(cur):
             try:
                 idx = int(part)
             except ValueError:
@@ -58,7 +82,7 @@ class _MissingSentinel:
 _MISSING = _MissingSentinel()
 
 
-def _match_dict_spec(trace_val, spec):
+def _match_dict_spec(trace_val, spec, col_map=None):
     """
     Match a dict *spec* against *trace_val* using field-path semantics.
 
@@ -81,6 +105,10 @@ def _match_dict_spec(trace_val, spec):
         rows for customdata, or a dict for meta).
     spec : dict
         Mapping of dot-separated paths to expected values.
+    col_map : dict or None
+        Optional mapping of ``field_name -> column_index`` used when
+        the first segment of a path refers to a named customdata
+        column rather than a numeric index.
 
     Returns
     -------
@@ -89,21 +117,21 @@ def _match_dict_spec(trace_val, spec):
     if trace_val is None:
         return False
 
-    if isinstance(trace_val, (list, tuple)) and len(trace_val) > 0 and isinstance(
-        trace_val[0], (list, tuple, dict)
+    if _is_array_like(trace_val) and len(trace_val) > 0 and (
+        _is_array_like(trace_val[0]) or isinstance(trace_val[0], dict)
     ):
         for row in trace_val:
-            if _all_paths_match(row, spec):
+            if _all_paths_match(row, spec, col_map=col_map):
                 return True
         return False
 
-    return _all_paths_match(trace_val, spec)
+    return _all_paths_match(trace_val, spec, col_map=col_map)
 
 
-def _all_paths_match(obj, spec):
+def _all_paths_match(obj, spec, col_map=None):
     """Return True if every path in *spec* resolves in *obj* and equals expected."""
     for path, expected in spec.items():
-        resolved = _resolve_path(obj, path)
+        resolved = _resolve_path(obj, path, col_map=col_map)
         if isinstance(resolved, _MissingSentinel):
             return False
         if not _values_equal(resolved, expected):
@@ -301,7 +329,8 @@ class TraceSelector:
                 except Exception:
                     return False
             elif self._customdata_mode == "dict":
-                if not _match_dict_spec(trace_cd, self.customdata):
+                col_map = getattr(trace, "_customdata_columns", None) or {}
+                if not _match_dict_spec(trace_cd, self.customdata, col_map=col_map):
                     return False
             else:
                 if not _values_equal(trace_cd, self.customdata):

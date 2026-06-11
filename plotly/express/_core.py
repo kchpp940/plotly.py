@@ -1,5 +1,6 @@
 import plotly.graph_objs as go
 import plotly.io as pio
+import re
 from collections import namedtuple, OrderedDict
 from ._special_inputs import IdentityMap, Constant, Range
 from .trendline_functions import ols, lowess, rolling, expanding, ewm
@@ -318,6 +319,64 @@ def make_mapping(args, variable):
         ),
         facet=None,
     )
+
+
+def _extract_customdata_columns(args, mapping_labels):
+    """
+    Build a mapping ``{column_name: column_index}`` for customdata fields
+    produced by Plotly Express.
+
+    The mapping is assembled from two sources:
+
+    1. ``args["custom_data"]`` — the explicit list of column names passed
+       by the user, in order.
+    2. ``mapping_labels`` — keys that map to ``"%{customdata[N]}"``
+       template strings (these cover hover_data-promoted columns as well).
+    """
+    col_map = {}
+    custom_data_list = args.get("custom_data") or []
+    for i, col in enumerate(custom_data_list):
+        col_map[str(col)] = i
+
+    customdata_template_re = re.compile(r"^%\{customdata\[(\d+)\]\}$")
+    for label, template in mapping_labels.items():
+        m = customdata_template_re.match(template)
+        if m:
+            col_idx = int(m.group(1))
+            col_map[label] = col_idx
+
+    hover_data = args.get("hover_data")
+    if hover_data:
+        for col in hover_data:
+            if isinstance(hover_data, dict) and not hover_data[col]:
+                continue
+            if col in [args.get("x"), args.get("y"), args.get("z"), args.get("base")]:
+                continue
+            if col not in col_map:
+                try:
+                    position = custom_data_list.index(col)
+                except (ValueError, AttributeError, KeyError):
+                    position = len(custom_data_list)
+                    custom_data_list.append(col)
+                col_map[str(col)] = position
+
+    return col_map
+
+
+def _apply_trace_patch(trace, patch):
+    """
+    Apply *patch* to a trace, extracting any private metadata keys
+    (such as ``_customdata_columns``) and setting them directly on the
+    trace object rather than passing them through ``trace.update``
+    (which would reject them as invalid plotly properties).
+    """
+    private_keys = [k for k in patch.keys() if k.startswith("_")]
+    if private_keys:
+        private_values = {k: patch.pop(k) for k in private_keys}
+        for k, v in private_values.items():
+            setattr(trace, k, v)
+    if patch:
+        trace.update(patch)
 
 
 def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
@@ -640,6 +699,11 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
         hover_lines = [k + "=" + v for k, v in mapping_labels_copy.items()]
         trace_patch["hovertemplate"] = hover_header + "<br>".join(hover_lines)
         trace_patch["hovertemplate"] += "<extra></extra>"
+
+    customdata_col_map = _extract_customdata_columns(args, mapping_labels)
+    if customdata_col_map:
+        trace_patch["_customdata_columns"] = customdata_col_map
+
     return trace_patch, fit_results
 
 
@@ -2884,7 +2948,7 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
             patch, fit_results = make_trace_kwargs(
                 args, trace_spec, group, mapping_labels.copy(), sizeref
             )
-            trace.update(patch)
+            _apply_trace_patch(trace, patch)
             if fit_results is not None:
                 trendline_rows.append(mapping_labels.copy())
                 trendline_rows[-1]["px_fit_results"] = fit_results
@@ -2992,7 +3056,7 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
         patch, fit_results = make_trace_kwargs(
             args, trendline_spec, args["data_frame"], {}, sizeref
         )
-        trendline_trace.update(patch)
+        _apply_trace_patch(trendline_trace, patch)
         fig.add_trace(
             trendline_trace, row="all", col="all", exclude_empty_subplots=True
         )

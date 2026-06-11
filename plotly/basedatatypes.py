@@ -1498,8 +1498,18 @@ class BaseFigure(object):
     def _infer_subplot_axes(self, row=None, col=None, secondary_y=None):
         """
         When ``_grid_ref`` is unavailable, build a mapping from axis pairs
-        to grid positions by scanning the layout for xaxis/yaxis (and
-        scene/geo/domain) properties.
+        to grid positions by first collecting the actual (xaxis, yaxis)
+        pairs referenced by traces, then sorting spatially using each
+        axis's ``domain``.
+
+        Two Y-axes that share the same X-axis reference are treated as
+        primary/secondary (overlay) belonging to the same subplot cell,
+        with the lower-numbered Y-axis being primary.  Subplot cells are
+        sorted top-to-bottom (decreasing y-domain centre) then
+        left-to-right (increasing x-domain centre) to compute 1-based
+        ``row`` / ``col`` indices.  When domains are identical, axis
+        numbers are used as a tiebreaker (lower number = earlier
+        row/column).
 
         Returns a set of ``(xaxis_key, yaxis_key)`` tuples that match the
         requested row/col, or ``None`` if the figure has only a single
@@ -1515,154 +1525,321 @@ class BaseFigure(object):
         geo_pattern = _re.compile(r"^geo(\d*)$")
         domain_pattern = _re.compile(r"^domain(\d*)$")
 
+        def _axis_num(key, pattern):
+            m = pattern.match(key)
+            if not m:
+                return 0
+            num_str = m.group(1)
+            return int(num_str) if num_str else 1
+
         x_axes = {}
         y_axes = {}
         scenes = {}
         geos = {}
-        domains = {}
+        domains_set = {}
+
+        layout_keys = set()
+        if hasattr(layout, "_subplotid_props"):
+            layout_keys.update(layout._subplotid_props)
 
         has_xy_traces = any(
-            getattr(t, "type", None) in ("scatter", "scattergl", "bar", "box", "violin", "histogram", "heatmap", "contour", "funnel", "waterfall", "ohlc", "candlestick")
+            getattr(t, "type", None) in (
+                "scatter", "scattergl", "bar", "box", "violin", "histogram",
+                "heatmap", "contour", "funnel", "waterfall", "ohlc", "candlestick"
+            )
             for t in self.data
         )
-
         if has_xy_traces:
-            x_axes["xaxis"] = 1
-            y_axes["yaxis"] = 1
+            layout_keys.add("xaxis")
+            layout_keys.add("yaxis")
 
-        for key in layout._subplotid_props if hasattr(layout, "_subplotid_props") else []:
+        for key in layout_keys:
             m = xaxis_pattern.match(key)
             if m:
-                x_axes[key] = int(m.group(1)) if m.group(1) else 1
+                x_axes[key] = self._get_axis_domain(layout, key, axis_type="x")
                 continue
             m = yaxis_pattern.match(key)
             if m:
-                y_axes[key] = int(m.group(1)) if m.group(1) else 1
+                y_axes[key] = self._get_axis_domain(layout, key, axis_type="y")
                 continue
             m = scene_pattern.match(key)
             if m:
-                scenes[key] = int(m.group(1)) if m.group(1) else 1
+                scenes[key] = self._get_axis_domain(layout, key, axis_type="scene")
                 continue
             m = geo_pattern.match(key)
             if m:
-                geos[key] = int(m.group(1)) if m.group(1) else 1
+                geos[key] = self._get_axis_domain(layout, key, axis_type="geo")
                 continue
             m = domain_pattern.match(key)
             if m:
-                domains[key] = int(m.group(1)) if m.group(1) else 1
+                domains_set[key] = self._get_axis_domain(layout, key, axis_type="domain")
 
+        trace_axis_pairs = set()
         for trace in self.data:
             x_val = getattr(trace, "xaxis", None)
             y_val = getattr(trace, "yaxis", None)
-            if x_val:
-                x_key = "xaxis" + x_val[1:] if x_val != "x" else "xaxis"
-                x_idx = int(x_val[1:]) if x_val != "x" else 1
-                if x_key not in x_axes:
-                    x_axes[x_key] = x_idx
-            if y_val:
-                y_key = "yaxis" + y_val[1:] if y_val != "y" else "yaxis"
-                y_idx = int(y_val[1:]) if y_val != "y" else 1
-                if y_key not in y_axes:
-                    y_axes[y_key] = y_idx
+            x_key = "xaxis" + x_val[1:] if x_val and x_val != "x" else "xaxis"
+            y_key = "yaxis" + y_val[1:] if y_val and y_val != "y" else "yaxis"
+            if x_val or y_val:
+                if x_val and x_key not in x_axes:
+                    x_axes[x_key] = self._get_axis_domain(layout, x_key, axis_type="x")
+                if y_val and y_key not in y_axes:
+                    y_axes[y_key] = self._get_axis_domain(layout, y_key, axis_type="y")
+                trace_axis_pairs.add((x_key, y_key))
             scene_val = getattr(trace, "scene", None)
-            if scene_val:
-                s_key = scene_val
-                s_idx = int(scene_val[5:]) if len(scene_val) > 5 else 1
-                if s_key not in scenes:
-                    scenes[s_key] = s_idx
+            if scene_val and scene_val not in scenes:
+                scenes[scene_val] = self._get_axis_domain(layout, scene_val, axis_type="scene")
             geo_val = getattr(trace, "geo", None)
-            if geo_val:
-                g_key = geo_val
-                g_idx = int(geo_val[3:]) if len(geo_val) > 3 else 1
-                if g_key not in geos:
-                    geos[g_key] = g_idx
+            if geo_val and geo_val not in geos:
+                geos[geo_val] = self._get_axis_domain(layout, geo_val, axis_type="geo")
 
-        if not x_axes and not y_axes and not scenes and not geos and not domains:
+        if not x_axes and not y_axes and not scenes and not geos and not domains_set:
             if row is None and col is None:
                 return None
-            x_axes = {"xaxis": 1}
-            y_axes = {"yaxis": 1}
+            x_axes["xaxis"] = self._get_axis_domain(layout, "xaxis", axis_type="x")
+            y_axes["yaxis"] = self._get_axis_domain(layout, "yaxis", axis_type="y")
 
-        xy_pairs = self._pair_xy_axes(x_axes, y_axes)
+        def _centre(interval):
+            return (interval[0] + interval[1]) / 2 if interval else 0.5
 
-        all_pairs = list(xy_pairs)
-        for s_key, _ in sorted(scenes.items(), key=lambda x: x[1]):
-            all_pairs.append((s_key, None))
-        for g_key, _ in sorted(geos.items(), key=lambda x: x[1]):
-            all_pairs.append((g_key, None))
-        for d_key, _ in sorted(domains.items(), key=lambda x: x[1]):
-            all_pairs.append((d_key, None))
+        if trace_axis_pairs:
+            x_to_ys = {}
+            for xk, yk in trace_axis_pairs:
+                if xk not in x_to_ys:
+                    x_to_ys[xk] = set()
+                x_to_ys[xk].add(yk)
+
+            cell_pairs = []
+            for xk, y_set in x_to_ys.items():
+                y_sorted = sorted(y_set, key=lambda k: _axis_num(k, yaxis_pattern))
+                for i, yk in enumerate(y_sorted):
+                    cell_pairs.append((xk, yk, i > 0))
+        else:
+            cell_pairs = self._pair_axes_by_domain(x_axes, y_axes, secondary_y=secondary_y)
+
+        all_pairs = list(cell_pairs)
+        scene_items = sorted(
+            scenes.items(), key=lambda kv: (-_centre(kv[1]), _centre(kv[1]), _axis_num(kv[0], scene_pattern))
+        )
+        for s_key, _ in scene_items:
+            all_pairs.append((s_key, None, None))
+        geo_items = sorted(
+            geos.items(), key=lambda kv: (-_centre(kv[1]), _centre(kv[1]), _axis_num(kv[0], geo_pattern))
+        )
+        for g_key, _ in geo_items:
+            all_pairs.append((g_key, None, None))
+        domain_items = sorted(
+            domains_set.items(), key=lambda kv: (-_centre(kv[1]), _centre(kv[1]), _axis_num(kv[0], domain_pattern))
+        )
+        for d_key, _ in domain_items:
+            all_pairs.append((d_key, None, None))
 
         if not all_pairs:
-            all_pairs = [("xaxis", "yaxis")]
+            all_pairs = [("xaxis", "yaxis", False)]
 
-        ncols = self._infer_ncols(x_axes, y_axes)
-        if ncols < 1:
-            ncols = 1
-        nrows = (len(all_pairs) + ncols - 1) // ncols
-        if nrows < 1:
-            nrows = 1
+        grid = self._build_grid_from_pairs(
+            all_pairs,
+            x_axes=x_axes,
+            y_axes=y_axes,
+            scenes=scenes,
+            geos=geos,
+            domains=domains_set,
+            xaxis_pattern=xaxis_pattern,
+            yaxis_pattern=yaxis_pattern,
+        )
 
         target_pairs = set()
-        if row is not None and col is not None:
-            idx = (row - 1) * ncols + (col - 1)
-            if 0 <= idx < len(all_pairs):
-                target_pairs.add(all_pairs[idx])
-        elif row is not None and col is None:
-            for c in range(ncols):
-                idx = (row - 1) * ncols + c
-                if 0 <= idx < len(all_pairs):
-                    target_pairs.add(all_pairs[idx])
-        elif col is not None and row is None:
-            for r in range(nrows):
-                idx = r * ncols + (col - 1)
-                if 0 <= idx < len(all_pairs):
-                    target_pairs.add(all_pairs[idx])
-        else:
-            target_pairs = set(all_pairs)
+        for (x_key, y_key, is_secondary_y), (r, c) in grid.items():
+            if row is not None and r != row:
+                continue
+            if col is not None and c != col:
+                continue
+            if secondary_y is True and not is_secondary_y:
+                continue
+            if secondary_y is False and is_secondary_y:
+                continue
+            target_pairs.add((x_key, y_key))
 
         return target_pairs
 
     @staticmethod
-    def _pair_xy_axes(x_axes, y_axes):
+    def _get_axis_domain(layout, key, axis_type="x"):
         """
-        Pair xaxis keys with their corresponding yaxis keys based on
-        matching index numbers.
+        Return the ``[start, end]`` domain for the axis *key*.
 
-        Returns a list of ``(xaxis_key, yaxis_key)`` tuples sorted by
-        index number.
+        For ``xaxis`` / ``yaxis`` this reads ``layout.<key>.domain``.
+        For ``scene`` / ``geo`` / ``domain`` it reads
+        ``layout.<key>.domain.x`` (and falls back to ``domain.y``).
+        Returns ``[0.0, 1.0]`` if no domain is defined.
         """
-        all_indices = set(x_axes.values()) | set(y_axes.values())
+        try:
+            axis_obj = layout[key]
+        except (KeyError, TypeError):
+            return (0.0, 1.0)
+        if axis_obj is None:
+            return (0.0, 1.0)
+        domain = getattr(axis_obj, "domain", None)
+        if domain is None:
+            return (0.0, 1.0)
+        if axis_type in ("scene", "geo", "domain"):
+            xd = getattr(domain, "x", None)
+            if xd is not None:
+                return tuple(xd) if hasattr(xd, "__iter__") else (0.0, 1.0)
+            yd = getattr(domain, "y", None)
+            if yd is not None:
+                return tuple(yd) if hasattr(yd, "__iter__") else (0.0, 1.0)
+        try:
+            return tuple(domain)
+        except (TypeError, ValueError):
+            return (0.0, 1.0)
+
+    @staticmethod
+    def _pair_axes_by_domain(x_axes, y_axes, secondary_y=None):
+        """
+        Pair x-axis and y-axis layout keys into subplot cells.
+
+        X-axes define horizontal columns (distinct x-domain centres),
+        Y-axes define vertical rows (distinct y-domain centres).  Every
+        combination of (x-column, y-row) forms a subplot cell.  Multiple
+        Y-axes sharing the same vertical domain centre are treated as
+        primary/secondary (overlay) axes belonging to the same cells.
+
+        Returns a list of ``(x_key, y_key, is_secondary_y)`` tuples.
+        The ``is_secondary_y`` flag is ``True`` for all but the first
+        Y-axis in a vertical domain group.
+        """
+
+        def _centre(interval):
+            return (interval[0] + interval[1]) / 2
+
+        def _group_by_centre(axes, tol=0.02):
+            """Group axis keys whose domain centres are within *tol*."""
+            groups = []
+            for key, dom in sorted(axes.items(), key=lambda kv: _centre(kv[1])):
+                c = _centre(dom)
+                placed = False
+                for g in groups:
+                    if abs(c - g["centre"]) < tol:
+                        g["keys"].append(key)
+                        placed = True
+                        break
+                if not placed:
+                    groups.append({"centre": c, "keys": [key]})
+            return groups
+
+        x_groups = _group_by_centre(x_axes)
+        y_groups = _group_by_centre(y_axes)
+
         pairs = []
-        for idx in sorted(all_indices):
-            x_key = None
-            y_key = None
-            for k, v in x_axes.items():
-                if v == idx:
-                    x_key = k
-                    break
-            for k, v in y_axes.items():
-                if v == idx:
-                    y_key = k
-                    break
-            if x_key and y_key:
-                pairs.append((x_key, y_key))
-            elif x_key:
-                pairs.append((x_key, None))
-            elif y_key:
-                pairs.append((None, y_key))
+        for xg in x_groups:
+            x_key = xg["keys"][0]
+            for yg in y_groups:
+                y_keys_sorted = sorted(yg["keys"])
+                for i, y_key in enumerate(y_keys_sorted):
+                    is_secondary = i > 0
+                    pairs.append((x_key, y_key, is_secondary))
+
+        for xg in x_groups[1:]:
+            for extra_x_key in xg["keys"][1:]:
+                for yg in y_groups:
+                    y_keys_sorted = sorted(yg["keys"])
+                    for i, y_key in enumerate(y_keys_sorted):
+                        is_secondary = i > 0
+                        pairs.append((extra_x_key, y_key, is_secondary))
+
+        if not x_axes:
+            for yg in y_groups:
+                for i, y_key in enumerate(sorted(yg["keys"])):
+                    pairs.append((None, y_key, i > 0))
+        if not y_axes:
+            for xg in x_groups:
+                for i, x_key in enumerate(sorted(xg["keys"])):
+                    pairs.append((x_key, None, False))
+
         return pairs
 
     @staticmethod
-    def _infer_ncols(x_axes, _y_axes):
+    def _build_grid_from_pairs(all_pairs, x_axes=None, y_axes=None, scenes=None, geos=None, domains=None, xaxis_pattern=None, yaxis_pattern=None):
         """
-        Infer the number of columns from the axis indices.
+        Assign 1-based ``(row, col)`` indices to each axis pair by
+        sorting top-to-bottom (descending y-domain centre) then
+        left-to-right (ascending x-domain centre).  When domain centres
+        are identical, axis numbers are used as a tiebreaker (lower
+        number = earlier row/column).
 
-        For a standard make_subplots grid with shared x-axes across
-        columns and shared y-axes across rows, the number of unique
-        x-axis indices equals the number of columns.
+        The ``x_axes`` / ``y_axes`` / ``scenes`` / ``geos`` / ``domains``
+        dicts map layout keys to ``(start, end)`` domain tuples and are
+        used to look up the actual spatial position of each pair.
+
+        Returns a dict ``{(x_key, y_key, is_secondary_y): (row, col)}``.
         """
-        return len(set(x_axes.values()))
+        import re as _re
+        x_axes = x_axes or {}
+        y_axes = y_axes or {}
+        scenes = scenes or {}
+        geos = geos or {}
+        domains = domains or {}
+        if xaxis_pattern is None:
+            xaxis_pattern = _re.compile(r"^xaxis(\d*)$")
+        if yaxis_pattern is None:
+            yaxis_pattern = _re.compile(r"^yaxis(\d*)$")
+
+        def _axis_num(key, pattern):
+            m = pattern.match(key) if key and pattern else None
+            if not m:
+                return 1000
+            num_str = m.group(1)
+            return int(num_str) if num_str else 1
+
+        def _centre(interval):
+            return (interval[0] + interval[1]) / 2 if interval else 0.5
+
+        pair_positions = {}
+        for entry in all_pairs:
+            x_key, y_key, is_secondary_y = entry
+            if x_key in x_axes:
+                x_centre = _centre(x_axes[x_key])
+                x_num = _axis_num(x_key, xaxis_pattern)
+            elif x_key in scenes:
+                x_centre = _centre(scenes[x_key])
+                x_num = _axis_num(x_key, xaxis_pattern)
+            elif x_key in geos:
+                x_centre = _centre(geos[x_key])
+                x_num = _axis_num(x_key, xaxis_pattern)
+            elif x_key in domains:
+                x_centre = _centre(domains[x_key])
+                x_num = _axis_num(x_key, xaxis_pattern)
+            else:
+                x_centre = 0.5
+                x_num = _axis_num(x_key, xaxis_pattern) if x_key else 1000
+
+            if y_key in y_axes:
+                y_centre = _centre(y_axes[y_key])
+                y_num = _axis_num(y_key, yaxis_pattern)
+            elif y_key in scenes:
+                y_centre = _centre(scenes[y_key])
+                y_num = _axis_num(y_key, yaxis_pattern)
+            elif y_key in geos:
+                y_centre = _centre(geos[y_key])
+                y_num = _axis_num(y_key, yaxis_pattern)
+            else:
+                y_centre = 0.5
+                y_num = _axis_num(y_key, yaxis_pattern) if y_key else 1000
+
+            pair_positions[entry] = (y_centre, -y_num, x_centre, x_num)
+
+        y_keys = sorted({(pos[0], pos[1]) for pos in pair_positions.values()}, key=lambda k: (-k[0], k[1]))
+        x_keys = sorted({(pos[2], pos[3]) for pos in pair_positions.values()}, key=lambda k: (k[0], k[1]))
+        y_to_row = {k: i + 1 for i, k in enumerate(y_keys)}
+        x_to_col = {k: i + 1 for i, k in enumerate(x_keys)}
+
+        result = {}
+        for entry, (yc, yn, xc, xn) in pair_positions.items():
+            row = y_to_row[(yc, yn)]
+            col = x_to_col[(xc, xn)]
+            result[entry] = (row, col)
+
+        return result
 
     @staticmethod
     def _trace_uses_any_axis(trace, axis_pairs):
@@ -6466,6 +6643,11 @@ class BaseTraceType(BaseTraceHierarchyType):
 
         # ### Trace index in figure ###
         self._trace_ind = None
+
+        # ### Customdata column name -> index mapping ###
+        # Populated by Plotly Express when custom_data is used, and
+        # usable by TraceSelector for field-name based customdata matching.
+        self._customdata_columns = None
 
     # uid
     # ---

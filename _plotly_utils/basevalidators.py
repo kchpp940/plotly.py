@@ -2645,10 +2645,17 @@ class BaseDataValidator(BaseValidator):
             res = []
             invalid_els = []
             for v_el in v:
+                custom_attrs = {}
                 if isinstance(v_el, BaseTraceType):
                     if isinstance(v_el, Histogram2dcontour):
                         v_el = dict(type="histogram2dcontour", **v_el._props)
                     else:
+                        for k, v_attr in v_el.__dict__.items():
+                            if k.startswith("_") and k not in (
+                                "_props", "_orphan_props", "_parent", "_trace_ind",
+                                "_subplot_row", "_subplot_col"
+                            ):
+                                custom_attrs[k] = v_attr
                         v_el = v_el._props
 
                 if isinstance(v_el, dict):
@@ -2661,6 +2668,8 @@ class BaseDataValidator(BaseValidator):
                             trace = self.get_trace_class("scatter")(
                                 skip_invalid=skip_invalid, _validate=_validate, **v_el
                             )
+                            for k, v_attr in custom_attrs.items():
+                                setattr(trace, k, v_attr)
                             res.append(trace)
                         else:
                             res.append(None)
@@ -2669,6 +2678,8 @@ class BaseDataValidator(BaseValidator):
                         trace = self.get_trace_class(trace_type)(
                             skip_invalid=skip_invalid, _validate=_validate, **v_el
                         )
+                        for k, v_attr in custom_attrs.items():
+                            setattr(trace, k, v_attr)
                         res.append(trace)
 
                     if type_in_v_el:

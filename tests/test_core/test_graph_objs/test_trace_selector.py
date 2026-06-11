@@ -686,3 +686,243 @@ class TestAxisInferenceSubplotSelection(TestCaseNoTemplate):
         matches = list(fig.select_traces_by_selector(sel))
         assert len(matches) == 1
         assert matches[0].name == "b1"
+
+
+class TestPXCustomdataFieldName(TestCaseNoTemplate):
+    def test_px_customdata_columns_stored(self):
+        import plotly.express as px
+
+        df = px.data.iris()
+        fig = px.scatter(
+            df,
+            x="sepal_width",
+            y="sepal_length",
+            custom_data=["species", "petal_width"],
+            color="species",
+        )
+        for t in fig.data:
+            assert t._customdata_columns is not None
+            assert "species" in t._customdata_columns
+            assert "petal_width" in t._customdata_columns
+            assert t._customdata_columns["species"] == 0
+            assert t._customdata_columns["petal_width"] == 1
+
+    def test_px_select_by_field_name(self):
+        import plotly.express as px
+
+        df = px.data.iris()
+        fig = px.scatter(
+            df,
+            x="sepal_width",
+            y="sepal_length",
+            custom_data=["species", "petal_width"],
+            color="species",
+        )
+        sel = TraceSelector(customdata={"species": "setosa"})
+        matches = list(fig.select_traces_by_selector(sel))
+        assert len(matches) == 1
+        assert matches[0].name == "setosa"
+
+    def test_px_select_by_field_name_numeric_index_equivalent(self):
+        import plotly.express as px
+
+        df = px.data.iris()
+        fig = px.scatter(
+            df,
+            x="sepal_width",
+            y="sepal_length",
+            custom_data=["species", "petal_width"],
+            color="species",
+        )
+        sel_name = TraceSelector(customdata={"species": "virginica"})
+        sel_idx = TraceSelector(customdata={"0": "virginica"})
+        matches_name = {t.name for t in fig.select_traces_by_selector(sel_name)}
+        matches_idx = {t.name for t in fig.select_traces_by_selector(sel_idx)}
+        assert matches_name == matches_idx
+
+    def test_px_update_by_field_name(self):
+        import plotly.express as px
+
+        df = px.data.iris()
+        fig = px.scatter(
+            df,
+            x="sepal_width",
+            y="sepal_length",
+            custom_data=["species", "petal_width"],
+            color="species",
+        )
+        fig.update_traces_by_selector(
+            TraceSelector(customdata={"species": "versicolor"}),
+            patch={"marker": {"size": 20, "symbol": "square"}},
+        )
+        for t in fig.data:
+            if t.name == "versicolor":
+                assert t.marker.size == 20
+                assert t.marker.symbol == "square"
+            else:
+                assert t.marker.size != 20 or t.marker.symbol != "square"
+
+    def test_px_select_by_second_field(self):
+        import plotly.express as px
+
+        df = px.data.iris()
+        fig = px.scatter(
+            df,
+            x="sepal_width",
+            y="sepal_length",
+            custom_data=["species", "petal_width"],
+            color="species",
+        )
+        sel = TraceSelector(customdata=lambda cd: cd is not None and len(cd) > 0)
+        matches = list(fig.select_traces_by_selector(sel))
+        assert len(matches) == len(fig.data)
+
+
+class TestDomainBasedSubplotInference(TestCaseNoTemplate):
+    def test_2x2_grid_domain_sorting(self):
+        fig = go.Figure()
+        fig.add_scatter(
+            y=[1, 2, 3],
+            xaxis="x",
+            yaxis="y",
+            name="top_left",
+        )
+        fig.add_scatter(
+            y=[4, 5, 6],
+            xaxis="x2",
+            yaxis="y",
+            name="top_right",
+        )
+        fig.add_scatter(
+            y=[7, 8, 9],
+            xaxis="x",
+            yaxis="y2",
+            name="bottom_left",
+        )
+        fig.add_scatter(
+            y=[10, 11, 12],
+            xaxis="x2",
+            yaxis="y2",
+            name="bottom_right",
+        )
+        fig.update_layout(
+            xaxis=dict(domain=[0.0, 0.45]),
+            xaxis2=dict(domain=[0.55, 1.0]),
+            yaxis=dict(domain=[0.55, 1.0]),
+            yaxis2=dict(domain=[0.0, 0.45]),
+        )
+        sel_r1c1 = TraceSelector(row=1, col=1)
+        assert [t.name for t in fig.select_traces_by_selector(sel_r1c1)] == ["top_left"]
+        sel_r1c2 = TraceSelector(row=1, col=2)
+        assert [t.name for t in fig.select_traces_by_selector(sel_r1c2)] == ["top_right"]
+        sel_r2c1 = TraceSelector(row=2, col=1)
+        assert [t.name for t in fig.select_traces_by_selector(sel_r2c1)] == ["bottom_left"]
+        sel_r2c2 = TraceSelector(row=2, col=2)
+        assert [t.name for t in fig.select_traces_by_selector(sel_r2c2)] == ["bottom_right"]
+
+    def test_shared_x_axis(self):
+        fig = go.Figure()
+        fig.add_scatter(y=[1, 2, 3], xaxis="x", yaxis="y", name="top")
+        fig.add_scatter(y=[4, 5, 6], xaxis="x", yaxis="y2", name="bottom")
+        fig.update_layout(
+            xaxis=dict(domain=[0.0, 1.0]),
+            yaxis=dict(domain=[0.55, 1.0]),
+            yaxis2=dict(domain=[0.0, 0.45]),
+        )
+        sel_row1 = TraceSelector(row=1)
+        assert [t.name for t in fig.select_traces_by_selector(sel_row1)] == ["top"]
+        sel_row2 = TraceSelector(row=2)
+        assert [t.name for t in fig.select_traces_by_selector(sel_row2)] == ["bottom"]
+
+    def test_secondary_y_axis(self):
+        fig = go.Figure()
+        fig.add_scatter(y=[1, 2, 3], xaxis="x", yaxis="y", name="primary")
+        fig.add_scatter(y=[10, 20, 30], xaxis="x", yaxis="y2", name="secondary")
+        fig.update_layout(
+            xaxis=dict(domain=[0.0, 1.0]),
+            yaxis=dict(domain=[0.0, 1.0]),
+            yaxis2=dict(domain=[0.0, 1.0], overlaying="y", side="right"),
+        )
+        sel_primary = TraceSelector(secondary_y=False)
+        sel_secondary = TraceSelector(secondary_y=True)
+        primary_names = {t.name for t in fig.select_traces_by_selector(sel_primary)}
+        secondary_names = {t.name for t in fig.select_traces_by_selector(sel_secondary)}
+        assert "primary" in primary_names
+        assert "primary" not in secondary_names
+        assert "secondary" in secondary_names
+        assert "secondary" not in primary_names
+
+    def test_px_facet_row_col_domain(self):
+        import plotly.express as px
+
+        df = px.data.tips()
+        fig = px.scatter(
+            df, x="total_bill", y="tip", facet_row="time", facet_col="sex"
+        )
+        sel_r1 = TraceSelector(row=1)
+        sel_r2 = TraceSelector(row=2)
+        sel_c1 = TraceSelector(col=1)
+        sel_c2 = TraceSelector(col=2)
+        matches_r1 = list(fig.select_traces_by_selector(sel_r1))
+        matches_r2 = list(fig.select_traces_by_selector(sel_r2))
+        matches_c1 = list(fig.select_traces_by_selector(sel_c1))
+        matches_c2 = list(fig.select_traces_by_selector(sel_c2))
+        assert len(matches_r1) + len(matches_r2) == len(fig.data)
+        assert len(matches_c1) + len(matches_c2) == len(fig.data)
+
+    def test_irregular_domain_sorting(self):
+        fig = go.Figure()
+        fig.add_scatter(y=[1], xaxis="x3", yaxis="y3", name="bottom_right")
+        fig.add_scatter(y=[2], xaxis="x1", yaxis="y1", name="top_left")
+        fig.add_scatter(y=[3], xaxis="x2", yaxis="y2", name="middle")
+        fig.update_layout(
+            xaxis1=dict(domain=[0.0, 0.3]),
+            xaxis2=dict(domain=[0.35, 0.65]),
+            xaxis3=dict(domain=[0.7, 1.0]),
+            yaxis1=dict(domain=[0.7, 1.0]),
+            yaxis2=dict(domain=[0.35, 0.65]),
+            yaxis3=dict(domain=[0.0, 0.3]),
+        )
+        sel_r1c1 = TraceSelector(row=1, col=1)
+        sel_r1c2 = TraceSelector(row=1, col=2)
+        sel_r1c3 = TraceSelector(row=1, col=3)
+        sel_r3c3 = TraceSelector(row=3, col=3)
+        assert [t.name for t in fig.select_traces_by_selector(sel_r1c1)] == ["top_left"]
+        assert [t.name for t in fig.select_traces_by_selector(sel_r1c2)] == []
+        assert [t.name for t in fig.select_traces_by_selector(sel_r1c3)] == []
+        assert [t.name for t in fig.select_traces_by_selector(sel_r3c3)] == ["bottom_right"]
+
+
+class TestNumpyCustomdataCompatibility(TestCaseNoTemplate):
+    def test_numpy_array_customdata_numeric_index(self):
+        import numpy as np
+
+        fig = go.Figure()
+        cd = np.array([["APAC", 100], ["EMEA", 200], ["APAC", 300]])
+        fig.add_scatter(y=[1, 2, 3], customdata=cd, name="t1")
+        sel = TraceSelector(customdata={"0": "APAC"})
+        matches = list(fig.select_traces_by_selector(sel))
+        assert len(matches) == 1
+        assert matches[0].name == "t1"
+
+    def test_numpy_array_customdata_field_name(self):
+        import numpy as np
+
+        fig = go.Figure()
+        cd = np.array([["APAC", 100], ["EMEA", 200], ["APAC", 300]])
+        trace = go.Scatter(y=[1, 2, 3], customdata=cd, name="t1")
+        trace._customdata_columns = {"region": 0, "value": 1}
+        fig.add_trace(trace)
+        sel = TraceSelector(customdata={"region": "EMEA"})
+        matches = list(fig.select_traces_by_selector(sel))
+        assert len(matches) == 1
+        assert matches[0].name == "t1"
+
+    def test_custom_attrs_preserved_on_add_trace(self):
+        trace = go.Scatter(y=[1, 2, 3], name="t1")
+        trace._customdata_columns = {"region": 0, "value": 1}
+        trace._my_custom_attr = "hello"
+        fig = go.Figure()
+        fig.add_trace(trace)
+        assert fig.data[0]._customdata_columns == {"region": 0, "value": 1}
+        assert fig.data[0]._my_custom_attr == "hello"
