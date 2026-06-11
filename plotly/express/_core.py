@@ -15,6 +15,7 @@ from ._annotations import (
     create_stat_annotation,
     create_marginal_annotation,
     create_frame_annotation,
+    extract_subplot_title_specs,
 )
 
 from _plotly_utils.basevalidators import ColorscaleValidator
@@ -2827,10 +2828,12 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
         else:
             sorted_values = orders[m.grouper]
             if m.facet == "col":
-                col_labels = [str(s) for s in sorted_values]
+                prefix = get_label(args, args["facet_col"]) + "="
+                col_labels = [prefix + str(s) for s in sorted_values]
                 ncols = len(col_labels)
             if m.facet == "row":
-                row_labels = [str(s) for s in sorted_values]
+                prefix = get_label(args, args["facet_row"]) + "="
+                row_labels = [prefix + str(s) for s in sorted_values]
                 nrows = len(row_labels)
             for val in sorted_values:
                 if val not in m.val_map:  # always False if it's an IdentityMap
@@ -3057,20 +3060,11 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
     if args.get("marginal_y") is not None:
         ncols += 1
 
-    fig, subplot_labels = init_figure(
+    fig, facet_title_specs = init_figure(
         args, subplot_type, frame_list, nrows, ncols, col_labels, row_labels
     )
 
-    facet_annotations = create_facet_annotations(
-        args,
-        col_labels,
-        row_labels,
-        subplot_labels,
-        nrows,
-        ncols,
-        facet_col_wrap,
-    )
-    annotation_collector.add_many(facet_annotations)
+    annotation_collector.add_many(facet_title_specs)
 
     # Position traces in subplots
     for frame in frame_list:
@@ -3217,7 +3211,8 @@ Use the {facet_arg} argument to adjust this spacing.""".format(facet_arg=facet_a
             )
             raise e
 
-    # Create figure with subplots - no titles passed, they will be added via annotation builder
+    # Create figure with subplots, passing titles through make_subplots
+    # to preserve its precise positioning algorithm.
     try:
         fig = make_subplots(
             rows=nrows,
@@ -3225,9 +3220,9 @@ Use the {facet_arg} argument to adjust this spacing.""".format(facet_arg=facet_a
             specs=specs,
             shared_xaxes="all",
             shared_yaxes="all",
-            row_titles=[],
-            column_titles=[],
-            subplot_titles=[],
+            row_titles=[] if facet_col_wrap else list(reversed(row_labels)),
+            column_titles=[] if facet_col_wrap else col_labels,
+            subplot_titles=subplot_labels if facet_col_wrap else [],
             horizontal_spacing=horizontal_spacing,
             vertical_spacing=vertical_spacing,
             row_heights=row_heights,
@@ -3239,4 +3234,8 @@ Use the {facet_arg} argument to adjust this spacing.""".format(facet_arg=facet_a
         _spacing_error_translator(e, "Vertical", "facet_row_spacing")
         raise
 
-    return fig, subplot_labels
+    # Convert make_subplots-generated title annotations into AnnotationSpec,
+    # clear the raw annotations so everything flows through the unified layer.
+    facet_title_specs = extract_subplot_title_specs(fig)
+
+    return fig, facet_title_specs

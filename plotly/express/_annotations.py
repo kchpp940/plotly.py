@@ -108,12 +108,7 @@ class AnnotationApplier:
         frame_names: List[str],
     ) -> None:
         for frame_name in frame_names:
-            frame_anns = collector.get_by_frame(frame_name)
-            both_anns = [
-                a for a in collector.get_by_target(AnnotationTarget.BOTH)
-                if a.frame_name is None or a.frame_name == frame_name
-            ]
-            all_anns = frame_anns + both_anns
+            all_anns = collector.get_by_frame(frame_name)
 
             if all_anns:
                 ann_dicts = [a.to_dict() for a in all_anns]
@@ -292,3 +287,54 @@ def create_frame_annotation(
         frame_name=frame_name,
         target=AnnotationTarget.FRAME_LAYOUT,
     )
+
+
+def extract_subplot_title_specs(fig: go.Figure) -> List[AnnotationSpec]:
+    """
+    Extract annotations created by make_subplots row/column/subplot titles
+    and convert them into AnnotationSpec instances. Clear the figure's
+    layout.annotations so that all annotations flow through the unified
+    AnnotationCollector/Applier pipeline.
+    """
+    specs: List[AnnotationSpec] = []
+    existing = fig.layout.annotations or ()
+
+    for ann in existing:
+        ann_dict = ann.to_plotly_json()
+        text = ann_dict.pop("text", "")
+        x = ann_dict.pop("x", None)
+        y = ann_dict.pop("y", None)
+        xref = ann_dict.pop("xref", "paper")
+        yref = ann_dict.pop("yref", "paper")
+        showarrow = ann_dict.pop("showarrow", False)
+        font = ann_dict.pop("font", None)
+        align = ann_dict.pop("align", "center")
+        xanchor = ann_dict.pop("xanchor", None)
+        yanchor = ann_dict.pop("yanchor", None)
+        xshift = ann_dict.pop("xshift", None)
+        yshift = ann_dict.pop("yshift", None)
+        opacity = ann_dict.pop("opacity", None)
+        textangle = ann_dict.pop("textangle", None)
+
+        spec = AnnotationSpec(
+            text=text,
+            x=x,
+            y=y,
+            xref=xref,
+            yref=yref,
+            showarrow=showarrow,
+            font=font,
+            align=align,
+            xanchor=xanchor,
+            yanchor=yanchor,
+            xshift=xshift,
+            yshift=yshift,
+            opacity=opacity,
+            textangle=textangle,
+            target=AnnotationTarget.INITIAL_LAYOUT,
+            extra=ann_dict,
+        )
+        specs.append(spec)
+
+    fig.layout.annotations = []
+    return specs
