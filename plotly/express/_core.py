@@ -2682,75 +2682,82 @@ def get_groups_and_orders(args, grouper):
     return groups, orders
 
 
-def _parse_summary_spec(args):
-    summary = args.get("summary")
-    if summary is None:
-        return []
+class SummaryContext:
+    def __init__(self, args, constructor, grouped_mappings, grouper, orders):
+        self.args = args
+        self.constructor = constructor
+        self.grouped_mappings = grouped_mappings
+        self.grouper = grouper
+        self.orders = orders
+        self.specs = self._parse_specs()
+        self._stats_cache = {}
+        self._text_cache = {}
 
-    if isinstance(summary, str):
-        summary = [summary]
+    def _parse_specs(self):
+        summary = self.args.get("summary")
+        if summary is None:
+            return []
 
-    specs = []
-    if isinstance(summary, list):
-        for item in summary:
-            if isinstance(item, str):
-                specs.append(dict(
-                    type=item,
-                    col=None,
-                    show="annotation",
-                    format=None,
-                ))
-            elif isinstance(item, dict):
-                specs.append(dict(
-                    type=item.get("type", "mean"),
-                    col=item.get("col"),
-                    show=item.get("show", "annotation"),
-                    format=item.get("format"),
-                ))
-    elif isinstance(summary, dict):
-        specs.append(dict(
-            type=summary.get("type", "mean"),
-            col=summary.get("col"),
-            show=summary.get("show", "annotation"),
-            format=summary.get("format"),
-        ))
+        if isinstance(summary, str):
+            summary = [summary]
 
-    valid_types = {"mean", "median", "sum", "count", "percent"}
-    for spec in specs:
-        if spec["type"] not in valid_types:
-            raise ValueError(
-                "Invalid summary type '%s'. Valid types are: %s"
-                % (spec["type"], ", ".join(sorted(valid_types)))
-            )
+        specs = []
+        if isinstance(summary, list):
+            for item in summary:
+                if isinstance(item, str):
+                    specs.append(dict(
+                        type=item,
+                        col=None,
+                        show="annotation",
+                        format=None,
+                    ))
+                elif isinstance(item, dict):
+                    specs.append(dict(
+                        type=item.get("type", "mean"),
+                        col=item.get("col"),
+                        show=item.get("show", "annotation"),
+                        format=item.get("format"),
+                    ))
+        elif isinstance(summary, dict):
+            specs.append(dict(
+                type=summary.get("type", "mean"),
+                col=summary.get("col"),
+                show=summary.get("show", "annotation"),
+                format=summary.get("format"),
+            ))
 
-    return specs
+        valid_types = {"mean", "median", "sum", "count", "percent"}
+        for spec in specs:
+            if spec["type"] not in valid_types:
+                raise ValueError(
+                    "Invalid summary type '%s'. Valid types are: %s"
+                    % (spec["type"], ", ".join(sorted(valid_types)))
+                )
 
+        return specs
 
-def _get_summary_column(args, spec):
-    if spec["col"] is not None:
-        return _resolve_col(args, spec["col"])
+    def is_active(self):
+        return len(self.specs) > 0
 
-    orientation = args.get("orientation", "v")
-    if orientation == "h":
-        return _resolve_col(args, args.get("x"))
-    return _resolve_col(args, args.get("y"))
+    def _get_summary_column(self, spec):
+        if spec["col"] is not None:
+            return _resolve_col(self.args, spec["col"])
 
+        orientation = self.args.get("orientation", "v")
+        if orientation == "h":
+            return _resolve_col(self.args, self.args.get("x"))
+        return _resolve_col(self.args, self.args.get("y"))
 
-def _compute_summary_stats(args, groups, grouper, grouped_mappings, orders):
-    specs = _parse_summary_spec(args)
-    if not specs:
-        return [], {}
+    def compute_stats(self, group_name, group_df):
+        if group_name in self._stats_cache:
+            return self._stats_cache[group_name]
 
-    summary_stats = {}
-    df: nw.DataFrame = args["data_frame"]
+        stats = {}
+        df = self.args["data_frame"]
 
-    for spec in specs:
-        col = _get_summary_column(args, spec)
-        summary_type = spec["type"]
-
-        for group_name, group_df in groups.items():
-            if group_name not in summary_stats:
-                summary_stats[group_name] = {}
+        for spec in self.specs:
+            col = self._get_summary_column(spec)
+            summary_type = spec["type"]
 
             try:
                 value = None
@@ -2777,93 +2784,114 @@ def _compute_summary_stats(args, groups, grouper, grouped_mappings, orders):
                         else:
                             value = 0
 
-                summary_stats[group_name][summary_type] = value
+                stats[summary_type] = value
             except Exception:
-                summary_stats[group_name][summary_type] = None
+                stats[summary_type] = None
 
-    return specs, summary_stats
+        self._stats_cache[group_name] = stats
+        return stats
 
+    def _format_value(self, value, spec):
+        if value is None:
+            return "N/A"
 
-def _format_summary_value(value, spec):
-    if value is None:
-        return "N/A"
+        fmt = spec.get("format")
+        summary_type = spec["type"]
 
-    fmt = spec.get("format")
-    summary_type = spec["type"]
+        if fmt:
+            try:
+                return format(value, fmt)
+            except (ValueError, TypeError):
+                return str(value)
 
-    if fmt:
-        try:
-            return format(value, fmt)
-        except (ValueError, TypeError):
-            return str(value)
+        if summary_type == "percent":
+            return "%.2f%%" % value
+        if summary_type == "count":
+            return "%d" % int(value)
+        if isinstance(value, float):
+            if abs(value) >= 1000 or (abs(value) < 0.01 and value != 0):
+                return "%.4g" % value
+            return "%.3f" % value
+        return str(value)
 
-    if summary_type == "percent":
-        return "%.2f%%" % value
-    if summary_type == "count":
-        return "%d" % int(value)
-    if isinstance(value, float):
-        if abs(value) >= 1000 or (abs(value) < 0.01 and value != 0):
-            return "%.4g" % value
-        return "%.3f" % value
-    return str(value)
+    def _build_label(self, spec):
+        summary_type = spec["type"]
+        labels = {
+            "mean": "Mean",
+            "median": "Median",
+            "sum": "Total",
+            "count": "Count",
+            "percent": "Percent",
+        }
+        return labels.get(summary_type, summary_type)
 
+    def get_text_html(self, group_name):
+        if group_name in self._text_cache:
+            return self._text_cache[group_name]
 
-def _build_summary_label(spec):
-    summary_type = spec["type"]
-    labels = {
-        "mean": "Mean",
-        "median": "Median",
-        "sum": "Total",
-        "count": "Count",
-        "percent": "Percent",
-    }
-    return labels.get(summary_type, summary_type)
+        stats = self.compute_stats(group_name, None)
+        parts = []
+        for spec in self.specs:
+            stype = spec["type"]
+            if stype in stats and stats[stype] is not None:
+                label = self._build_label(spec)
+                value = self._format_value(stats[stype], spec)
+                parts.append("%s: %s" % (label, value))
 
+        text = "<br>".join(parts)
+        self._text_cache[group_name] = text
+        return text
 
-def _build_summary_text(specs, stats):
-    parts = []
-    for spec in specs:
-        stype = spec["type"]
-        if stype in stats and stats[stype] is not None:
-            label = _build_summary_label(spec)
-            value = _format_summary_value(stats[stype], spec)
-            parts.append("%s: %s" % (label, value))
-    return "<br>".join(parts)
+    def get_text_plain(self, group_name):
+        html_text = self.get_text_html(group_name)
+        return html_text.replace("<br>", ", ")
 
+    def should_show(self, location):
+        return any(
+            spec.get("show") in (location, "all") for spec in self.specs
+        )
 
-def _get_group_trace_name(args, group_name, grouper, grouped_mappings):
-    labels = []
-    for col, val, m in zip(grouper, group_name, grouped_mappings):
-        if col != one_group and m.show_in_trace_name:
-            labels.append(str(val))
-    return ", ".join(labels)
+    def get_trace_name_with_summary(self, base_name, group_name):
+        if not self.should_show("legend"):
+            return base_name
+        summary_text = self.get_text_plain(group_name)
+        if not summary_text:
+            return base_name
+        return "%s (%s)" % (base_name, summary_text) if base_name else summary_text
 
+    def get_hover_extra(self, group_name):
+        if not self.should_show("hover"):
+            return ""
+        return self.get_text_html(group_name)
 
-def _create_summary_annotations(args, specs, summary_stats, groups, grouper,
-                                 grouped_mappings, orders, constructor):
-    if not specs:
-        return []
+    def get_group_trace_name(self, group_name):
+        labels = []
+        for col, val, m in zip(self.grouper, group_name, self.grouped_mappings):
+            if col != one_group and m.show_in_trace_name:
+                labels.append(str(val))
+        return ", ".join(labels)
 
-    annotations = []
+    def build_annotations_for_group(self, group_name, group_df):
+        if not self.should_show("annotation"):
+            return []
 
-    for group_name, stats in summary_stats.items():
+        stats = self.compute_stats(group_name, group_df)
         if not stats or all(v is None for v in stats.values()):
-            continue
+            return []
+
+        text = self.get_text_html(group_name)
+        if not text:
+            return []
 
         row = 1
         col = 1
-
-        for _, g_val, m in zip(grouper, group_name, grouped_mappings):
+        for _, g_val, m in zip(self.grouper, group_name, self.grouped_mappings):
             if m.facet == "row":
                 row = m.val_map[g_val]
             elif m.facet == "col":
                 col = m.val_map[g_val]
 
-        text = _build_summary_text(specs, stats)
-        if not text:
-            continue
-
-        trace_name = _get_group_trace_name(args, group_name, grouper, grouped_mappings)
+        trace_name = self.get_group_trace_name(group_name)
         if trace_name:
             text = "<b>%s</b><br>%s" % (trace_name, text)
 
@@ -2871,13 +2899,13 @@ def _create_summary_annotations(args, specs, summary_stats, groups, grouper,
         yref = "y%d" % row if row > 1 else "y"
 
         placed = False
+        annotations = []
 
-        if constructor in [go.Bar] and not args.get("marginal_x") and not args.get("marginal_y"):
-            group_df = groups[group_name]
-            orientation = args.get("orientation", "v")
-            val_col = _get_summary_column(args, specs[0])
-            cat_col_name = args.get("x") if orientation == "v" else args.get("y")
-            cat_col = _resolve_col(args, cat_col_name) if cat_col_name else None
+        if self.constructor in [go.Bar] and not self.args.get("marginal_x") and not self.args.get("marginal_y"):
+            orientation = self.args.get("orientation", "v")
+            val_col = self._get_summary_column(self.specs[0])
+            cat_col_name = self.args.get("x") if orientation == "v" else self.args.get("y")
+            cat_col = _resolve_col(self.args, cat_col_name) if cat_col_name else None
 
             if cat_col and cat_col in group_df.columns:
                 cats = group_df.get_column(cat_col).unique(maintain_order=True).to_list()
@@ -2919,10 +2947,9 @@ def _create_summary_annotations(args, specs, summary_stats, groups, grouper,
                     annotations.append(annot)
                     placed = True
 
-        if not placed and constructor in [go.Scatter, go.Scattergl] and not args.get("marginal_x") and not args.get("marginal_y"):
-            group_df = groups[group_name]
-            x_col = _resolve_col(args, args.get("x"))
-            y_col = _resolve_col(args, args.get("y"))
+        if not placed and self.constructor in [go.Scatter, go.Scattergl] and not self.args.get("marginal_x") and not self.args.get("marginal_y"):
+            x_col = _resolve_col(self.args, self.args.get("x"))
+            y_col = _resolve_col(self.args, self.args.get("y"))
 
             if x_col and x_col in group_df.columns and y_col and y_col in group_df.columns:
                 x_series = group_df.get_column(x_col)
@@ -2967,7 +2994,7 @@ def _create_summary_annotations(args, specs, summary_stats, groups, grouper,
             )
             annotations.append(annot)
 
-    return annotations
+        return annotations
 
 
 def make_figure(args, constructor, trace_patch=None, layout_patch=None):
@@ -2997,9 +3024,7 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
     grouper = [x.grouper or one_group for x in grouped_mappings] or [one_group]
     groups, orders = get_groups_and_orders(args, grouper)
 
-    summary_specs, summary_stats = _compute_summary_stats(
-        args, groups, grouper, grouped_mappings, orders
-    )
+    summary_ctx = SummaryContext(args, constructor, grouped_mappings, grouper, orders)
 
     col_labels = []
     row_labels = []
@@ -3025,6 +3050,7 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
 
     trace_names_by_frame = {}
     frames = OrderedDict()
+    annotations_by_frame = {}
     trendline_rows = []
     trace_name_labels = None
     facet_col_wrap = args.get("facet_col_wrap", 0)
@@ -3041,10 +3067,19 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
                         trace_name_labels[key] = str(val)
                 if m.variable == "animation_frame":
                     frame_name = val
-        trace_name = ", ".join(trace_name_labels.values())
+
+        base_trace_name = ", ".join(trace_name_labels.values())
+        trace_name = summary_ctx.get_trace_name_with_summary(base_trace_name, group_name) if summary_ctx.is_active() else base_trace_name
+
         if frame_name not in trace_names_by_frame:
             trace_names_by_frame[frame_name] = set()
         trace_names = trace_names_by_frame[frame_name]
+
+        if summary_ctx.is_active() and summary_ctx.should_show("annotation"):
+            if frame_name not in annotations_by_frame:
+                annotations_by_frame[frame_name] = []
+            group_annotations = summary_ctx.build_annotations_for_group(group_name, group)
+            annotations_by_frame[frame_name].extend(group_annotations)
 
         for trace_spec in trace_specs:
             # Create the trace
@@ -3180,6 +3215,19 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
             if fit_results is not None:
                 trendline_rows.append(mapping_labels.copy())
                 trendline_rows[-1]["px_fit_results"] = fit_results
+
+            if summary_ctx.is_active() and summary_ctx.should_show("hover"):
+                hover_extra = summary_ctx.get_hover_extra(group_name)
+                if hover_extra and trace.hovertemplate:
+                    original = trace.hovertemplate
+                    if "<extra></extra>" in original:
+                        trace.hovertemplate = original.replace(
+                            "<extra></extra>",
+                            "<extra>%s</extra>" % hover_extra
+                        )
+                    else:
+                        trace.hovertemplate = original + "<br><br>" + hover_extra
+
             if frame_name not in frames:
                 frames[frame_name] = dict(data=[], name=frame_name)
             frames[frame_name]["data"].append(trace)
@@ -3188,6 +3236,12 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
         frame_list = sorted(
             frame_list, key=lambda f: orders[args["animation_frame"]].index(f["name"])
         )
+
+    if summary_ctx.is_active() and summary_ctx.should_show("annotation"):
+        for frame in frame_list:
+            frame_name = frame["name"]
+            if frame_name in annotations_by_frame and annotations_by_frame[frame_name]:
+                frame["layout"] = dict(annotations=annotations_by_frame[frame_name])
 
     if show_colorbar:
         colorvar = (
@@ -3267,6 +3321,16 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
     fig.update_layout(layout_patch)
     if "template" in args and args["template"] is not None:
         fig.update_layout(template=args["template"], overwrite=True)
+
+    if summary_ctx.is_active() and summary_ctx.should_show("annotation"):
+        first_frame_annotations = annotations_by_frame.get("", [])
+        if not first_frame_annotations and len(frame_list) > 0:
+            first_frame_name = frame_list[0]["name"]
+            first_frame_annotations = annotations_by_frame.get(first_frame_name, [])
+        if first_frame_annotations:
+            existing = list(fig.layout.annotations) if fig.layout.annotations else []
+            fig.update_layout(annotations=existing + first_frame_annotations)
+
     for f in frame_list:
         f["name"] = str(f["name"])
     fig.frames = frame_list if len(frames) > 1 else []
@@ -3305,64 +3369,6 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
 
     configure_axes(args, constructor, fig, orders)
     configure_animation_controls(args, constructor, fig)
-
-    if summary_specs:
-        summary_annotations = _create_summary_annotations(
-            args, summary_specs, summary_stats, groups, grouper,
-            grouped_mappings, orders, constructor
-        )
-        if summary_annotations:
-            existing_annotations = list(fig.layout.annotations) if fig.layout.annotations else []
-            fig.update_layout(annotations=existing_annotations + summary_annotations)
-
-        show_in_legend = any(
-            spec.get("show") in ("legend", "all") for spec in summary_specs
-        )
-        if show_in_legend:
-            for trace in fig.data:
-                group_name = None
-                for g_name, g_stats in summary_stats.items():
-                    trace_labels = []
-                    for col, val, m in zip(grouper, g_name, grouped_mappings):
-                        if col != one_group and m.show_in_trace_name:
-                            trace_labels.append(str(val))
-                    candidate_name = ", ".join(trace_labels)
-                    if candidate_name == trace.name:
-                        group_name = g_name
-                        break
-                if group_name and group_name in summary_stats:
-                    summary_text = _build_summary_text(summary_specs, summary_stats[group_name])
-                    if summary_text:
-                        trace.name = "%s (%s)" % (trace.name, summary_text.replace("<br>", ", "))
-
-        show_in_hover = any(
-            spec.get("show") in ("hover", "all") for spec in summary_specs
-        )
-        if show_in_hover:
-            for trace in fig.data:
-                group_name = None
-                for g_name, g_stats in summary_stats.items():
-                    trace_labels = []
-                    for col, val, m in zip(grouper, g_name, grouped_mappings):
-                        if col != one_group and m.show_in_trace_name:
-                            trace_labels.append(str(val))
-                    candidate_name = ", ".join(trace_labels)
-                    if candidate_name == trace.name or (
-                        candidate_name and trace.name.startswith(candidate_name)
-                    ):
-                        group_name = g_name
-                        break
-                if group_name and group_name in summary_stats and trace.hovertemplate:
-                    summary_text = _build_summary_text(summary_specs, summary_stats[group_name])
-                    if summary_text:
-                        original = trace.hovertemplate
-                        if "<extra></extra>" in original:
-                            trace.hovertemplate = original.replace(
-                                "<extra></extra>",
-                                "<extra>%s</extra>" % summary_text
-                            )
-                        else:
-                            trace.hovertemplate = original + "<br><br>" + summary_text
 
     return fig
 
