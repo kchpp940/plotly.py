@@ -364,17 +364,6 @@ def _extract_customdata_columns(args, mapping_labels):
 
 
 def _apply_trace_patch(trace, patch):
-    """
-    Apply *patch* to a trace, extracting any private metadata keys
-    (such as ``_customdata_columns``) and setting them directly on the
-    trace object rather than passing them through ``trace.update``
-    (which would reject them as invalid plotly properties).
-    """
-    private_keys = [k for k in patch.keys() if k.startswith("_")]
-    if private_keys:
-        private_values = {k: patch.pop(k) for k in private_keys}
-        for k, v in private_values.items():
-            setattr(trace, k, v)
     if patch:
         trace.update(patch)
 
@@ -700,11 +689,9 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
         trace_patch["hovertemplate"] = hover_header + "<br>".join(hover_lines)
         trace_patch["hovertemplate"] += "<extra></extra>"
 
-    customdata_col_map = _extract_customdata_columns(args, mapping_labels)
-    if customdata_col_map:
-        trace_patch["_customdata_columns"] = customdata_col_map
+    customdata_col_map = _extract_customdata_columns(args, mapping_labels) or None
 
-    return trace_patch, fit_results
+    return trace_patch, fit_results, customdata_col_map
 
 
 def configure_axes(args, constructor, fig, orders):
@@ -2797,6 +2784,7 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
 
     trace_names_by_frame = {}
     frames = OrderedDict()
+    customdata_columns_by_frame = OrderedDict()
     trendline_rows = []
     trace_name_labels = None
     facet_col_wrap = args.get("facet_col_wrap", 0)
@@ -2945,7 +2933,7 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
                 elif args["ecdfnorm"] == "percent":
                     group = group.with_columns((nw.col(var) / group_sum) * 100.0)
 
-            patch, fit_results = make_trace_kwargs(
+            patch, fit_results, customdata_col_map = make_trace_kwargs(
                 args, trace_spec, group, mapping_labels.copy(), sizeref
             )
             _apply_trace_patch(trace, patch)
@@ -2954,12 +2942,18 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
                 trendline_rows[-1]["px_fit_results"] = fit_results
             if frame_name not in frames:
                 frames[frame_name] = dict(data=[], name=frame_name)
+                customdata_columns_by_frame[frame_name] = []
             frames[frame_name]["data"].append(trace)
+            customdata_columns_by_frame[frame_name].append(customdata_col_map)
     frame_list = [f for f in frames.values()]
+    customdata_columns_list = list(customdata_columns_by_frame.values())
     if len(frame_list) > 1:
-        frame_list = sorted(
-            frame_list, key=lambda f: orders[args["animation_frame"]].index(f["name"])
+        sorted_pairs = sorted(
+            zip(frame_list, customdata_columns_list),
+            key=lambda pair: orders[args["animation_frame"]].index(pair[0]["name"]),
         )
+        frame_list = [p[0] for p in sorted_pairs]
+        customdata_columns_list = [p[1] for p in sorted_pairs]
 
     if show_colorbar:
         colorvar = (
@@ -3043,6 +3037,21 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
         f["name"] = str(f["name"])
     fig.frames = frame_list if len(frames) > 1 else []
 
+    # Write back _customdata_columns to traces in fig.data
+    if customdata_columns_list and len(customdata_columns_list[0]) > 0:
+        for i, col_map in enumerate(customdata_columns_list[0]):
+            if col_map is not None and i < len(fig.data):
+                fig.data[i]._customdata_columns = col_map
+
+    # Write back _customdata_columns to traces in frames
+    if len(frames) > 1:
+        for frame_idx, frame_cols in enumerate(customdata_columns_list):
+            if frame_idx < len(fig.frames):
+                frame_data = fig.frames[frame_idx].data
+                for i, col_map in enumerate(frame_cols):
+                    if col_map is not None and i < len(frame_data):
+                        frame_data[i]._customdata_columns = col_map
+
     if args.get("trendline") and args.get("trendline_scope", "trace") == "overall":
         trendline_spec = make_trendline_spec(args, constructor)
         trendline_trace = trendline_spec.constructor(
@@ -3053,13 +3062,15 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
                 if m.variable == "color":
                     next_color = m.sequence[len(m.val_map) % len(m.sequence)]
                     trendline_spec.trace_patch["line"] = dict(color=next_color)
-        patch, fit_results = make_trace_kwargs(
+        patch, fit_results, trendline_customdata = make_trace_kwargs(
             args, trendline_spec, args["data_frame"], {}, sizeref
         )
         _apply_trace_patch(trendline_trace, patch)
         fig.add_trace(
             trendline_trace, row="all", col="all", exclude_empty_subplots=True
         )
+        if trendline_customdata is not None and len(fig.data) > 0:
+            fig.data[-1]._customdata_columns = trendline_customdata
         fig.update_traces(selector=-1, showlegend=True)
         if fit_results is not None:
             trendline_rows.append(dict(px_fit_results=fit_results))

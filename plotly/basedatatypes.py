@@ -2799,8 +2799,53 @@ Invalid property path '{key_path_str}' for trace class {trace_class}
         Figure(...)
         """
 
+        # Preserve user-defined custom attributes on traces before validation,
+        # since validate_coerce rebuilds trace objects from _props dicts and
+        # would otherwise discard private attributes like _customdata_columns.
+        # We only preserve attributes that are not known Plotly internal state.
+        _plotly_internal_attrs = frozenset({
+            "_props",
+            "_orphan_props",
+            "_parent",
+            "_trace_ind",
+            "_subplot_row",
+            "_subplot_col",
+            "_skip_invalid",
+            "_validate",
+            "_plotly_name",
+            "_compound_props",
+            "_compound_array_props",
+            "_change_callbacks",
+            "_BasePlotlyType__validators",
+            "_hover_callbacks",
+            "_unhover_callbacks",
+            "_click_callbacks",
+            "_select_callbacks",
+            "_deselect_callbacks",
+        })
+
+        custom_attrs_list = []
+        if isinstance(data, (list, tuple)):
+            data_iter = data
+        else:
+            data_iter = [data]
+        for orig_el in data_iter:
+            if isinstance(orig_el, BaseTraceType):
+                attrs = {}
+                for k, v in orig_el.__dict__.items():
+                    if k.startswith("_") and k not in _plotly_internal_attrs:
+                        attrs[k] = v
+                custom_attrs_list.append(attrs)
+            else:
+                custom_attrs_list.append({})
+
         # Validate traces
         data = self._data_validator.validate_coerce(data)
+
+        # Restore custom attributes onto the newly-created trace objects
+        for new_trace, attrs in zip(data, custom_attrs_list):
+            for k, v in attrs.items():
+                setattr(new_trace, k, v)
 
         # Set trace indexes
         for ind, new_trace in enumerate(data):
