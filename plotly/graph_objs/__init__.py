@@ -129,6 +129,7 @@ if TYPE_CHECKING:
     from . import violin
     from . import volume
     from . import waterfall
+    from .._trace_selector import TraceSelector
 else:
     from _plotly_utils.importers import relative_import
 
@@ -264,6 +265,7 @@ else:
             "._violin.Violin",
             "._volume.Volume",
             "._waterfall.Waterfall",
+            ".._trace_selector.TraceSelector",
         ],
     )
 

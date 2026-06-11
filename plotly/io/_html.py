@@ -1,18 +1,35 @@
 import uuid
 from pathlib import Path
 import webbrowser
+import hashlib
+import base64
 
 from _plotly_utils.optional_imports import get_module
-from plotly.io._utils import validate_coerce_fig_to_dict
-from plotly.offline.offline import _get_jconfig
-from plotly.io._resource_policy import (
-    ResourcePolicySet,
-    ResourcePolicyContext,
-    _resolve_resource_context,
-    _finalize_resource_context,
-)
+from plotly.io._utils import validate_coerce_fig_to_dict, plotly_cdn_url
+from plotly.offline.offline import _get_jconfig, get_plotlyjs
 
 _json = get_module("json")
+
+
+def _generate_sri_hash(content):
+    """Generate SHA256 hash for SRI (Subresource Integrity)"""
+    if isinstance(content, str):
+        content = content.encode("utf-8")
+    sha256_hash = hashlib.sha256(content).digest()
+    return "sha256-" + base64.b64encode(sha256_hash).decode("utf-8")
+
+
+# Build script to set global PlotlyConfig object. This must execute before
+# plotly.js is loaded.
+_window_plotly_config = """\
+<script>\
+window.PlotlyConfig = {MathJaxConfig: 'local'};\
+</script>"""
+
+_mathjax_config = """\
+<script>\
+if (window.MathJax && window.MathJax.Hub && window.MathJax.Hub.Config) {window.MathJax.Hub.Config({SVG: {font: "STIX-Web"}});}\
+</script>"""
 
 
 def to_html(
@@ -28,8 +45,6 @@ def to_html(
     default_height="100%",
     validate=True,
     div_id=None,
-    resource_policy=None,
-    resource_context=None,
 ):
     """
     Convert a figure to an HTML string representation.
@@ -113,14 +128,6 @@ def to_html(
     div_id: str (default None)
         If provided, this is the value of the id attribute of the div tag. If None, the
         id attribute is a UUID.
-    resource_policy : ResourcePolicySet or None (default None)
-        A ResourcePolicySet object specifying how to include plotly.js,
-        MathJax, CSS, and meta tags. If provided, this overrides
-        include_plotlyjs and include_mathjax parameters.
-    resource_context : ResourcePolicyContext or None (default None)
-        A ResourcePolicyContext object. If provided, this takes highest
-        priority and overrides both resource_policy and the legacy
-        include_plotlyjs/include_mathjax parameters.
 
     Returns
     -------
@@ -238,38 +245,82 @@ def to_html(
         then_post_script=then_post_script,
     )
 
-    # ## Build resource context ##
-    # For to_html (no file output), we don't know output_path yet
-    ctx = _resolve_resource_context(
-        resource_context=resource_context,
-        resource_policy=resource_policy,
-        include_plotlyjs=include_plotlyjs,
-        include_mathjax=include_mathjax,
-        include_meta_charset=False,
-    )
+    # ## Handle loading/initializing plotly.js ##
+    include_plotlyjs_orig = include_plotlyjs
+    if isinstance(include_plotlyjs, str):
+        include_plotlyjs = include_plotlyjs.lower()
 
-    # ## Generate resource HTML ##
-    # For div output, resources go inside the div
-    # For full_html output, resources go in <head>
-    if full_html:
-        head_html = ctx.get_head_html()
-        if ctx.meta is None:
-            head_html = '<meta charset="utf-8" />\n' + head_html
-        resources_in_div = ""
+    # Init and load
+    load_plotlyjs = ""
+
+    if include_plotlyjs == "cdn":
+        # Generate SRI hash from the bundled plotly.js content
+        plotlyjs_content = get_plotlyjs()
+        sri_hash = _generate_sri_hash(plotlyjs_content)
+
+        load_plotlyjs = """\
+        {win_config}
+        <script charset="utf-8" src="{cdn_url}" integrity="{integrity}" crossorigin="anonymous"></script>\
+    """.format(
+            win_config=_window_plotly_config,
+            cdn_url=plotly_cdn_url(),
+            integrity=sri_hash,
+        )
+
+    elif include_plotlyjs == "directory":
+        load_plotlyjs = """\
+        {win_config}
+        <script charset="utf-8" src="plotly.min.js"></script>\
+    """.format(win_config=_window_plotly_config)
+
+    elif isinstance(include_plotlyjs, str) and include_plotlyjs.endswith(".js"):
+        load_plotlyjs = """\
+        {win_config}
+        <script charset="utf-8" src="{url}"></script>\
+    """.format(win_config=_window_plotly_config, url=include_plotlyjs_orig)
+
+    elif include_plotlyjs:
+        load_plotlyjs = """\
+        {win_config}
+        <script>{plotlyjs}</script>\
+    """.format(win_config=_window_plotly_config, plotlyjs=get_plotlyjs())
+
+    # ## Handle loading/initializing MathJax ##
+    include_mathjax_orig = include_mathjax
+    if isinstance(include_mathjax, str):
+        include_mathjax = include_mathjax.lower()
+
+    mathjax_template = """\
+    <script src="{url}?config=TeX-AMS-MML_SVG"></script>"""
+
+    if include_mathjax == "cdn":
+        mathjax_script = (
+            mathjax_template.format(
+                url=("https://cdnjs.cloudflare.com/ajax/libs/mathjax/2.7.5/MathJax.js")
+            )
+            + _mathjax_config
+        )
+
+    elif isinstance(include_mathjax, str) and include_mathjax.endswith(".js"):
+        mathjax_script = (
+            mathjax_template.format(url=include_mathjax_orig) + _mathjax_config
+        )
+    elif not include_mathjax:
+        mathjax_script = ""
     else:
-        head_html = ""
-        raw_resources = ctx.get_head_html()
-        if raw_resources:
-            resource_lines = raw_resources.split("\n")
-            indented_lines = ["        " + line for line in resource_lines]
-            resources_in_div = "\n".join(indented_lines)
-        else:
-            resources_in_div = ""
+        raise ValueError(
+            """\
+Invalid value of type {typ} received as the include_mathjax argument
+    Received value: {val}
+
+include_mathjax may be specified as False, 'cdn', or a string ending with '.js'
+    """.format(typ=type(include_mathjax), val=repr(include_mathjax))
+        )
 
     plotly_html_div = """\
 <div style="height:{height}; width:{width};">\
-        \
-        {resources_in_div}\
+        {mathjax_script}\
+        {load_plotlyjs}\
             <div id="{id}" class="plotly-graph-div" \
 style="height:100%; width:100%;"></div>\
             <script>\
@@ -277,7 +328,8 @@ style="height:100%; width:100%;"></div>\
                 {script};\
             </script>\
         </div>""".format(
-        resources_in_div=resources_in_div,
+        mathjax_script=mathjax_script,
+        load_plotlyjs=load_plotlyjs,
         id=plotdivid,
         width=div_width,
         height=div_height,
@@ -288,13 +340,11 @@ style="height:100%; width:100%;"></div>\
     if full_html:
         return """\
 <html>
-<head>
-{head}
-</head>
+<head><meta charset="utf-8" /></head>
 <body>
     {div}
 </body>
-</html>""".format(head=head_html, div=plotly_html_div)
+</html>""".format(div=plotly_html_div)
     else:
         return plotly_html_div
 
@@ -314,9 +364,6 @@ def write_html(
     default_height="100%",
     auto_open=False,
     div_id=None,
-    resource_policy=None,
-    resource_context=None,
-    overwrite_resources=False,
 ):
     """
     Write a figure to an HTML file representation
@@ -416,46 +463,19 @@ def write_html(
     div_id: str (default None)
         If provided, this is the value of the id attribute of the div tag. If None, the
         id attribute is a UUID.
-    resource_policy : ResourcePolicySet or None (default None)
-        A ResourcePolicySet object specifying how to include plotly.js,
-        MathJax, CSS, and meta tags. If provided, this overrides
-        include_plotlyjs and include_mathjax parameters.
-    resource_context : ResourcePolicyContext or None (default None)
-        A ResourcePolicyContext object. If provided, this takes highest
-        priority and overrides both resource_policy and the legacy
-        include_plotlyjs/include_mathjax parameters.
-    overwrite_resources : bool (default False)
-        If True, overwrite existing resource files when copying to the
-        output directory. If False, skip copying if the file already exists.
 
     Returns
     -------
     None
     """
-    # Check if file is a string/Path (has a path)
-    if isinstance(file, str):
-        path = Path(file)
-    elif isinstance(file, Path):
-        path = file
-    else:
-        path = None
-
-    # Build resource context
-    ctx = _resolve_resource_context(
-        resource_context=resource_context,
-        resource_policy=resource_policy,
-        include_plotlyjs=include_plotlyjs,
-        include_mathjax=include_mathjax,
-        output_path=path,
-        overwrite=overwrite_resources,
-        include_meta_charset=True,
-    )
 
     # Build HTML string
     html_str = to_html(
         fig,
         config=config,
         auto_play=auto_play,
+        include_plotlyjs=include_plotlyjs,
+        include_mathjax=include_mathjax,
         post_script=post_script,
         full_html=full_html,
         animation_opts=animation_opts,
@@ -463,18 +483,33 @@ def write_html(
         default_height=default_height,
         validate=validate,
         div_id=div_id,
-        resource_context=ctx,
     )
+
+    # Check if file is a string
+    if isinstance(file, str):
+        # Use the standard pathlib constructor to make a pathlib object.
+        path = Path(file)
+    elif isinstance(file, Path):  # PurePath is the most general pathlib object.
+        # `file` is already a pathlib object.
+        path = file
+    else:
+        # We could not make a pathlib object out of file. Either `file` is an open file
+        # descriptor with a `write()` method or it's an invalid object.
+        path = None
 
     # Write HTML string
     if path is not None:
+        # To use a different file encoding, pass a file descriptor
         path.write_text(html_str, "utf-8")
     else:
         file.write(html_str)
 
-    # Execute resource copies, manifest writes, and missing warnings
-    if path is not None and full_html:
-        _finalize_resource_context(ctx)
+    # Check if we should copy plotly.min.js to output directory
+    if path is not None and full_html and include_plotlyjs == "directory":
+        bundle_path = path.parent / "plotly.min.js"
+
+        if not bundle_path.exists():
+            bundle_path.write_text(get_plotlyjs(), encoding="utf-8")
 
     # Handle auto_open
     if path is not None and full_html and auto_open:

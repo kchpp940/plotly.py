@@ -1391,6 +1391,207 @@ class BaseFigure(object):
             trace.update(patch, overwrite=overwrite, **kwargs)
         return self
 
+    def select_traces_by_selector(self, trace_selector):
+        """
+        Select traces using a :class:`~plotly._trace_selector.TraceSelector`
+        that supports matching on trace type, subplot row/col, secondary_y,
+        legendgroup, name regex, customdata, and meta fields.
+
+        Parameters
+        ----------
+        trace_selector : TraceSelector
+            A :class:`~plotly._trace_selector.TraceSelector` instance
+            specifying the selection criteria.  All non-None criteria are
+            combined with AND logic.
+
+        Returns
+        -------
+        generator
+            Generator that yields all traces satisfying the selector criteria.
+
+        Raises
+        ------
+        TypeError
+            If *trace_selector* is not a :class:`TraceSelector` instance.
+
+        Examples
+        --------
+        >>> from plotly._trace_selector import TraceSelector
+        >>> import plotly.graph_objects as go
+        >>> fig = go.Figure()
+        >>> fig.add_scatter(y=[1, 2, 3], name="series_a", legendgroup="g1")
+        >>> fig.add_bar(y=[3, 2, 1], name="bar_1", legendgroup="g2")
+        >>> sel = TraceSelector(type="scatter", legendgroup="g1")
+        >>> list(fig.select_traces_by_selector(sel))  # doctest: +SKIP
+        [...]
+        """
+        from ._trace_selector import TraceSelector as _TraceSelector
+
+        if not isinstance(trace_selector, _TraceSelector):
+            raise TypeError(
+                "trace_selector must be a TraceSelector instance, "
+                f"got {type(trace_selector).__name__}"
+            )
+
+        if trace_selector.uses_subplot:
+            grid_ref = self._validate_get_grid_ref()
+            grid_subplot_refs = self._build_subplot_refs(
+                grid_ref,
+                trace_selector.row,
+                trace_selector.col,
+                trace_selector.secondary_y,
+            )
+            from plotly._subplots import _get_subplot_ref_for_trace
+
+            def _subplot_filter(trace):
+                trace_ref = _get_subplot_ref_for_trace(trace)
+                return trace_ref in grid_subplot_refs
+
+            candidates = filter(_subplot_filter, self.data)
+        else:
+            candidates = self.data
+
+        return _generator(filter(trace_selector.matches, candidates))
+
+    @staticmethod
+    def _build_subplot_refs(grid_ref, row, col, secondary_y):
+        if row is None and col is not None:
+            grid_subplot_ref_tuples = [ref_row[col - 1] for ref_row in grid_ref]
+        elif col is None and row is not None:
+            grid_subplot_ref_tuples = grid_ref[row - 1]
+        elif col is not None and row is not None:
+            grid_subplot_ref_tuples = [grid_ref[row - 1][col - 1]]
+        else:
+            grid_subplot_ref_tuples = [
+                refs for refs_row in grid_ref for refs in refs_row
+            ]
+
+        grid_subplot_refs = []
+        for refs in grid_subplot_ref_tuples:
+            if not refs:
+                continue
+            if secondary_y is not True:
+                grid_subplot_refs.append(refs[0])
+            if secondary_y is not False and len(refs) > 1:
+                grid_subplot_refs.append(refs[1])
+
+        return grid_subplot_refs
+
+    def update_traces_by_selector(
+        self,
+        trace_selector,
+        patch=None,
+        overwrite=False,
+        skip_invalid=False,
+        **kwargs,
+    ):
+        """
+        Perform a property update on all traces that satisfy the criteria
+        defined by a :class:`~plotly._trace_selector.TraceSelector`.
+
+        This extends :meth:`update_traces` with richer selection capabilities
+        including trace-type filtering, name regex, legendgroup, customdata
+        and meta predicates -- while still honouring subplot row/col and
+        secondary_y semantics.
+
+        Parameters
+        ----------
+        trace_selector : TraceSelector
+            A :class:`~plotly._trace_selector.TraceSelector` instance.
+        patch : dict or None (default None)
+            Dictionary of property updates to apply to every selected trace.
+        overwrite : bool (default False)
+            If True, overwrite existing properties.  If False, apply updates
+            recursively, preserving existing properties that are not specified.
+        skip_invalid : bool (default False)
+            If True, invalid property names in *patch* / **kwargs** are
+            silently skipped.  If False (default), a ``ValueError`` is raised
+            on the first invalid property.
+        **kwargs
+            Additional property updates.  Values here take precedence over
+            *patch* when a key appears in both.
+
+        Returns
+        -------
+        self
+            The Figure object the method was called on, to enable chaining.
+
+        Raises
+        ------
+        TypeError
+            If *trace_selector* is not a :class:`TraceSelector` instance.
+        ValueError
+            If *skip_invalid* is False and an invalid property name is
+            encountered in *patch* or **kwargs**.
+
+        Notes
+        -----
+        * When no traces match the selector a :class:`UserWarning` is emitted
+          and the figure is left unchanged.
+        * Property validation is delegated to the existing
+          ``trace.update(...)`` machinery, which uses the per-trace
+          validator cache.  Setting ``skip_invalid=True`` mirrors the
+          behaviour of the ``Figure`` constructor's ``skip_invalid``
+          parameter.
+        """
+        from ._trace_selector import TraceSelector as _TraceSelector
+
+        if not isinstance(trace_selector, _TraceSelector):
+            raise TypeError(
+                "trace_selector must be a TraceSelector instance, "
+                f"got {type(trace_selector).__name__}"
+            )
+
+        matched = list(self.select_traces_by_selector(trace_selector))
+
+        if not matched:
+            warnings.warn(
+                "update_traces_by_selector: no traces matched the given "
+                f"selector {trace_selector!r}. Figure is unchanged.",
+                UserWarning,
+                stacklevel=2,
+            )
+            return self
+
+        merged_patch = {}
+        if patch is not None:
+            merged_patch.update(patch)
+        merged_patch.update(kwargs)
+
+        if skip_invalid and merged_patch:
+            merged_patch = self._filter_invalid_trace_props(
+                matched[0], merged_patch
+            )
+
+        for trace in matched:
+            trace.update(merged_patch, overwrite=overwrite)
+
+        return self
+
+    @staticmethod
+    def _filter_invalid_trace_props(trace, patch):
+        """
+        Remove keys from *patch* that are not valid properties for *trace*.
+
+        This is a best-effort filter: it checks whether the top-level key
+        exists in the trace's ``_valid_props`` set or can be resolved by the
+        trace's validator cache.  Nested dicts are not recursed -- the
+        existing ``trace.update`` machinery will handle those and silently
+        skip if ``skip_invalid`` is set on the figure level.
+        """
+        valid = set(trace._valid_props) if trace._valid_props else set()
+        filtered = {}
+        for key, val in patch.items():
+            if key in valid:
+                filtered[key] = val
+            else:
+                try:
+                    trace._get_validator(key)
+                    filtered[key] = val
+                except Exception:
+                    pass
+        return filtered
+
     def update_layout(self, dict1=None, overwrite=False, **kwargs):
         """
         Update the properties of the figure's layout with a dict and/or with
