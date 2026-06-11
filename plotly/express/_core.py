@@ -3,6 +3,7 @@ import plotly.io as pio
 from collections import namedtuple, OrderedDict
 from ._special_inputs import IdentityMap, Constant, Range
 from .trendline_functions import ols, lowess, rolling, expanding, ewm
+from ._params import PARAMS
 
 from _plotly_utils.basevalidators import ColorscaleValidator
 from plotly.colors import qualitative, sequential
@@ -28,67 +29,32 @@ trendline_functions = dict(
     lowess=lowess, rolling=rolling, ewm=ewm, expanding=expanding, ols=ols
 )
 
-# Declare all supported attributes, across all plot types
-direct_attrables = (
-    ["base", "x", "y", "z", "a", "b", "c", "r", "theta", "size", "x_start", "x_end"]
-    + ["hover_name", "text", "names", "values", "parents", "wide_cross"]
-    + ["ids", "error_x", "error_x_minus", "error_y", "error_y_minus", "error_z"]
-    + ["error_z_minus", "lat", "lon", "locations", "animation_group"]
+direct_attrables, array_attrables, group_attrables, renameable_group_attrables = (
+    PARAMS.get_attrable_lists()
 )
-array_attrables = ["dimensions", "custom_data", "hover_data", "path", "wide_variable"]
-group_attrables = ["animation_frame", "facet_row", "facet_col", "line_group"]
-renameable_group_attrables = [
-    "color",  # renamed to marker.color or line.color in infer_config
-    "symbol",  # renamed to marker.symbol in infer_config
-    "line_dash",  # renamed to line.dash in infer_config
-    "pattern_shape",  # renamed to marker.pattern.shape in infer_config
-]
-all_attrables = (
-    direct_attrables + array_attrables + group_attrables + renameable_group_attrables
-)
+all_attrables = PARAMS.get_all_attrables()
 
 cartesians = [go.Scatter, go.Scattergl, go.Bar, go.Funnel, go.Box, go.Violin]
 cartesians += [go.Histogram, go.Histogram2d, go.Histogram2dContour]
 
 
 class PxDefaults(object):
-    __slots__ = [
-        "template",
-        "width",
-        "height",
-        "color_discrete_sequence",
-        "color_discrete_map",
-        "color_continuous_scale",
-        "symbol_sequence",
-        "symbol_map",
-        "line_dash_sequence",
-        "line_dash_map",
-        "pattern_shape_sequence",
-        "pattern_shape_map",
-        "size_max",
-        "category_orders",
-        "labels",
-    ]
+    __slots__ = PARAMS.get_defaults_slots()
 
     def __init__(self):
         self.reset()
 
     def reset(self):
-        self.template = None
-        self.width = None
-        self.height = None
-        self.color_discrete_sequence = None
-        self.color_discrete_map = {}
-        self.color_continuous_scale = None
-        self.symbol_sequence = None
-        self.symbol_map = {}
-        self.line_dash_sequence = None
-        self.line_dash_map = {}
-        self.pattern_shape_sequence = None
-        self.pattern_shape_map = {}
-        self.size_max = 20
-        self.category_orders = {}
-        self.labels = {}
+        defaults_dict = PARAMS.build_defaults_dict()
+        for name in self.__slots__:
+            # Use copy for mutable defaults to avoid shared references
+            value = defaults_dict[name]
+            if isinstance(value, dict):
+                setattr(self, name, dict(value))
+            elif isinstance(value, list):
+                setattr(self, name, list(value))
+            else:
+                setattr(self, name, value)
 
 
 defaults = PxDefaults()
@@ -2682,488 +2648,6 @@ def get_groups_and_orders(args, grouper):
     return groups, orders
 
 
-class SummaryContext:
-    def __init__(self, args, constructor, grouped_mappings, grouper, orders):
-        self.args = args
-        self.constructor = constructor
-        self.grouped_mappings = grouped_mappings
-        self.grouper = grouper
-        self.orders = orders
-        self.specs = self._parse_specs()
-        self.trendline_type = args.get("trendline")
-        self._stats_cache = {}
-        self._text_cache = {}
-        self._fit_results_cache = {}
-
-    _trendline_parsers = {}
-
-    @classmethod
-    def register_trendline_parser(cls, trendline_type, parser_func):
-        cls._trendline_parsers[trendline_type] = parser_func
-
-    def _get_trendline_stats(self, fit_results):
-        if self.trendline_type is None:
-            return {}
-        parser = self._trendline_parsers.get(self.trendline_type)
-        if parser is None:
-            return {}
-        try:
-            return parser(fit_results)
-        except Exception:
-            return {}
-
-    def _parse_specs(self):
-        summary = self.args.get("summary")
-        if summary is None:
-            return []
-
-        if isinstance(summary, str):
-            summary = [summary]
-
-        specs = []
-        if isinstance(summary, list):
-            for item in summary:
-                if isinstance(item, str):
-                    specs.append(dict(
-                        type=item,
-                        col=None,
-                        show="annotation",
-                        format=None,
-                        scope="data",
-                    ))
-                elif isinstance(item, dict):
-                    specs.append(dict(
-                        type=item.get("type", "mean"),
-                        col=item.get("col"),
-                        show=item.get("show", "annotation"),
-                        format=item.get("format"),
-                        scope=item.get("scope", "data"),
-                    ))
-        elif isinstance(summary, dict):
-            specs.append(dict(
-                type=summary.get("type", "mean"),
-                col=summary.get("col"),
-                show=summary.get("show", "annotation"),
-                format=summary.get("format"),
-                scope=summary.get("scope", "data"),
-            ))
-
-        valid_types = {"mean", "median", "sum", "count", "percent", "slope", "intercept", "rsquared", "trendline"}
-        valid_scopes = {"data", "trendline", "all"}
-        for spec in specs:
-            if spec["type"] not in valid_types:
-                raise ValueError(
-                    "Invalid summary type '%s'. Valid types are: %s"
-                    % (spec["type"], ", ".join(sorted(valid_types)))
-                )
-            if spec["scope"] not in valid_scopes:
-                raise ValueError(
-                    "Invalid summary scope '%s'. Valid scopes are: %s"
-                    % (spec["scope"], ", ".join(sorted(valid_scopes)))
-                )
-            if spec["type"] in {"slope", "intercept", "rsquared", "trendline"}:
-                if spec["scope"] == "data":
-                    spec["scope"] = "trendline"
-
-        return specs
-
-    def is_active(self):
-        return len(self.specs) > 0
-
-    def set_fit_results(self, group_name, fit_results):
-        if fit_results is not None:
-            self._fit_results_cache[group_name] = fit_results
-
-    def has_trendline_specs(self):
-        return any(s["scope"] in {"trendline", "all"} for s in self.specs)
-
-    def has_data_specs(self):
-        return any(s["scope"] in {"data", "all"} for s in self.specs)
-
-    def _get_summary_column(self, spec):
-        if spec["col"] is not None:
-            return _resolve_col(self.args, spec["col"])
-
-        orientation = self.args.get("orientation", "v")
-        if orientation == "h":
-            return _resolve_col(self.args, self.args.get("x"))
-        return _resolve_col(self.args, self.args.get("y"))
-
-    def compute_stats(self, group_name, group_df):
-        if group_name in self._stats_cache:
-            return self._stats_cache[group_name]
-
-        stats = {}
-        df = self.args["data_frame"]
-
-        for spec in self.specs:
-            col = self._get_summary_column(spec)
-            summary_type = spec["type"]
-            scope = spec["scope"]
-
-            try:
-                value = None
-
-                if scope in {"data", "all"} and summary_type not in {"slope", "intercept", "rsquared", "trendline"}:
-                    if summary_type == "count":
-                        value = len(group_df)
-                    elif col is not None:
-                        series = group_df.get_column(col)
-
-                        if summary_type == "mean":
-                            value = nw.to_py_scalar(series.mean())
-                        elif summary_type == "median":
-                            value = nw.to_py_scalar(series.median())
-                        elif summary_type == "sum":
-                            value = nw.to_py_scalar(series.sum())
-                        elif summary_type == "percent":
-                            if col in df.columns:
-                                group_total = series.sum()
-                                total = df.get_column(col).sum()
-                                if total != 0:
-                                    value = nw.to_py_scalar(group_total / total * 100)
-                                else:
-                                    value = 0
-                            else:
-                                value = 0
-
-                if scope in {"trendline", "all"} and group_name in self._fit_results_cache:
-                    trendline_stats = self._get_trendline_stats(
-                        self._fit_results_cache[group_name]
-                    )
-                    if summary_type == "trendline":
-                        for k, v in trendline_stats.items():
-                            stats[k] = v
-                        continue
-                    elif summary_type in trendline_stats:
-                        value = trendline_stats[summary_type]
-
-                stats[summary_type] = value
-            except Exception:
-                stats[summary_type] = None
-
-        self._stats_cache[group_name] = stats
-        return stats
-
-    def _format_value(self, value, spec):
-        if value is None:
-            return "N/A"
-
-        fmt = spec.get("format")
-        summary_type = spec["type"]
-
-        if fmt:
-            try:
-                return format(value, fmt)
-            except (ValueError, TypeError):
-                return str(value)
-
-        if summary_type == "percent":
-            return "%.2f%%" % value
-        if summary_type == "rsquared":
-            return "%.4f" % value
-        if summary_type == "count":
-            return "%d" % int(value)
-        if isinstance(value, float):
-            if abs(value) >= 1000 or (abs(value) < 0.01 and value != 0):
-                return "%.4g" % value
-            return "%.3f" % value
-        return str(value)
-
-    def _build_label(self, spec):
-        summary_type = spec["type"]
-        labels = {
-            "mean": "Mean",
-            "median": "Median",
-            "sum": "Total",
-            "count": "Count",
-            "percent": "Percent",
-            "slope": "Slope",
-            "intercept": "Intercept",
-            "rsquared": "R²",
-            "trendline": "Trend",
-        }
-        return labels.get(summary_type, summary_type)
-
-    def _build_text_for_scope(self, group_name, scope_filter):
-        cache_key = (group_name, scope_filter)
-        if cache_key in self._text_cache:
-            return self._text_cache[cache_key]
-
-        stats = self._stats_cache.get(group_name, {})
-        parts = []
-
-        for spec in self.specs:
-            stype = spec["type"]
-            scope = spec["scope"]
-
-            if scope_filter is not None and scope not in (scope_filter, "all"):
-                continue
-
-            if stype == "trendline":
-                for sub_type in ["slope", "intercept", "rsquared"]:
-                    if sub_type in stats and stats[sub_type] is not None:
-                        label = self._build_label(dict(type=sub_type))
-                        value = self._format_value(stats[sub_type], dict(type=sub_type, format=spec.get("format")))
-                        parts.append("%s: %s" % (label, value))
-            elif stype in stats and stats[stype] is not None:
-                label = self._build_label(spec)
-                value = self._format_value(stats[stype], spec)
-                parts.append("%s: %s" % (label, value))
-
-        text = "<br>".join(parts)
-        self._text_cache[cache_key] = text
-        return text
-
-    def get_text_html(self, group_name):
-        return self._build_text_for_scope(group_name, None)
-
-    def get_data_text_html(self, group_name):
-        return self._build_text_for_scope(group_name, "data")
-
-    def get_trendline_text_html(self, group_name):
-        return self._build_text_for_scope(group_name, "trendline")
-
-    def get_text_plain(self, group_name):
-        return self.get_text_html(group_name).replace("<br>", ", ")
-
-    def get_data_text_plain(self, group_name):
-        return self.get_data_text_html(group_name).replace("<br>", ", ")
-
-    def get_trendline_text_plain(self, group_name):
-        return self.get_trendline_text_html(group_name).replace("<br>", ", ")
-
-    def should_show(self, location, scope=None):
-        for spec in self.specs:
-            if spec.get("show") in (location, "all"):
-                if scope is None or spec.get("scope") in (scope, "all"):
-                    return True
-        return False
-
-    def get_trace_name_with_summary(self, base_name, group_name, scope=None):
-        if scope is not None and not self.should_show("legend", scope):
-            return base_name
-        if scope is None and not self.should_show("legend"):
-            return base_name
-
-        if scope == "trendline":
-            summary_text = self.get_trendline_text_plain(group_name)
-        elif scope == "data":
-            summary_text = self.get_data_text_plain(group_name)
-        else:
-            summary_text = self.get_text_plain(group_name)
-
-        if not summary_text:
-            return base_name
-        return "%s (%s)" % (base_name, summary_text) if base_name else summary_text
-
-    def get_hover_extra(self, group_name, scope=None):
-        if scope is not None and not self.should_show("hover", scope):
-            return ""
-        if scope is None and not self.should_show("hover"):
-            return ""
-
-        if scope == "trendline":
-            return self.get_trendline_text_html(group_name)
-        elif scope == "data":
-            return self.get_data_text_html(group_name)
-        else:
-            return self.get_text_html(group_name)
-
-    def get_group_trace_name(self, group_name):
-        labels = []
-        for col, val, m in zip(self.grouper, group_name, self.grouped_mappings):
-            if col != one_group and m.show_in_trace_name:
-                labels.append(str(val))
-        return ", ".join(labels)
-
-    def build_annotations_for_group(self, group_name, group_df, scope=None):
-        if scope is not None and not self.should_show("annotation", scope):
-            return []
-        if scope is None and not self.should_show("annotation"):
-            return []
-
-        stats = self.compute_stats(group_name, group_df)
-        if not stats or all(v is None for v in stats.values()):
-            return []
-
-        if scope == "trendline":
-            text = self.get_trendline_text_html(group_name)
-            title_prefix = "<b>Trend: %s</b><br>" % self.get_group_trace_name(group_name) if self.get_group_trace_name(group_name) else "<b>Trend</b><br>"
-        elif scope == "data":
-            text = self.get_data_text_html(group_name)
-            title_prefix = "<b>%s</b><br>" % self.get_group_trace_name(group_name) if self.get_group_trace_name(group_name) else ""
-        else:
-            text = self.get_text_html(group_name)
-            title_prefix = "<b>%s</b><br>" % self.get_group_trace_name(group_name) if self.get_group_trace_name(group_name) else ""
-
-        if not text:
-            return []
-
-        text = title_prefix + text
-
-        row = 1
-        col = 1
-        for _, g_val, m in zip(self.grouper, group_name, self.grouped_mappings):
-            if m.facet == "row" and g_val in m.val_map:
-                row = m.val_map[g_val]
-            elif m.facet == "col" and g_val in m.val_map:
-                col = m.val_map[g_val]
-
-        xref = "x%d" % col if col > 1 else "x"
-        yref = "y%d" % row if row > 1 else "y"
-
-        placed = False
-        annotations = []
-
-        if scope == "trendline":
-            annot = dict(
-                x=0.98,
-                y=0.02,
-                text=text,
-                showarrow=False,
-                xanchor="right",
-                yanchor="bottom",
-                xref="%s domain" % xref,
-                yref="%s domain" % yref,
-                font=dict(size=11, color="#888"),
-                bgcolor="rgba(255,255,255,0.85)",
-                bordercolor="rgba(136,136,136,0.3)",
-                borderwidth=1,
-                borderpad=6,
-            )
-            annotations.append(annot)
-            return annotations
-
-        if self.constructor in [go.Bar] and not self.args.get("marginal_x") and not self.args.get("marginal_y"):
-            orientation = self.args.get("orientation", "v")
-            val_col = self._get_summary_column(self.specs[0])
-            cat_col_name = self.args.get("x") if orientation == "v" else self.args.get("y")
-            cat_col = _resolve_col(self.args, cat_col_name) if cat_col_name else None
-
-            if cat_col and cat_col in group_df.columns:
-                cats = group_df.get_column(cat_col).unique(maintain_order=True).to_list()
-                if cats:
-                    last_cat = cats[-1]
-                    if val_col and val_col in group_df.columns:
-                        max_val = nw.to_py_scalar(group_df.get_column(val_col).max())
-                    else:
-                        max_val = 0
-
-                    if orientation == "v":
-                        annot = dict(
-                            x=last_cat,
-                            y=max_val * 1.05 if max_val != 0 else 1,
-                            text=text,
-                            showarrow=False,
-                            xanchor="left",
-                            yanchor="bottom",
-                            xref=xref,
-                            yref=yref,
-                            font=dict(size=11),
-                            bgcolor="rgba(255,255,255,0.85)",
-                            borderpad=4,
-                        )
-                    else:
-                        annot = dict(
-                            x=max_val * 1.05 if max_val != 0 else 1,
-                            y=last_cat,
-                            text=text,
-                            showarrow=False,
-                            xanchor="left",
-                            yanchor="middle",
-                            xref=xref,
-                            yref=yref,
-                            font=dict(size=11),
-                            bgcolor="rgba(255,255,255,0.85)",
-                            borderpad=4,
-                        )
-                    annotations.append(annot)
-                    placed = True
-
-        if not placed and self.constructor in [go.Scatter, go.Scattergl] and not self.args.get("marginal_x") and not self.args.get("marginal_y"):
-            x_col = _resolve_col(self.args, self.args.get("x"))
-            y_col = _resolve_col(self.args, self.args.get("y"))
-
-            if x_col and x_col in group_df.columns and y_col and y_col in group_df.columns:
-                x_series = group_df.get_column(x_col)
-                y_series = group_df.get_column(y_col)
-                if x_series.dtype.is_numeric() and y_series.dtype.is_numeric():
-                    max_x = nw.to_py_scalar(x_series.max())
-                    max_y = nw.to_py_scalar(y_series.max())
-
-                    annot = dict(
-                        x=max_x,
-                        y=max_y,
-                        text=text,
-                        showarrow=False,
-                        xanchor="left",
-                        yanchor="bottom",
-                        xshift=5,
-                        yshift=5,
-                        xref=xref,
-                        yref=yref,
-                        font=dict(size=11),
-                        bgcolor="rgba(255,255,255,0.85)",
-                        borderpad=4,
-                    )
-                    annotations.append(annot)
-                    placed = True
-
-        if not placed:
-            annot = dict(
-                x=0.98,
-                y=0.98,
-                text=text,
-                showarrow=False,
-                xanchor="right",
-                yanchor="top",
-                xref="%s domain" % xref,
-                yref="%s domain" % yref,
-                font=dict(size=11),
-                bgcolor="rgba(255,255,255,0.85)",
-                bordercolor="rgba(0,0,0,0.2)",
-                borderwidth=1,
-                borderpad=6,
-            )
-            annotations.append(annot)
-
-        return annotations
-
-
-def _ols_trendline_parser(fit_results):
-    if fit_results is None:
-        return {}
-    stats = {}
-    try:
-        params = fit_results.params
-        if len(params) >= 2:
-            stats["slope"] = float(params[1])
-            stats["intercept"] = float(params[0])
-        elif len(params) == 1:
-            stats["slope"] = float(params[0])
-            stats["intercept"] = 0.0
-    except (AttributeError, IndexError, TypeError):
-        pass
-    try:
-        if hasattr(fit_results, "rsquared"):
-            stats["rsquared"] = float(fit_results.rsquared)
-    except (AttributeError, TypeError):
-        pass
-    return stats
-
-
-def _generic_trendline_parser(fit_results):
-    return {}
-
-
-SummaryContext.register_trendline_parser("ols", _ols_trendline_parser)
-SummaryContext.register_trendline_parser("lowess", _generic_trendline_parser)
-SummaryContext.register_trendline_parser("rolling", _generic_trendline_parser)
-SummaryContext.register_trendline_parser("expanding", _generic_trendline_parser)
-SummaryContext.register_trendline_parser("ewm", _generic_trendline_parser)
-
-
 def make_figure(args, constructor, trace_patch=None, layout_patch=None):
     trace_patch = trace_patch or {}
     layout_patch = layout_patch or {}
@@ -3191,8 +2675,6 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
     grouper = [x.grouper or one_group for x in grouped_mappings] or [one_group]
     groups, orders = get_groups_and_orders(args, grouper)
 
-    summary_ctx = SummaryContext(args, constructor, grouped_mappings, grouper, orders)
-
     col_labels = []
     row_labels = []
     nrows = ncols = 1
@@ -3217,7 +2699,6 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
 
     trace_names_by_frame = {}
     frames = OrderedDict()
-    annotations_by_frame = {}
     trendline_rows = []
     trace_name_labels = None
     facet_col_wrap = args.get("facet_col_wrap", 0)
@@ -3234,35 +2715,14 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
                         trace_name_labels[key] = str(val)
                 if m.variable == "animation_frame":
                     frame_name = val
-
-        base_trace_name = ", ".join(trace_name_labels.values())
-
-        if summary_ctx.is_active():
-            summary_ctx.compute_stats(group_name, group)
-
-        trace_name = summary_ctx.get_trace_name_with_summary(base_trace_name, group_name) if summary_ctx.is_active() else base_trace_name
-
+        trace_name = ", ".join(trace_name_labels.values())
         if frame_name not in trace_names_by_frame:
             trace_names_by_frame[frame_name] = set()
         trace_names = trace_names_by_frame[frame_name]
 
-        if summary_ctx.is_active() and summary_ctx.should_show("annotation"):
-            if frame_name not in annotations_by_frame:
-                annotations_by_frame[frame_name] = []
-            group_annotations = summary_ctx.build_annotations_for_group(group_name, group, scope="data")
-            annotations_by_frame[frame_name].extend(group_annotations)
-
         for trace_spec in trace_specs:
-            is_trendline = "trendline" in trace_spec.attrs
-
-            if is_trendline:
-                trace_base_name = base_trace_name + " Trend" if base_trace_name else "Trend"
-                current_trace_name = trace_base_name
-            else:
-                current_trace_name = trace_name
-
             # Create the trace
-            trace = trace_spec.constructor(name=current_trace_name)
+            trace = trace_spec.constructor(name=trace_name)
             if trace_spec.constructor not in [
                 go.Parcats,
                 go.Parcoords,
@@ -3278,7 +2738,7 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
             ]:
                 trace.update(
                     legendgroup=trace_name,
-                    showlegend=(current_trace_name != "" and current_trace_name not in trace_names),
+                    showlegend=(trace_name != "" and trace_name not in trace_names),
                 )
 
             # Set 'offsetgroup' only in group barmode (or if no barmode is set)
@@ -3287,7 +2747,7 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
                 barmode == "group" or barmode is None
             ):
                 trace.update(alignmentgroup=True, offsetgroup=trace_name)
-            trace_names.add(current_trace_name)
+            trace_names.add(trace_name)
 
             # Init subplot row/col
             trace._subplot_row = 1
@@ -3394,47 +2854,6 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
             if fit_results is not None:
                 trendline_rows.append(mapping_labels.copy())
                 trendline_rows[-1]["px_fit_results"] = fit_results
-                if summary_ctx.is_active():
-                    summary_ctx.set_fit_results(group_name, fit_results)
-                    if group_name in summary_ctx._stats_cache:
-                        del summary_ctx._stats_cache[group_name]
-                    if (group_name, None) in summary_ctx._text_cache:
-                        del summary_ctx._text_cache[(group_name, None)]
-                    if (group_name, "trendline") in summary_ctx._text_cache:
-                        del summary_ctx._text_cache[(group_name, "trendline")]
-                    summary_ctx.compute_stats(group_name, group)
-
-                    if is_trendline:
-                        if current_trace_name in trace_names:
-                            trace_names.remove(current_trace_name)
-                        current_trace_name = summary_ctx.get_trace_name_with_summary(
-                            trace_base_name, group_name, scope="trendline"
-                        )
-                        trace.name = current_trace_name
-                        trace_names.add(current_trace_name)
-                        trace.showlegend = (current_trace_name != "" and current_trace_name not in trace_names) or True
-
-                    if is_trendline and summary_ctx.should_show("annotation", scope="trendline"):
-                        if frame_name not in annotations_by_frame:
-                            annotations_by_frame[frame_name] = []
-                        trendline_annotations = summary_ctx.build_annotations_for_group(
-                            group_name, group, scope="trendline"
-                        )
-                        annotations_by_frame[frame_name].extend(trendline_annotations)
-
-            if summary_ctx.is_active():
-                scope = "trendline" if is_trendline else "data"
-                hover_extra = summary_ctx.get_hover_extra(group_name, scope=scope)
-                if hover_extra and trace.hovertemplate:
-                    original = trace.hovertemplate
-                    if "<extra></extra>" in original:
-                        trace.hovertemplate = original.replace(
-                            "<extra></extra>",
-                            "<extra>%s</extra>" % hover_extra
-                        )
-                    else:
-                        trace.hovertemplate = original + "<br><br>" + hover_extra
-
             if frame_name not in frames:
                 frames[frame_name] = dict(data=[], name=frame_name)
             frames[frame_name]["data"].append(trace)
@@ -3443,12 +2862,6 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
         frame_list = sorted(
             frame_list, key=lambda f: orders[args["animation_frame"]].index(f["name"])
         )
-
-    if summary_ctx.is_active() and summary_ctx.should_show("annotation"):
-        for frame in frame_list:
-            frame_name = frame["name"]
-            if frame_name in annotations_by_frame and annotations_by_frame[frame_name]:
-                frame["layout"] = dict(annotations=annotations_by_frame[frame_name])
 
     if show_colorbar:
         colorvar = (
@@ -3528,16 +2941,6 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
     fig.update_layout(layout_patch)
     if "template" in args and args["template"] is not None:
         fig.update_layout(template=args["template"], overwrite=True)
-
-    if summary_ctx.is_active() and summary_ctx.should_show("annotation"):
-        first_frame_annotations = annotations_by_frame.get("", [])
-        if not first_frame_annotations and len(frame_list) > 0:
-            first_frame_name = frame_list[0]["name"]
-            first_frame_annotations = annotations_by_frame.get(first_frame_name, [])
-        if first_frame_annotations:
-            existing = list(fig.layout.annotations) if fig.layout.annotations else []
-            fig.update_layout(annotations=existing + first_frame_annotations)
-
     for f in frame_list:
         f["name"] = str(f["name"])
     fig.frames = frame_list if len(frames) > 1 else []
@@ -3576,7 +2979,6 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
 
     configure_axes(args, constructor, fig, orders)
     configure_animation_controls(args, constructor, fig)
-
     return fig
 
 
