@@ -259,10 +259,16 @@ def to_html(
     else:
         head_html = ""
         raw_resources = ctx.get_head_html()
-        resources_in_div = raw_resources.replace("\n", "\n        ")
+        if raw_resources:
+            resource_lines = raw_resources.split("\n")
+            indented_lines = ["        " + line for line in resource_lines]
+            resources_in_div = "\n".join(indented_lines)
+        else:
+            resources_in_div = ""
 
     plotly_html_div = """\
 <div style="height:{height}; width:{width};">\
+        \
         {resources_in_div}\
             <div id="{id}" class="plotly-graph-div" \
 style="height:100%; width:100%;"></div>\
@@ -450,8 +456,6 @@ def write_html(
         fig,
         config=config,
         auto_play=auto_play,
-        include_plotlyjs=include_plotlyjs,
-        include_mathjax=include_mathjax,
         post_script=post_script,
         full_html=full_html,
         animation_opts=animation_opts,

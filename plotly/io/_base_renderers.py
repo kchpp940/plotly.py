@@ -551,24 +551,30 @@ class IFrameRenderer(MimetypeRenderer):
                 raise
 
         # Build resource context via unified resolver
-        ctx = _resolve_resource_context(
-            resource_context=self.resource_context,
-            resource_policy=self.resource_policy,
-            include_plotlyjs=self.include_plotlyjs,
-            include_mathjax=self.include_mathjax,
-            output_path=filename,
-            html_dir=self.html_directory,
-            overwrite=self.overwrite_resources,
-            include_meta_charset=True,
-        )
+        if self.resource_context is not None or self.resource_policy is not None:
+            ctx = _resolve_resource_context(
+                resource_context=self.resource_context,
+                resource_policy=self.resource_policy,
+                output_path=filename,
+                html_dir=self.html_directory,
+                overwrite=self.overwrite_resources,
+                include_meta_charset=True,
+            )
+        else:
+            ctx = _resolve_resource_context(
+                include_plotlyjs=self.include_plotlyjs,
+                include_mathjax=self.include_mathjax,
+                output_path=filename,
+                html_dir=self.html_directory,
+                overwrite=self.overwrite_resources,
+                include_meta_charset=True,
+            )
 
         write_html(
             fig_dict,
             filename,
             config=self.config,
             auto_play=self.auto_play,
-            include_plotlyjs=self.include_plotlyjs,
-            include_mathjax=self.include_mathjax,
             auto_open=False,
             post_script=self.post_script,
             animation_opts=self.animation_opts,
@@ -736,20 +742,23 @@ class BrowserRenderer(ExternalRenderer):
     def render(self, fig_dict):
         from plotly.io import to_html
 
-        ctx = _resolve_resource_context(
-            resource_context=self.resource_context,
-            resource_policy=self.resource_policy,
-            include_plotlyjs=self.include_plotlyjs,
-            include_mathjax=self.include_mathjax,
-            include_meta_charset=True,
-        )
+        if self.resource_context is not None or self.resource_policy is not None:
+            ctx = _resolve_resource_context(
+                resource_context=self.resource_context,
+                resource_policy=self.resource_policy,
+                include_meta_charset=True,
+            )
+        else:
+            ctx = _resolve_resource_context(
+                include_plotlyjs=self.include_plotlyjs,
+                include_mathjax=self.include_mathjax,
+                include_meta_charset=True,
+            )
 
         html = to_html(
             fig_dict,
             config=self.config,
             auto_play=self.auto_play,
-            include_plotlyjs=self.include_plotlyjs,
-            include_mathjax=self.include_mathjax,
             post_script=self.post_script,
             full_html=True,
             animation_opts=self.animation_opts,
@@ -808,20 +817,23 @@ supported when called from within the Databricks notebook environment."""
     def render(self, fig_dict):
         from plotly.io import to_html
 
-        ctx = _resolve_resource_context(
-            resource_context=self.resource_context,
-            resource_policy=self.resource_policy,
-            include_plotlyjs=self.include_plotlyjs,
-            include_mathjax=self.include_mathjax,
-            include_meta_charset=True,
-        )
+        if self.resource_context is not None or self.resource_policy is not None:
+            ctx = _resolve_resource_context(
+                resource_context=self.resource_context,
+                resource_policy=self.resource_policy,
+                include_meta_charset=True,
+            )
+        else:
+            ctx = _resolve_resource_context(
+                include_plotlyjs=self.include_plotlyjs,
+                include_mathjax=self.include_mathjax,
+                include_meta_charset=True,
+            )
 
         html = to_html(
             fig_dict,
             config=self.config,
             auto_play=self.auto_play,
-            include_plotlyjs=self.include_plotlyjs,
-            include_mathjax=self.include_mathjax,
             post_script=self.post_script,
             full_html=True,
             animation_opts=self.animation_opts,
@@ -861,7 +873,10 @@ class SphinxGalleryHtmlRenderer(HtmlRenderer):
     def to_mimebundle(self, fig_dict):
         from plotly.io import to_html
 
-        if self.connected:
+        if self.resource_context is not None or self.resource_policy is not None:
+            include_plotlyjs = True
+            include_mathjax = False
+        elif self.connected:
             include_plotlyjs = "cdn"
             include_mathjax = "cdn"
         else:
@@ -880,8 +895,6 @@ class SphinxGalleryHtmlRenderer(HtmlRenderer):
             fig_dict,
             config=self.config,
             auto_play=self.auto_play,
-            include_plotlyjs=include_plotlyjs,
-            include_mathjax=include_mathjax,
             full_html=self.full_html,
             animation_opts=self.animation_opts,
             default_width="100%",
@@ -916,20 +929,26 @@ class SphinxGalleryOrcaRenderer(ExternalRenderer):
         filename_png = filename_root + ".png"
         figure = return_figure_from_figure_or_data(fig_dict, True)
 
-        ctx = _resolve_resource_context(
-            resource_context=self.resource_context,
-            resource_policy=self.resource_policy,
-            include_plotlyjs="cdn",
-            include_mathjax="cdn",
-            output_path=filename_html,
-            overwrite=self.overwrite_resources,
-            include_meta_charset=True,
-        )
+        if self.resource_context is not None or self.resource_policy is not None:
+            ctx = _resolve_resource_context(
+                resource_context=self.resource_context,
+                resource_policy=self.resource_policy,
+                output_path=filename_html,
+                overwrite=self.overwrite_resources,
+                include_meta_charset=True,
+            )
+        else:
+            ctx = _resolve_resource_context(
+                include_plotlyjs="cdn",
+                include_mathjax="cdn",
+                output_path=filename_html,
+                overwrite=self.overwrite_resources,
+                include_meta_charset=True,
+            )
 
         _ = write_html(
             fig_dict,
             file=filename_html,
-            include_plotlyjs="cdn",
             resource_context=ctx,
         )
         try:
