@@ -15,8 +15,6 @@ colref_list_desc = (
     "Either names of columns in `data_frame`, or pandas Series, or array_like objects"
 )
 
-_docs_from_params = PARAMS.build_docs_dict()
-
 _docs_overrides = dict(
     histfunc=[
         "str (default `'count'` if no arguments are provided, else `'sum'`)",
@@ -73,13 +71,27 @@ _docs_overrides = dict(
     ],
 )
 
-docs = dict(_docs_from_params)
-docs.update(_docs_overrides)
-
 
 def make_docstring(fn, override_dict=None, append_dict=None):
+    """Build a docstring for a plotly.express chart-type function.
+
+    The parameter documentation is resolved, in order of decreasing precedence:
+      1. ``override_dict[param]`` – per-call override
+      2. ``_docs_overrides[param]`` – project-wide hand-written overrides
+      3. ``PARAMS.build_docs_dict(chart_name)[param]`` – chart-specific registry
+      4. A sentinel ``"(missing from registry)"`` entry when none of the above match
+
+    ``chart_name`` is taken from the decorated function's ``__name__`` (i.e. the
+    public ``px.scatter`` / ``px.line`` / ... names).
+    """
     override_dict = {} if override_dict is None else override_dict
     append_dict = {} if append_dict is None else append_dict
+    chart_name = fn.__name__
+
+    # ---- Build chart-specific docs dict: registry -> global overrides
+    chart_docs = PARAMS.build_docs_dict(chart_name)
+    chart_docs.update(_docs_overrides)
+
     tw = TextWrapper(
         width=75,
         initial_indent="    ",
@@ -91,18 +103,20 @@ def make_docstring(fn, override_dict=None, append_dict=None):
         if override_dict.get(param):
             param_doc = list(override_dict[param])
         else:
-            param_doc = list(docs[param])
+            param_doc = list(chart_docs.get(param, ["(missing from registry)", ""]))
             if append_dict.get(param):
                 param_doc += append_dict[param]
         param_desc_list = param_doc[1:]
+        param_has_doc = param in chart_docs or param in override_dict
         param_desc = (
             tw.fill(" ".join(param_desc_list or ""))
-            if param in docs or param in override_dict
-            else "(documentation missing from map)"
+            if param_has_doc
+            else tw.fill("(documentation missing from registry)")
         )
 
-        param_type = param_doc[0]
+        param_type = param_doc[0] if param_doc else "(unknown)"
         result += "%s: %s\n%s\n" % (param, param_type, param_desc)
     result += "\nReturns\n-------\n"
     result += "    plotly.graph_objects.Figure"
     return result
+

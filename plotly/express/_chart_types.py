@@ -66,7 +66,7 @@ def scatter(
     In a scatter plot, each row of `data_frame` is represented by a symbol
     mark in 2D space.
     """
-    return make_figure(args=locals(), constructor=go.Scatter)
+    return make_figure(args=locals(), constructor=go.Scatter, chart_name="scatter")
 
 
 scatter.__doc__ = make_docstring(scatter, append_dict=_cartesian_append_dict)
@@ -267,7 +267,7 @@ def line(
     In a 2D line plot, each row of `data_frame` is represented as a vertex of
     a polyline mark in 2D space.
     """
-    return make_figure(args=locals(), constructor=go.Scatter)
+    return make_figure(args=locals(), constructor=go.Scatter, chart_name="line")
 
 
 line.__doc__ = make_docstring(line, append_dict=_cartesian_append_dict)
@@ -383,6 +383,7 @@ def bar(
         constructor=go.Bar,
         trace_patch=dict(textposition="auto"),
         layout_patch=dict(barmode=barmode),
+        chart_name="bar",
     )
 
 
@@ -496,6 +497,7 @@ def histogram(
             cumulative=dict(enabled=cumulative),
         ),
         layout_patch=dict(barmode=barmode, barnorm=barnorm),
+        chart_name="histogram",
     )
 
 
@@ -1968,3 +1970,31 @@ def funnel_area(
 
 
 funnel_area.__doc__ = make_docstring(funnel_area)
+
+
+# ---------------------------------------------------------------------------
+# Signature consistency checks – every parameter in the public function
+# signatures of the core chart types must be registered in PARAMS.  This
+# catches drift between the function signatures and the single source of
+# truth in `_params.py`.
+# ---------------------------------------------------------------------------
+import inspect as _inspect
+from ._params import PARAMS as _PARAMS
+
+
+def _assert_signatures_match_registry() -> None:
+    """Assert that core chart function signatures are covered by PARAMS.
+
+    This is a development-time / import-time guard.  It runs once at the
+    bottom of this module and raises immediately if any parameter in a
+    public chart function is missing a :class:`ParamMeta` registration.
+    """
+    core_charts = ("scatter", "line", "bar", "histogram")
+    for name in core_charts:
+        func = globals()[name]
+        sig = _inspect.signature(func)
+        sig_params = list(sig.parameters.keys())
+        _PARAMS.assert_signature_matches(name, sig_params)
+
+
+_assert_signatures_match_registry()

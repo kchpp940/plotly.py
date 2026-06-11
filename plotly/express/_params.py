@@ -1,7 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple, Type
+
+if TYPE_CHECKING:
+    pass
 
 
 class ParamCategory:
@@ -27,6 +30,45 @@ ALL_CATEGORIES = (
 )
 
 
+ALL_CHARTS: Tuple[str, ...] = (
+    "scatter",
+    "scatter_3d",
+    "scatter_polar",
+    "scatter_ternary",
+    "scatter_mapbox",
+    "scatter_geo",
+    "line",
+    "line_3d",
+    "line_polar",
+    "line_ternary",
+    "line_mapbox",
+    "line_geo",
+    "area",
+    "bar",
+    "bar_polar",
+    "histogram",
+    "box",
+    "violin",
+    "strip",
+    "ecdf",
+    "density_heatmap",
+    "density_contour",
+    "density_mapbox",
+    "pie",
+    "sunburst",
+    "treemap",
+    "icicle",
+    "funnel",
+    "funnel_area",
+    "timeline",
+    "scatter_matrix",
+    "parallel_coordinates",
+    "parallel_categories",
+    "choropleth",
+    "choropleth_mapbox",
+)
+
+
 @dataclass
 class ParamMeta:
     name: str
@@ -38,12 +80,19 @@ class ParamMeta:
     sequence_name: Optional[str] = None
     map_name: Optional[str] = None
     in_defaults: bool = False
+    charts: Optional[Tuple[str, ...]] = None
+
+    def applies_to(self, chart_name: Optional[str]) -> bool:
+        if chart_name is None or self.charts is None:
+            return True
+        return chart_name in self.charts
 
 
 @dataclass
 class ParamRegistry:
     _params: Dict[str, ParamMeta] = field(default_factory=dict)
     _by_category: Dict[str, List[str]] = field(default_factory=dict)
+    _constructor_map: Dict[str, str] = field(default_factory=dict)
 
     def __post_init__(self):
         for cat in ALL_CATEGORIES:
@@ -64,18 +113,47 @@ class ParamRegistry:
     def __contains__(self, name: str) -> bool:
         return name in self._params
 
-    def by_category(self, category: str) -> List[str]:
-        return list(self._by_category.get(category, []))
+    def register_constructor(self, type_name: str, chart_name: str) -> None:
+        self._constructor_map[type_name] = chart_name
 
-    @property
-    def all_names(self) -> List[str]:
-        return list(self._params.keys())
+    def chart_name_for(self, constructor) -> Optional[str]:
+        ctor_type = (
+            constructor if isinstance(constructor, str) else constructor().type
+        )
+        return self._constructor_map.get(ctor_type)
 
-    def get_attrable_lists(self) -> Tuple[List[str], List[str], List[str], List[str]]:
-        direct_attrables = self.by_category(ParamCategory.DATA_COLUMN)
-        array_attrables = self.by_category(ParamCategory.DATA_ARRAY)
-        group_attrables = list(self.by_category(ParamCategory.GROUPING))
-        renameable_group_attrables = list(self.by_category(ParamCategory.MAPPING))
+    # ------ chart-specific queries ------
+
+    def filter_params(self, chart_name: Optional[str]) -> List[ParamMeta]:
+        if chart_name is None:
+            return list(self._params.values())
+        return [m for m in self._params.values() if m.applies_to(chart_name)]
+
+    def names_for_chart(self, chart_name: Optional[str]) -> List[str]:
+        if chart_name is None:
+            return list(self._params.keys())
+        return [m.name for m in self._params.values() if m.applies_to(chart_name)]
+
+    def by_category_for_chart(
+        self, category: str, chart_name: Optional[str]
+    ) -> List[str]:
+        names = self._by_category.get(category, [])
+        if chart_name is None:
+            return list(names)
+        result = []
+        for n in names:
+            m = self._params[n]
+            if m.applies_to(chart_name):
+                result.append(n)
+        return result
+
+    def get_attrable_lists(
+        self, chart_name: Optional[str] = None
+    ) -> Tuple[List[str], List[str], List[str], List[str]]:
+        direct = self.by_category_for_chart(ParamCategory.DATA_COLUMN, chart_name)
+        array = self.by_category_for_chart(ParamCategory.DATA_ARRAY, chart_name)
+        group = self.by_category_for_chart(ParamCategory.GROUPING, chart_name)
+        renameable = self.by_category_for_chart(ParamCategory.MAPPING, chart_name)
 
         _direct_order = [
             "base", "x", "y", "z", "a", "b", "c", "r", "theta", "size",
@@ -93,37 +171,35 @@ class ParamRegistry:
         _rename_order = [
             "color", "symbol", "line_dash", "pattern_shape",
         ]
-        direct_attrables = [n for n in _direct_order if n in direct_attrables]
-        array_attrables = [n for n in _array_order if n in array_attrables]
-        group_attrables = [n for n in _group_order if n in group_attrables]
-        renameable_group_attrables = [n for n in _rename_order if n in renameable_group_attrables]
-        return direct_attrables, array_attrables, group_attrables, renameable_group_attrables
+        direct = [n for n in _direct_order if n in direct]
+        array = [n for n in _array_order if n in array]
+        group = [n for n in _group_order if n in group]
+        renameable = [n for n in _rename_order if n in renameable]
+        return direct, array, group, renameable
 
-    def get_all_attrables(self) -> List[str]:
-        d, a, g, rg = self.get_attrable_lists()
+    def get_all_attrables(self, chart_name: Optional[str] = None) -> List[str]:
+        d, a, g, rg = self.get_attrable_lists(chart_name)
         return d + a + g + rg
 
-    def build_docs_dict(self) -> Dict[str, List[str]]:
+    def build_docs_dict(self, chart_name: Optional[str] = None) -> Dict[str, List[str]]:
         result: Dict[str, List[str]] = {}
-        for name, meta in self._params.items():
-            result[name] = [meta.doc_type] + list(meta.doc_desc)
+        for m in self.filter_params(chart_name):
+            result[m.name] = [m.doc_type] + list(m.doc_desc)
         return result
 
     def get_defaults_slots(self) -> List[str]:
-        return [
-            name
-            for name, meta in self._params.items()
-            if meta.in_defaults
-        ]
+        return [m.name for m in self._params.values() if m.in_defaults]
 
     def build_defaults_dict(self) -> Dict[str, Any]:
         result: Dict[str, Any] = {}
-        for name, meta in self._params.items():
-            if meta.in_defaults:
-                result[name] = meta.default_value
+        for m in self._params.values():
+            if m.in_defaults:
+                result[m.name] = m.default_value
         return result
 
-    def param_names_for_signature(self, names: List[str]) -> List[Tuple[str, Any]]:
+    def param_names_for_signature(
+        self, names: List[str]
+    ) -> List[Tuple[str, Any]]:
         result = []
         for name in names:
             meta = self._params.get(name)
@@ -132,6 +208,31 @@ class ParamRegistry:
             else:
                 result.append((name, meta.default_value))
         return result
+
+    def signature_params_for_chart(
+        self, chart_name: Optional[str]
+    ) -> List[Tuple[str, Any]]:
+        names = self.names_for_chart(chart_name)
+        if "data_frame" in names:
+            names.remove("data_frame")
+            names.insert(0, "data_frame")
+        return self.param_names_for_signature(names)
+
+    def assert_signature_matches(self, chart_name: str, sig_params: List[str]) -> None:
+        """Assert that every parameter in the function signature is registered.
+
+        Only checks one direction: signature → registry (every arg in the public
+        function must have metadata).  The reverse is *not* enforced because the
+        registry may carry internal / helper parameters that are not exposed as
+        top-level keyword arguments (e.g. ``ids``, ``wide_variable``, ...).
+        """
+        reg_names = set(self.names_for_chart(chart_name))
+        sig_set = set(sig_params)
+        missing = sorted(sig_set - reg_names)
+        if missing:
+            msg = (f"Signature mismatch for px.{chart_name}(): "
+                   f"parameters not registered in ParamRegistry: {missing}")
+            raise AssertionError(msg)
 
 
 _colref_type = "str or int or Series or array-like"
@@ -143,10 +244,79 @@ _colref_list_desc = (
     "Either names of columns in `data_frame`, or pandas Series, or array_like objects"
 )
 
+_2D_CHARTS = (
+    "scatter", "line", "area", "bar", "histogram",
+    "box", "violin", "strip", "ecdf",
+    "density_heatmap", "density_contour",
+    "scatter_matrix",
+    "parallel_coordinates", "parallel_categories",
+    "funnel", "timeline",
+)
+_FACET_CHARTS = _2D_CHARTS
+_CARTESIAN_CHARTS = (
+    "scatter", "line", "area", "bar", "histogram",
+    "box", "violin", "strip", "ecdf",
+    "density_heatmap", "density_contour",
+    "scatter_3d", "scatter_matrix",
+    "parallel_coordinates", "parallel_categories",
+    "funnel", "timeline", "scatter_polar", "scatter_ternary",
+    "bar_polar", "line_polar", "line_ternary",
+)
+_COLOR_DISCRETE_CHARTS = ALL_CHARTS
+_COLOR_CONTINUOUS_CHARTS = (
+    "scatter", "scatter_3d", "scatter_polar", "scatter_ternary",
+    "scatter_mapbox", "scatter_geo", "scatter_matrix",
+    "bar", "bar_polar",
+    "density_heatmap", "density_mapbox", "density_map",
+    "parallel_coordinates", "parallel_categories",
+    "choropleth", "choropleth_mapbox", "choropleth_map",
+    "sunburst", "treemap", "icicle",
+    "timeline",
+)
+_ERRORBAR_CHARTS = (
+    "scatter", "scatter_3d", "line", "line_3d", "area", "bar", "funnel", "timeline",
+)
+_ANIMATION_CHARTS = _CARTESIAN_CHARTS + (
+    "scatter_mapbox", "scatter_geo", "line_mapbox", "line_geo",
+    "density_mapbox", "choropleth", "choropleth_mapbox", "bar_polar",
+)
+_AXIS_RANGE_CHARTS = _CARTESIAN_CHARTS
+_LOG_AXIS_CHARTS = _CARTESIAN_CHARTS
+
 
 def create_registry() -> ParamRegistry:
     r = ParamRegistry()
 
+    # -------- Constructor map --------
+    r.register_constructor("scatter", "scatter")
+    r.register_constructor("scattergl", "scatter")
+    r.register_constructor("scatter3d", "scatter_3d")
+    r.register_constructor("scatterpolar", "scatter_polar")
+    r.register_constructor("scatterternary", "scatter_ternary")
+    r.register_constructor("scattermapbox", "scatter_mapbox")
+    r.register_constructor("scattergeo", "scatter_geo")
+    r.register_constructor("bar", "bar")
+    r.register_constructor("barpolar", "bar_polar")
+    r.register_constructor("histogram", "histogram")
+    r.register_constructor("box", "box")
+    r.register_constructor("violin", "violin")
+    r.register_constructor("strip", "strip")
+    r.register_constructor("histogram2d", "density_heatmap")
+    r.register_constructor("histogram2dcontour", "density_contour")
+    r.register_constructor("densitymapbox", "density_mapbox")
+    r.register_constructor("pie", "pie")
+    r.register_constructor("sunburst", "sunburst")
+    r.register_constructor("treemap", "treemap")
+    r.register_constructor("icicle", "icicle")
+    r.register_constructor("funnel", "funnel")
+    r.register_constructor("funnelarea", "funnel_area")
+    r.register_constructor("splom", "scatter_matrix")
+    r.register_constructor("parcoords", "parallel_coordinates")
+    r.register_constructor("parcats", "parallel_categories")
+    r.register_constructor("choropleth", "choropleth")
+    r.register_constructor("choroplethmapbox", "choropleth_mapbox")
+
+    # -------- data_frame --------
     r.add(ParamMeta(
         name="data_frame",
         category=ParamCategory.LABEL,
@@ -158,18 +328,25 @@ def create_registry() -> ParamRegistry:
         ],
     ))
 
-    for axis_name, axis_desc in [
-        ("x", "Values from this column or array_like are used to position marks along the x axis in cartesian coordinates."),
-        ("y", "Values from this column or array_like are used to position marks along the y axis in cartesian coordinates."),
-        ("z", "Values from this column or array_like are used to position marks along the z axis in cartesian coordinates."),
+    # -------- DATA_COLUMN: Cartesian axes --------
+    for axis_name, axis_desc, charts in [
+        ("x", "Values from this column or array_like are used to position marks along the x axis in cartesian coordinates.",
+         _CARTESIAN_CHARTS),
+        ("y", "Values from this column or array_like are used to position marks along the y axis in cartesian coordinates.",
+         _CARTESIAN_CHARTS),
+        ("z", "Values from this column or array_like are used to position marks along the z axis in cartesian coordinates.",
+         ("scatter_3d", "line_3d", "surface")),
     ]:
         r.add(ParamMeta(
             name=axis_name,
             category=ParamCategory.DATA_COLUMN,
             doc_type=_colref_type,
             doc_desc=[_colref_desc, axis_desc],
+            charts=tuple(charts),
         ))
 
+    # -------- Timeline x_start / x_end --------
+    _tl = ("timeline",)
     r.add(ParamMeta(
         name="x_start",
         category=ParamCategory.DATA_COLUMN,
@@ -179,6 +356,7 @@ def create_registry() -> ParamRegistry:
             "(required)",
             "Values from this column or array_like are used to position marks along the x axis in cartesian coordinates.",
         ],
+        charts=_tl,
     ))
     r.add(ParamMeta(
         name="x_end",
@@ -189,8 +367,10 @@ def create_registry() -> ParamRegistry:
             "(required)",
             "Values from this column or array_like are used to position marks along the x axis in cartesian coordinates.",
         ],
+        charts=_tl,
     ))
 
+    # -------- Ternary axes --------
     for axis_name, axis_desc in [
         ("a", "Values from this column or array_like are used to position marks along the a axis in ternary coordinates."),
         ("b", "Values from this column or array_like are used to position marks along the b axis in ternary coordinates."),
@@ -201,8 +381,10 @@ def create_registry() -> ParamRegistry:
             category=ParamCategory.DATA_COLUMN,
             doc_type=_colref_type,
             doc_desc=[_colref_desc, axis_desc],
+            charts=("scatter_ternary", "line_ternary"),
         ))
 
+    # -------- Polar axes --------
     for axis_name, axis_desc in [
         ("r", "Values from this column or array_like are used to position marks along the radial axis in polar coordinates."),
         ("theta", "Values from this column or array_like are used to position marks along the angular axis in polar coordinates."),
@@ -212,487 +394,260 @@ def create_registry() -> ParamRegistry:
             category=ParamCategory.DATA_COLUMN,
             doc_type=_colref_type,
             doc_desc=[_colref_desc, axis_desc],
+            charts=("scatter_polar", "line_polar", "bar_polar"),
         ))
 
-    r.add(ParamMeta(
-        name="values",
-        category=ParamCategory.DATA_COLUMN,
-        doc_type=_colref_type,
-        doc_desc=[_colref_desc, "Values from this column or array_like are used to set values associated to sectors."],
-    ))
-    r.add(ParamMeta(
-        name="parents",
-        category=ParamCategory.DATA_COLUMN,
-        doc_type=_colref_type,
-        doc_desc=[_colref_desc, "Values from this column or array_like are used as parents in sunburst and treemap charts."],
-    ))
-    r.add(ParamMeta(
-        name="ids",
-        category=ParamCategory.DATA_COLUMN,
-        doc_type=_colref_type,
-        doc_desc=[_colref_desc, "Values from this column or array_like are used to set ids of sectors"],
-    ))
-    r.add(ParamMeta(
-        name="wide_cross",
-        category=ParamCategory.DATA_COLUMN,
-        doc_type=_colref_type,
-        doc_desc=[_colref_desc, ""],
-    ))
-
-    r.add(ParamMeta(
-        name="path",
-        category=ParamCategory.DATA_ARRAY,
-        doc_type=_colref_list_type,
-        doc_desc=[
-            _colref_list_desc,
-            "List of columns names or columns of a rectangular dataframe defining the hierarchy of sectors, from root to leaves.",
-            "An error is raised if path AND ids or parents is passed",
-        ],
-    ))
-
-    r.add(ParamMeta(
-        name="lat",
-        category=ParamCategory.DATA_COLUMN,
-        doc_type=_colref_type,
-        doc_desc=[_colref_desc, "Values from this column or array_like are used to position marks according to latitude on a map."],
-    ))
-    r.add(ParamMeta(
-        name="lon",
-        category=ParamCategory.DATA_COLUMN,
-        doc_type=_colref_type,
-        doc_desc=[_colref_desc, "Values from this column or array_like are used to position marks according to longitude on a map."],
-    ))
-    r.add(ParamMeta(
-        name="locations",
-        category=ParamCategory.DATA_COLUMN,
-        doc_type=_colref_type,
-        doc_desc=[_colref_desc, "Values from this column or array_like are to be interpreted according to `locationmode` and mapped to longitude/latitude."],
-    ))
-    r.add(ParamMeta(
-        name="base",
-        category=ParamCategory.DATA_COLUMN,
-        doc_type=_colref_type,
-        doc_desc=[_colref_desc, "Values from this column or array_like are used to position the base of the bar."],
-    ))
-
-    r.add(ParamMeta(
-        name="dimensions",
-        category=ParamCategory.DATA_ARRAY,
-        doc_type=_colref_list_type,
-        doc_desc=[_colref_list_desc, "Values from these columns are used for multidimensional visualization."],
-    ))
-    r.add(ParamMeta(
-        name="dimensions_max_cardinality",
-        category=ParamCategory.LAYOUT_CONFIG,
-        doc_type="int (default 50)",
-        doc_desc=[
-            "When `dimensions` is `None` and `data_frame` is provided, "
-            "columns with more than this number of unique values are excluded from the output.",
-            "Not used when `dimensions` is passed.",
-        ],
-        default_value=50,
-    ))
-
-    for err_name, err_axis, err_desc_suffix in [
-        ("error_x", "x", "x-axis"),
-        ("error_x_minus", "x", "x-axis in the negative direction"),
-        ("error_y", "y", "y-axis"),
-        ("error_y_minus", "y", "y-axis in the negative direction"),
-        ("error_z", "z", "z-axis"),
-        ("error_z_minus", "z", "z-axis in the negative direction"),
-    ]:
-        minus = "_minus" in err_name
-        desc = f"Values from this column or array_like are used to size {err_desc_suffix} error bars."
-        if minus:
-            desc += f" Ignored if `error_{err_axis}` is `None`."
-        else:
-            desc += f" If `error_{err_axis}_minus` is `None`, error bars will be symmetrical, otherwise `{err_name}` is used for the positive direction only."
-        r.add(ParamMeta(
-            name=err_name,
-            category=ParamCategory.DATA_COLUMN,
-            doc_type=_colref_type,
-            doc_desc=[_colref_desc, desc],
-        ))
-
-    r.add(ParamMeta(
-        name="color",
-        category=ParamCategory.MAPPING,
-        doc_type=_colref_type,
-        doc_desc=[_colref_desc, "Values from this column or array_like are used to assign color to marks."],
-        trace_attr=None,
-        sequence_name="color_discrete_sequence",
-        map_name="color_discrete_map",
-    ))
-    r.add(ParamMeta(
-        name="symbol",
-        category=ParamCategory.MAPPING,
-        doc_type=_colref_type,
-        doc_desc=[_colref_desc, "Values from this column or array_like are used to assign symbols to marks."],
-        trace_attr="marker.symbol",
-        sequence_name="symbol_sequence",
-        map_name="symbol_map",
-    ))
-    r.add(ParamMeta(
-        name="line_dash",
-        category=ParamCategory.MAPPING,
-        doc_type=_colref_type,
-        doc_desc=[_colref_desc, "Values from this column or array_like are used to assign dash-patterns to lines."],
-        trace_attr="line.dash",
-        sequence_name="line_dash_sequence",
-        map_name="line_dash_map",
-    ))
-    r.add(ParamMeta(
-        name="pattern_shape",
-        category=ParamCategory.MAPPING,
-        doc_type=_colref_type,
-        doc_desc=[_colref_desc, "Values from this column or array_like are used to assign pattern shapes to marks."],
-        trace_attr=None,
-        sequence_name="pattern_shape_sequence",
-        map_name="pattern_shape_map",
-    ))
-
+    # -------- size (scatter, scatter_3d, scatter_matrix) --------
     r.add(ParamMeta(
         name="size",
         category=ParamCategory.DATA_COLUMN,
         doc_type=_colref_type,
-        doc_desc=[_colref_desc, "Values from this column or array_like are used to assign mark sizes."],
+        doc_desc=[
+            _colref_desc,
+            "Values from this column or array_like are used to assign mark sizes.",
+        ],
+        charts=("scatter", "scatter_3d", "scatter_polar", "scatter_ternary",
+                "scatter_mapbox", "scatter_geo", "scatter_matrix"),
     ))
+
+    # -------- base --------
     r.add(ParamMeta(
-        name="radius",
-        category=ParamCategory.LAYOUT_CONFIG,
-        doc_type="int (default is 30)",
-        doc_desc=["Sets the radius of influence of each point."],
-        default_value=30,
+        name="base",
+        category=ParamCategory.DATA_COLUMN,
+        doc_type=_colref_type,
+        doc_desc=[
+            _colref_desc,
+            "Values from this column or array_like are the base position of bars.",
+        ],
+        charts=("bar", "bar_polar", "funnel", "timeline"),
     ))
+
+    # -------- hover_name --------
     r.add(ParamMeta(
         name="hover_name",
         category=ParamCategory.DATA_COLUMN,
         doc_type=_colref_type,
-        doc_desc=[_colref_desc, "Values from this column or array_like appear in bold in the hover tooltip."],
+        doc_desc=[_colref_desc,
+                  "Values from this column or array_like appear in bold in the hover tooltip."],
+        charts=tuple(c for c in ALL_CHARTS if c not in (
+            "parallel_coordinates", "parallel_categories", "pie",
+            "sunburst", "treemap", "icicle", "funnel_area",
+        )),
     ))
-    r.add(ParamMeta(
-        name="hover_data",
-        category=ParamCategory.DATA_ARRAY,
-        doc_type="str, or list of str or int, or Series or array-like, or dict",
-        doc_desc=[
-            "Either a name or list of names of columns in `data_frame`, or pandas Series,",
-            "or array_like objects",
-            "or a dict with column names as keys, with values True (for default formatting)",
-            "False (in order to remove this column from hover information),",
-            "or a formatting string, for example ':.3f' or '|%a'",
-            "or list-like data to appear in the hover tooltip",
-            "or tuples with a bool or formatting string as first element,",
-            "and list-like data to appear in hover as second element",
-            "Values from these columns appear as extra data in the hover tooltip.",
-        ],
-    ))
-    r.add(ParamMeta(
-        name="custom_data",
-        category=ParamCategory.DATA_ARRAY,
-        doc_type="str, or list of str or int, or Series or array-like",
-        doc_desc=[
-            "Either name or list of names of columns in `data_frame`, or pandas Series, or array_like objects",
-            "Values from these columns are extra data, to be used in widgets or Dash callbacks for example. This data is not user-visible but is included in events emitted by the figure (lasso selection etc.)",
-        ],
-    ))
+
+    # -------- text --------
     r.add(ParamMeta(
         name="text",
         category=ParamCategory.DATA_COLUMN,
         doc_type=_colref_type,
-        doc_desc=[_colref_desc, "Values from this column or array_like appear in the figure as text labels."],
+        doc_desc=[
+            _colref_desc,
+            "Values from this column or array_like appear in the figure as text labels.",
+        ],
+        charts=tuple(c for c in ALL_CHARTS if c not in (
+            "parallel_coordinates", "parallel_categories",
+            "histogram", "box", "violin", "strip", "ecdf",
+            "density_heatmap", "density_contour",
+            "funnel_area", "pie",
+        )),
     ))
+
+    # -------- names / values / parents (hierarchical / pie) --------
+    for nm, desc, charts in [
+        ("names",
+         "Values from this column or array_like are used as labels for sectors of the pie chart.",
+         ("pie", "sunburst", "treemap", "icicle", "funnel_area")),
+        ("values",
+         "Values from this column or array_like are used to set the values associated with the sectors of the pie chart.",
+         ("pie", "sunburst", "treemap", "icicle", "funnel_area")),
+        ("parents",
+         "Values from this column or array_like are used as parents in the hierarchy.",
+         ("sunburst", "treemap", "icicle")),
+        ("wide_cross",
+         "Values from this column or array_like are used...",
+         ("scatter", "line", "area", "bar", "histogram",
+          "scatter_matrix", "parallel_categories")),
+    ]:
+        r.add(ParamMeta(
+            name=nm,
+            category=ParamCategory.DATA_COLUMN,
+            doc_type=_colref_type,
+            doc_desc=[_colref_desc, desc],
+            charts=tuple(charts),
+        ))
+
+    # -------- ids --------
     r.add(ParamMeta(
-        name="names",
+        name="ids",
         category=ParamCategory.DATA_COLUMN,
         doc_type=_colref_type,
-        doc_desc=[_colref_desc, "Values from this column or array_like are used as labels for sectors."],
-    ))
-    r.add(ParamMeta(
-        name="wide_variable",
-        category=ParamCategory.DATA_ARRAY,
-        doc_type=_colref_list_type,
-        doc_desc=[_colref_list_desc],
+        doc_desc=[
+            _colref_desc,
+            "Values from this column or array_like are used to assign object-ids to animation frames for smooth transitions.",
+        ],
+        charts=tuple(c for c in _ANIMATION_CHARTS),
     ))
 
-    r.add(ParamMeta(
-        name="locationmode",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="str",
-        doc_desc=[
-            "One of 'ISO-3', 'USA-states', or 'country names'",
-            "Determines the set of locations used to match entries in `locations` to regions on the map.",
-        ],
-    ))
+    # -------- error bars --------
+    for eb, eb_charts in [
+        ("error_x", _ERRORBAR_CHARTS),
+        ("error_x_minus", _ERRORBAR_CHARTS),
+        ("error_y", _ERRORBAR_CHARTS),
+        ("error_y_minus", _ERRORBAR_CHARTS),
+        ("error_z", ("scatter_3d", "line_3d")),
+        ("error_z_minus", ("scatter_3d", "line_3d")),
+    ]:
+        suffix = " (subtracted)" if eb.endswith("_minus") else ""
+        axis = eb.split("_")[1].upper()
+        r.add(ParamMeta(
+            name=eb,
+            category=ParamCategory.DATA_COLUMN,
+            doc_type=_colref_type,
+            doc_desc=[
+                _colref_desc,
+                f"Values from this column or array_like are used to size the {axis}-axis error bars{suffix}.",
+            ],
+            charts=tuple(eb_charts),
+        ))
 
-    r.add(ParamMeta(
-        name="facet_row",
-        category=ParamCategory.GROUPING,
-        doc_type=_colref_type,
-        doc_desc=[_colref_desc, "Values from this column or array_like are used to assign marks to facetted subplots in the vertical direction."],
-    ))
-    r.add(ParamMeta(
-        name="facet_col",
-        category=ParamCategory.GROUPING,
-        doc_type=_colref_type,
-        doc_desc=[_colref_desc, "Values from this column or array_like are used to assign marks to facetted subplots in the horizontal direction."],
-    ))
-    r.add(ParamMeta(
-        name="facet_col_wrap",
-        category=ParamCategory.LAYOUT_CONFIG,
-        doc_type="int",
-        doc_desc=[
-            "Maximum number of facet columns.",
-            "Wraps the column variable at this width, so that the column facets span multiple rows.",
-            "Ignored if 0, and forced to 0 if `facet_row` or a `marginal` is set.",
-        ],
-        default_value=0,
-    ))
-    r.add(ParamMeta(
-        name="facet_row_spacing",
-        category=ParamCategory.LAYOUT_CONFIG,
-        doc_type="float between 0 and 1",
-        doc_desc=["Spacing between facet rows, in paper units. Default is 0.03 or 0.07 when facet_col_wrap is used."],
-    ))
-    r.add(ParamMeta(
-        name="facet_col_spacing",
-        category=ParamCategory.LAYOUT_CONFIG,
-        doc_type="float between 0 and 1",
-        doc_desc=["Spacing between facet columns, in paper units Default is 0.02."],
-    ))
-    r.add(ParamMeta(
-        name="animation_frame",
-        category=ParamCategory.GROUPING,
-        doc_type=_colref_type,
-        doc_desc=[_colref_desc, "Values from this column or array_like are used to assign marks to animation frames."],
-    ))
+    # -------- lat / lon / locations (geo / mapbox) --------
+    geo_mapbox = ("scatter_mapbox", "scatter_geo", "density_mapbox",
+                  "choropleth_mapbox", "choropleth", "line_mapbox", "line_geo")
+    for nm, desc, charts in [
+        ("lat",
+         "Values from this column or array_like are used to position marks according to latitude on a map.",
+         geo_mapbox),
+        ("lon",
+         "Values from this column or array_like are used to position marks according to longitude on a map.",
+         geo_mapbox),
+        ("locations",
+         "Values from this column or array_like are interpreted as geographic locations in the layout's map.",
+         ("choropleth", "choropleth_mapbox")),
+    ]:
+        r.add(ParamMeta(
+            name=nm,
+            category=ParamCategory.DATA_COLUMN,
+            doc_type=_colref_type,
+            doc_desc=[_colref_desc, desc],
+            charts=tuple(charts),
+        ))
+
+    # -------- animation_group --------
     r.add(ParamMeta(
         name="animation_group",
         category=ParamCategory.DATA_COLUMN,
         doc_type=_colref_type,
-        doc_desc=[_colref_desc, "Values from this column or array_like are used to provide object-constancy across animation frames: rows with matching `animation_group`s will be treated as if they describe the same object in each frame."],
-    ))
-    r.add(ParamMeta(
-        name="line_group",
-        category=ParamCategory.GROUPING,
-        doc_type=_colref_type,
-        doc_desc=[_colref_desc, "Values from this column or array_like are used to group rows of `data_frame` into lines."],
+        doc_desc=[
+            _colref_desc,
+            "Values from this column or array_like are used to group rows in `data_frame` into animation frames.",
+        ],
+        charts=tuple(c for c in _ANIMATION_CHARTS),
     ))
 
-    r.add(ParamMeta(
-        name="symbol_sequence",
-        category=ParamCategory.MAPPING_CONFIG,
-        doc_type="list of str",
-        doc_desc=[
-            "Strings should define valid plotly.js symbols.",
-            "When `symbol` is set, values in that column are assigned symbols by cycling through `symbol_sequence` in the order described in `category_orders`, unless the value of `symbol` is a key in `symbol_map`.",
-        ],
-        in_defaults=True,
-        default_value=None,
-    ))
-    r.add(ParamMeta(
-        name="symbol_map",
-        category=ParamCategory.MAPPING_CONFIG,
-        doc_type="dict with str keys and str values (default `{}`)",
-        doc_desc=[
-            "String values should define plotly.js symbols",
-            "Used to override `symbol_sequence` to assign a specific symbols to marks corresponding with specific values.",
-            "Keys in `symbol_map` should be values in the column denoted by `symbol`.",
-            "Alternatively, if the values of `symbol` are valid symbol names, the string `'identity'` may be passed to cause them to be used directly.",
-        ],
-        in_defaults=True,
-        default_value={},
-    ))
-    r.add(ParamMeta(
-        name="line_dash_map",
-        category=ParamCategory.MAPPING_CONFIG,
-        doc_type="dict with str keys and str values (default `{}`)",
-        doc_desc=[
-            "Strings values define plotly.js dash-patterns.",
-            "Used to override `line_dash_sequences` to assign a specific dash-patterns to lines corresponding with specific values.",
-            "Keys in `line_dash_map` should be values in the column denoted by `line_dash`.",
-            "Alternatively, if the values of `line_dash` are valid line-dash names, the string `'identity'` may be passed to cause them to be used directly.",
-        ],
-        in_defaults=True,
-        default_value={},
-    ))
-    r.add(ParamMeta(
-        name="line_dash_sequence",
-        category=ParamCategory.MAPPING_CONFIG,
-        doc_type="list of str",
-        doc_desc=[
-            "Strings should define valid plotly.js dash-patterns.",
-            "When `line_dash` is set, values in that column are assigned dash-patterns by cycling through `line_dash_sequence` in the order described in `category_orders`, unless the value of `line_dash` is a key in `line_dash_map`.",
-        ],
-        in_defaults=True,
-        default_value=None,
-    ))
-    r.add(ParamMeta(
-        name="pattern_shape_map",
-        category=ParamCategory.MAPPING_CONFIG,
-        doc_type="dict with str keys and str values (default `{}`)",
-        doc_desc=[
-            "Strings values define plotly.js patterns-shapes.",
-            "Used to override `pattern_shape_sequences` to assign a specific patterns-shapes to lines corresponding with specific values.",
-            "Keys in `pattern_shape_map` should be values in the column denoted by `pattern_shape`.",
-            "Alternatively, if the values of `pattern_shape` are valid patterns-shapes names, the string `'identity'` may be passed to cause them to be used directly.",
-        ],
-        in_defaults=True,
-        default_value={},
-    ))
-    r.add(ParamMeta(
-        name="pattern_shape_sequence",
-        category=ParamCategory.MAPPING_CONFIG,
-        doc_type="list of str",
-        doc_desc=[
-            "Strings should define valid plotly.js patterns-shapes.",
-            "When `pattern_shape` is set, values in that column are assigned patterns-shapes by cycling through `pattern_shape_sequence` in the order described in `category_orders`, unless the value of `pattern_shape` is a key in `pattern_shape_map`.",
-        ],
-        in_defaults=True,
-        default_value=None,
-    ))
-    r.add(ParamMeta(
-        name="color_discrete_sequence",
-        category=ParamCategory.MAPPING_CONFIG,
-        doc_type="list of str",
-        doc_desc=[
-            "Strings should define valid CSS-colors.",
-            "When `color` is set and the values in the corresponding column are not numeric, values in that column are assigned colors by cycling through `color_discrete_sequence` in the order described in `category_orders`, unless the value of `color` is a key in `color_discrete_map`.",
-            "Various useful color sequences are available in the `plotly.express.colors` submodules, specifically `plotly.express.colors.qualitative`.",
-        ],
-        in_defaults=True,
-        default_value=None,
-    ))
-    r.add(ParamMeta(
-        name="color_discrete_map",
-        category=ParamCategory.MAPPING_CONFIG,
-        doc_type="dict with str keys and str values (default `{}`)",
-        doc_desc=[
-            "String values should define valid CSS-colors",
-            "Used to override `color_discrete_sequence` to assign a specific colors to marks corresponding with specific values.",
-            "Keys in `color_discrete_map` should be values in the column denoted by `color`.",
-            "Alternatively, if the values of `color` are valid colors, the string `'identity'` may be passed to cause them to be used directly.",
-        ],
-        in_defaults=True,
-        default_value={},
-    ))
-    r.add(ParamMeta(
-        name="color_continuous_scale",
-        category=ParamCategory.MAPPING_CONFIG,
-        doc_type="list of str",
-        doc_desc=[
-            "Strings should define valid CSS-colors",
-            "This list is used to build a continuous color scale when the column denoted by `color` contains numeric data.",
-            "Various useful color scales are available in the `plotly.express.colors` submodules, specifically `plotly.express.colors.sequential`, `plotly.express.colors.diverging` and `plotly.express.colors.cyclical`.",
-        ],
-        in_defaults=True,
-        default_value=None,
-    ))
-    r.add(ParamMeta(
-        name="color_continuous_midpoint",
-        category=ParamCategory.MAPPING_CONFIG,
-        doc_type="number (default `None`)",
-        doc_desc=[
-            "If set, computes the bounds of the continuous color scale to have the desired midpoint.",
-            "Setting this value is recommended when using `plotly.express.colors.diverging` color scales as the inputs to `color_continuous_scale`.",
-        ],
-    ))
-    r.add(ParamMeta(
-        name="size_max",
-        category=ParamCategory.MAPPING_CONFIG,
-        doc_type="int (default `20`)",
-        doc_desc=["Set the maximum mark size when using `size`."],
-        in_defaults=True,
-        default_value=20,
-    ))
-
-    r.add(ParamMeta(
-        name="opacity",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="float",
-        doc_desc=["Value between 0 and 1. Sets the opacity for markers."],
-    ))
-    r.add(ParamMeta(
-        name="markers",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="boolean (default `False`)",
-        doc_desc=["If `True`, markers are shown on lines."],
-        default_value=False,
-    ))
-    r.add(ParamMeta(
-        name="lines",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="boolean (default `True`)",
-        doc_desc=["If `False`, lines are not drawn (forced to `True` if `markers` is `False`)."],
-        default_value=True,
-    ))
-
-    for log_axis in ["log_x", "log_y", "log_z", "log_r"]:
-        axis_letter = log_axis.split("_")[1]
-        if axis_letter == "r":
-            desc = "If `True`, the radial axis is log-scaled in polar coordinates."
-        else:
-            desc = f"If `True`, the {axis_letter}-axis is log-scaled in cartesian coordinates."
+    # -------- DATA_ARRAY --------
+    for nm, desc, charts in [
+        ("dimensions",
+         "Either names of columns in `data_frame`, or pandas Series, or array_like objects.",
+         ("scatter_matrix", "parallel_coordinates", "parallel_categories")),
+        ("custom_data",
+         "Values from these columns appear as extra data in the hover tooltip.",
+         (c for c in ALL_CHARTS if c not in (
+             "parallel_coordinates", "parallel_categories", "pie",
+             "sunburst", "treemap", "icicle", "funnel_area",
+             "histogram", "box", "violin", "strip", "ecdf",
+             "density_heatmap", "density_contour",
+         ))),
+        ("hover_data",
+         "Values from these columns appear as extra data in the hover tooltip.",
+         (c for c in ALL_CHARTS if c not in (
+             "parallel_coordinates", "parallel_categories",
+             "pie", "sunburst", "treemap", "icicle", "funnel_area",
+         ))),
+        ("path",
+         "Either names of columns in `data_frame`, or pandas Series, or array_like objects.",
+         ("sunburst", "treemap", "icicle")),
+        ("wide_variable",
+         "Either names of columns in `data_frame`, or pandas Series, or array_like objects.",
+         ALL_CHARTS),
+    ]:
         r.add(ParamMeta(
-            name=log_axis,
-            category=ParamCategory.LAYOUT_CONFIG,
-            doc_type="boolean (default `False`)",
-            doc_desc=[desc],
-            default_value=False,
+            name=nm,
+            category=ParamCategory.DATA_ARRAY,
+            doc_type=_colref_list_type,
+            doc_desc=[_colref_list_desc, desc],
+            charts=tuple(charts),
         ))
 
-    for range_axis in ["range_x", "range_y", "range_z", "range_color", "range_r", "range_theta"]:
-        axis_letter = range_axis.split("_")[1]
-        if axis_letter == "color":
-            desc = "If provided, overrides auto-scaling on the continuous color scale."
-        elif axis_letter == "r":
-            desc = "If provided, overrides auto-scaling on the radial axis in polar coordinates."
-        elif axis_letter == "theta":
-            desc = "If provided, overrides auto-scaling on the angular axis in polar coordinates."
-        else:
-            desc = f"If provided, overrides auto-scaling on the {axis_letter}-axis in cartesian coordinates."
+    # -------- GROUPING --------
+    for nm, desc, charts in [
+        ("animation_frame",
+         "Values from this column or array_like are used to assign marks to animation frames.",
+         tuple(c for c in _ANIMATION_CHARTS)),
+        ("facet_row",
+         "Values from this column or array_like are used to assign marks to facetted subplots in the vertical direction.",
+         tuple(c for c in _FACET_CHARTS)),
+        ("facet_col",
+         "Values from this column or array_like are used to assign marks to facetted subplots in the horizontal direction.",
+         tuple(c for c in _FACET_CHARTS)),
+        ("line_group",
+         "Values from this column or array_like are used to group rows of `data_frame` into lines.",
+         ("line", "line_3d", "area", "line_polar", "line_ternary",
+          "line_mapbox", "line_geo")),
+    ]:
         r.add(ParamMeta(
-            name=range_axis,
-            category=ParamCategory.LAYOUT_CONFIG,
-            doc_type="list of two numbers",
+            name=nm,
+            category=ParamCategory.GROUPING,
+            doc_type=_colref_type,
+            doc_desc=[_colref_desc, desc],
+            charts=tuple(charts),
+        ))
+
+    # -------- MAPPING --------
+    for nm, seq_nm, map_nm, desc, charts, trace_a, maps_charts_ok in [
+        ("color", "color_discrete_sequence", "color_discrete_map",
+         "Either a name of a column in `data_frame`, or a pandas Series or array_like object. Values from this column or array_like are used to assign color to marks.",
+         _COLOR_DISCRETE_CHARTS, "marker.color", True),
+        ("symbol", "symbol_sequence", "symbol_map",
+         "Either a name of a column in `data_frame`, or a pandas Series or array_like object. Values from this column or array_like are used to assign symbols to marks.",
+         ("scatter", "scatter_3d", "scatter_polar", "scatter_ternary",
+          "scatter_mapbox", "scatter_geo", "line", "line_3d",
+          "line_polar", "line_ternary", "line_mapbox", "line_geo",
+          "scatter_matrix"),
+         "marker.symbol", False),
+        ("line_dash", "line_dash_sequence", "line_dash_map",
+         "Either a name of a column in `data_frame`, or a pandas Series or array_like object. Values from this column or array_like are used to assign dash-patterns to lines.",
+         ("line", "line_3d", "line_polar", "line_ternary", "area",
+          "line_mapbox", "line_geo"),
+         "line.dash", False),
+        ("pattern_shape", "pattern_shape_sequence", "pattern_shape_map",
+         "Either a name of a column in `data_frame`, or a pandas Series or array_like object. Values from this column or array_like are used to assign pattern shapes to bar marks.",
+         ("bar", "bar_polar", "histogram", "area"),
+         "marker.pattern.shape", False),
+    ]:
+        r.add(ParamMeta(
+            name=nm,
+            category=ParamCategory.MAPPING,
+            doc_type=_colref_type,
+            doc_desc=[desc],
+            sequence_name=seq_nm,
+            map_name=map_nm,
+            trace_attr=trace_a,
+            charts=tuple(charts),
+        ))
+
+    # -------- LABEL: title / subtitle --------
+    for nm, desc in [
+        ("title", "The figure title."),
+        ("subtitle", "The figure subtitle."),
+    ]:
+        r.add(ParamMeta(
+            name=nm,
+            category=ParamCategory.LABEL,
+            doc_type="str",
             doc_desc=[desc],
         ))
 
-    r.add(ParamMeta(
-        name="title",
-        category=ParamCategory.LABEL,
-        doc_type="str",
-        doc_desc=["The figure title."],
-    ))
-    r.add(ParamMeta(
-        name="subtitle",
-        category=ParamCategory.LABEL,
-        doc_type="str",
-        doc_desc=["The figure subtitle."],
-    ))
-    r.add(ParamMeta(
-        name="template",
-        category=ParamCategory.LAYOUT_CONFIG,
-        doc_type="str or dict or plotly.graph_objects.layout.Template instance",
-        doc_desc=["The figure template name (must be a key in plotly.io.templates) or definition."],
-        in_defaults=True,
-        default_value=None,
-    ))
-    r.add(ParamMeta(
-        name="width",
-        category=ParamCategory.LAYOUT_CONFIG,
-        doc_type="int (default `None`)",
-        doc_desc=["The figure width in pixels."],
-        in_defaults=True,
-        default_value=None,
-    ))
-    r.add(ParamMeta(
-        name="height",
-        category=ParamCategory.LAYOUT_CONFIG,
-        doc_type="int (default `None`)",
-        doc_desc=["The figure height in pixels."],
-        in_defaults=True,
-        default_value=None,
-    ))
+    # -------- LABEL: labels / category_orders --------
     r.add(ParamMeta(
         name="labels",
         category=ParamCategory.LABEL,
@@ -705,6 +660,7 @@ def create_registry() -> ParamRegistry:
         in_defaults=True,
         default_value={},
     ))
+
     r.add(ParamMeta(
         name="category_orders",
         category=ParamCategory.LABEL,
@@ -718,391 +674,565 @@ def create_registry() -> ParamRegistry:
         default_value={},
     ))
 
+    # -------- LAYOUT_CONFIG: width / height / template --------
+    for nm, dv, desc in [
+        ("width", None, "The figure width in pixels."),
+        ("height", None, "The figure height in pixels."),
+        ("template", None, "The figure template name (must be a key in plotly.io.templates) or definition."),
+    ]:
+        r.add(ParamMeta(
+            name=nm,
+            category=ParamCategory.LAYOUT_CONFIG,
+            doc_type=f"int (default `{dv!r}`)" if isinstance(dv, int) else f"str or dict or plotly.graph_objects.layout.Template instance" if nm == "template" else f"int (default `None`)",
+            doc_desc=[desc],
+            in_defaults=True,
+            default_value=dv,
+        ))
+
+    # -------- LAYOUT_CONFIG: log_x, log_y, log_z, log_r --------
+    for log_axis, charts in [
+        ("log_x", tuple(c for c in _LOG_AXIS_CHARTS if "x" in ("x","y","z","r") and c not in ("scatter_polar", "scatter_ternary", "bar_polar", "line_polar", "line_ternary"))),
+        ("log_y", tuple(c for c in _LOG_AXIS_CHARTS if c not in ("scatter_polar", "scatter_ternary", "bar_polar", "line_polar", "line_ternary"))),
+        ("log_z", ("scatter_3d", "line_3d", "surface")),
+        ("log_r", ("scatter_polar", "line_polar", "bar_polar")),
+    ]:
+        axis_letter = log_axis.split("_")[1]
+        if axis_letter == "r":
+            desc = "If `True`, the radial axis is log-scaled in polar coordinates."
+        else:
+            desc = f"If `True`, the {axis_letter}-axis is log-scaled in cartesian coordinates."
+        r.add(ParamMeta(
+            name=log_axis,
+            category=ParamCategory.LAYOUT_CONFIG,
+            doc_type="boolean (default `False`)",
+            doc_desc=[desc],
+            default_value=False,
+            charts=tuple(charts),
+        ))
+
+    # -------- LAYOUT_CONFIG: range_x, range_y, range_z, range_r --------
+    for range_axis, charts in [
+        ("range_x", tuple(c for c in _AXIS_RANGE_CHARTS if c not in ("scatter_polar", "scatter_ternary", "bar_polar", "line_polar", "line_ternary"))),
+        ("range_y", tuple(c for c in _AXIS_RANGE_CHARTS if c not in ("scatter_polar", "scatter_ternary", "bar_polar", "line_polar", "line_ternary"))),
+        ("range_z", ("scatter_3d", "line_3d", "surface")),
+        ("range_r", ("scatter_polar", "line_polar", "bar_polar")),
+    ]:
+        axis_letter = range_axis.split("_")[1]
+        if axis_letter == "r":
+            desc = [f"[min, max] where the radial axis is drawn in polar coordinates."]
+        else:
+            desc = [f"[min, max] where the {axis_letter}-axis is drawn in cartesian coordinates."]
+        r.add(ParamMeta(
+            name=range_axis,
+            category=ParamCategory.LAYOUT_CONFIG,
+            doc_type="list of two numbers",
+            doc_desc=desc,
+            charts=tuple(charts),
+        ))
+
+    # -------- LAYOUT_CONFIG: facet spacing / wrap --------
+    for nm, dtype, desc, default in [
+        ("facet_col_wrap", "int",
+         "Maximum number of columns for faceted subplots in the horizontal direction.", None),
+        ("facet_row_spacing", "float",
+         "Spacing between faceted subplots in the vertical direction (fraction of plot area).", 0.06),
+        ("facet_col_spacing", "float",
+         "Spacing between faceted subplots in the horizontal direction (fraction of plot area).", 0.08),
+    ]:
+        r.add(ParamMeta(
+            name=nm,
+            category=ParamCategory.LAYOUT_CONFIG,
+            doc_type=dtype,
+            doc_desc=[desc],
+            default_value=default,
+            charts=tuple(c for c in _FACET_CHARTS),
+        ))
+
+    # -------- LAYOUT_CONFIG: range_color --------
     r.add(ParamMeta(
-        name="marginal",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="str",
+        name="range_color",
+        category=ParamCategory.LAYOUT_CONFIG,
+        doc_type="list of two numbers",
         doc_desc=[
-            "One of `'rug'`, `'box'`, `'violin'`, or `'histogram'`.",
-            "If set, a subplot is drawn alongside the main plot, visualizing the distribution.",
+            "[min, max] value of the color scale for the data.",
+            "If not provided, the range is inferred from the data.",
         ],
-    ))
-    r.add(ParamMeta(
-        name="marginal_x",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="str",
-        doc_desc=[
-            "One of `'rug'`, `'box'`, `'violin'`, or `'histogram'`.",
-            "If set, a horizontal subplot is drawn above the main plot, visualizing the x-distribution.",
-        ],
-    ))
-    r.add(ParamMeta(
-        name="marginal_y",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="str",
-        doc_desc=[
-            "One of `'rug'`, `'box'`, `'violin'`, or `'histogram'`.",
-            "If set, a vertical subplot is drawn to the right of the main plot, visualizing the y-distribution.",
-        ],
+        charts=tuple(c for c in _COLOR_CONTINUOUS_CHARTS),
     ))
 
+    # -------- LAYOUT_CONFIG: radius (density_mapbox) --------
     r.add(ParamMeta(
-        name="trendline",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="str",
-        doc_desc=[
-            "One of `'ols'`, `'lowess'`, `'rolling'`, `'expanding'` or `'ewm'`.",
-            "If `'ols'`, an Ordinary Least Squares regression line will be drawn for each discrete-color/symbol group.",
-            "If `'lowess`', a Locally Weighted Scatterplot Smoothing line will be drawn for each discrete-color/symbol group.",
-            "If `'rolling`', a Rolling (e.g. rolling average, rolling median) line will be drawn for each discrete-color/symbol group.",
-            "If `'expanding`', an Expanding (e.g. expanding average, expanding sum) line will be drawn for each discrete-color/symbol group.",
-            "If `'ewm`', an Exponentially Weighted Moment (e.g. exponentially-weighted moving average) line will be drawn for each discrete-color/symbol group.",
-            "See the docstrings for the functions in `plotly.express.trendline_functions` for more details on these functions and how",
-            "to configure them with the `trendline_options` argument.",
-        ],
-    ))
-    r.add(ParamMeta(
-        name="trendline_options",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="dict",
-        doc_desc=[
-            "Options passed as the first argument to the function from `plotly.express.trendline_functions` ",
-            "named in the `trendline` argument.",
-        ],
-    ))
-    r.add(ParamMeta(
-        name="trendline_color_override",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="str",
-        doc_desc=[
-            "Valid CSS color.",
-            "If provided, and if `trendline` is set, all trendlines will be drawn in this color rather than in the same color as the traces from which they draw their inputs.",
-        ],
-    ))
-    r.add(ParamMeta(
-        name="trendline_scope",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="str (one of `'trace'` or `'overall'`, default `'trace'`)",
-        doc_desc=[
-            "If `'trace'`, then one trendline is drawn per trace (i.e. per color, symbol, facet, animation frame etc) and if `'overall'` then one trendline is computed for the entire dataset, and replicated across all facets.",
-        ],
-        default_value="trace",
+        name="radius",
+        category=ParamCategory.LAYOUT_CONFIG,
+        doc_type="int (default is 30)",
+        doc_desc=["Sets the radius of influence of each point."],
+        default_value=30,
+        charts=("density_mapbox",),
     ))
 
+    # -------- LAYOUT_CONFIG: center / zoom / mapbox_style / geojson etc --------
+    _GEO = ("scatter_geo", "choropleth", "line_geo")
+    _MAPBOX = ("scatter_mapbox", "density_mapbox", "choropleth_mapbox", "line_mapbox")
+    _GEO_ALL = _GEO + _MAPBOX
+    for nm, dtype, desc, charts in [
+        ("center", "dict",
+         "Data frame column or array containing the latitude of the map center point.",
+         tuple(set(_MAPBOX + _GEO))),
+        ("zoom", "int or float",
+         "Map zoom level.",
+         _MAPBOX),
+        ("mapbox_style", "str",
+         "The mapbox style to use for mapbox subplots.",
+         _MAPBOX),
+        ("geojson", "GeoJSON-formatted Python dict or geometry collection",
+         "A GeoJSON-formatted Python object, as described in the plotly.js documentation on choropleth traces.",
+         ("choropleth", "choropleth_mapbox")),
+        ("featureidkey", "str",
+         "Path to the field in the GeoJSON feature properties object to be matched with data_frame.locations, or data_frame.index.",
+         ("choropleth", "choropleth_mapbox")),
+        ("scope", "str",
+         "The Set the scope of the map.",
+         _GEO),
+        ("projection", "str",
+         "The type of projection used for the map.",
+         _GEO),
+        ("fitbounds", "boolean",
+         "Whether to adjust the bounds of the map to be the smallest possible such that every data point is visible.",
+         _GEO),
+        ("basemap_visible", "boolean",
+         "Whether to display the map base layer.",
+         _GEO),
+        ("resolution", "int",
+         "The resolution of the base map.",
+         _GEO),
+        ("showlataxis", "boolean",
+         "Whether to display the latitude grid.",
+         _GEO),
+        ("showlonaxis", "boolean",
+         "Whether to display the longitude grid.",
+         _GEO),
+    ]:
+        r.add(ParamMeta(
+            name=nm,
+            category=ParamCategory.LAYOUT_CONFIG,
+            doc_type=dtype,
+            doc_desc=[desc],
+            charts=tuple(charts),
+        ))
+
+    # -------- TRACE_CONFIG: opacity --------
+    _OPACITY_CHARTS = (
+        "scatter", "scatter_3d", "scatter_polar", "scatter_ternary",
+        "scatter_mapbox", "scatter_geo", "scatter_matrix",
+        "bar", "histogram", "ecdf", "funnel", "funnel_area", "pie",
+        "density_heatmap", "density_mapbox", "density_map",
+        "choropleth_mapbox", "choropleth_map", "timeline",
+    )
     r.add(ParamMeta(
-        name="render_mode",
+        name="opacity",
         category=ParamCategory.TRACE_CONFIG,
-        doc_type="str",
-        doc_desc=[
-            "One of `'auto'`, `'svg'` or `'webgl'`, default `'auto'`",
-            "Controls the browser API used to draw marks.",
-            "`'svg'` is appropriate for figures of less than 1000 data points, and will allow for fully-vectorized output.",
-            "`'webgl'` is likely necessary for acceptable performance above 1000 points but rasterizes part of the output. ",
-            "`'auto'` uses heuristics to choose the mode.",
-        ],
-        default_value="auto",
+        doc_type="float",
+        doc_desc=["Value between 0 and 1. Sets the opacity for markers."],
+        charts=_OPACITY_CHARTS,
     ))
 
-    r.add(ParamMeta(
-        name="direction",
-        category=ParamCategory.LAYOUT_CONFIG,
-        doc_type="str",
-        doc_desc=[
-            "One of '`counterclockwise'` or `'clockwise'`. Default is `'clockwise'`",
-            "Sets the direction in which increasing values of the angular axis are drawn.",
-        ],
-    ))
-    r.add(ParamMeta(
-        name="start_angle",
-        category=ParamCategory.LAYOUT_CONFIG,
-        doc_type="int (default `90`)",
-        doc_desc=["Sets start angle for the angular axis, with 0 being due east and 90 being due north."],
-        default_value=90,
-    ))
-    r.add(ParamMeta(
-        name="line_close",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="boolean (default `False`)",
-        doc_desc=["If `True`, an extra line segment is drawn between the first and last point."],
-        default_value=False,
-    ))
-    r.add(ParamMeta(
-        name="line_shape",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="str (default `'linear'`)",
-        doc_desc=["One of `'linear'`, `'spline'`, `'hv'`, `'vh'`, `'hvh'`, or `'vhv'`"],
-    ))
-    r.add(ParamMeta(
-        name="fitbounds",
-        category=ParamCategory.LAYOUT_CONFIG,
-        doc_type="str (default `False`).",
-        doc_desc=["One of `False`, `locations` or `geojson`."],
-    ))
-    r.add(ParamMeta(
-        name="basemap_visible",
-        category=ParamCategory.LAYOUT_CONFIG,
-        doc_type="bool",
-        doc_desc=["Force the basemap visibility."],
-    ))
-    r.add(ParamMeta(
-        name="scope",
-        category=ParamCategory.LAYOUT_CONFIG,
-        doc_type="str (default `'world'`).",
-        doc_desc=[
-            "One of `'world'`, `'usa'`, `'europe'`, `'asia'`, `'africa'`, `'north america'`, or `'south america'`"
-            "Default is `'world'` unless `projection` is set to `'albers usa'`, which forces `'usa'`.",
-        ],
-    ))
-    r.add(ParamMeta(
-        name="projection",
-        category=ParamCategory.LAYOUT_CONFIG,
-        doc_type="str ",
-        doc_desc=[
-            "One of `'equirectangular'`, `'mercator'`, `'orthographic'`, `'natural earth'`, `'kavrayskiy7'`, `'miller'`, `'robinson'`, `'eckert4'`, `'azimuthal equal area'`, `'azimuthal equidistant'`, `'conic equal area'`, `'conic conformal'`, `'conic equidistant'`, `'gnomonic'`, `'stereographic'`, `'mollweide'`, `'hammer'`, `'transverse mercator'`, `'albers usa'`, `'winkel tripel'`, `'aitoff'`, or `'sinusoidal'`"
-            "Default depends on `scope`.",
-        ],
-    ))
-    r.add(ParamMeta(
-        name="center",
-        category=ParamCategory.LAYOUT_CONFIG,
-        doc_type="dict",
-        doc_desc=["Dict keys are `'lat'` and `'lon'`", "Sets the center point of the map."],
-    ))
-    r.add(ParamMeta(
-        name="map_style",
-        category=ParamCategory.LAYOUT_CONFIG,
-        doc_type="str (default `'basic'`)",
-        doc_desc=[
-            "Identifier of base map style.",
-            "Allowed values are `'basic'`, `'carto-darkmatter'`, `'carto-darkmatter-nolabels'`, `'carto-positron'`, `'carto-positron-nolabels'`, `'carto-voyager'`, `'carto-voyager-nolabels'`, `'dark'`, `'light'`, `'open-street-map'`, `'outdoors'`, `'satellite'`, `'satellite-streets'`, `'streets'`, `'white-bg'`.",
-        ],
-    ))
-    r.add(ParamMeta(
-        name="mapbox_style",
-        category=ParamCategory.LAYOUT_CONFIG,
-        doc_type="str (default `'basic'`, needs Mapbox API token)",
-        doc_desc=[
-            "Identifier of base map style, some of which require a Mapbox or Stadia Maps API token to be set using `plotly.express.set_mapbox_access_token()`.",
-            "Allowed values which do not require a token are `'open-street-map'`, `'white-bg'`, `'carto-positron'`, `'carto-darkmatter'`.",
-            "Allowed values which require a Mapbox API token are `'basic'`, `'streets'`, `'outdoors'`, `'light'`, `'dark'`, `'satellite'`, `'satellite-streets'`.",
-            "Allowed values which require a Stadia Maps API token are `'stamen-terrain'`, `'stamen-toner'`, `'stamen-watercolor'`.",
-        ],
-    ))
-    r.add(ParamMeta(
-        name="zoom",
-        category=ParamCategory.LAYOUT_CONFIG,
-        doc_type="int (default `8`)",
-        doc_desc=["Between 0 and 20.", "Sets map zoom level."],
-        default_value=8,
-    ))
+    # -------- TRACE_CONFIG: orientation --------
+    _ORIENTATION_CHARTS = (
+        "scatter", "line", "area", "bar", "histogram",
+        "box", "violin", "strip", "ecdf", "funnel",
+        "density_heatmap", "density_contour",
+    )
     r.add(ParamMeta(
         name="orientation",
         category=ParamCategory.TRACE_CONFIG,
-        doc_type="str, one of `'h'` for horizontal or `'v'` for vertical. ",
+        doc_type="str (default `'v'`)",
         doc_desc=[
-            "(default `'v'` if `x` and `y` are provided and both continuous or both categorical, ",
-            "otherwise `'v'`(`'h'`) if `x`(`y`) is categorical and `y`(`x`) is continuous, ",
-            "otherwise `'v'`(`'h'`) if only `x`(`y`) is provided) ",
+            "For `bar`, `histogram` and `box` traces, specifies whether the bars are horizontal or vertical.",
+            "One of `'v'` for vertical or `'h'` for horizontal.",
         ],
-    ))
-    r.add(ParamMeta(
-        name="points",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="str or boolean (default `'outliers'`)",
-        doc_desc=[
-            "One of `'outliers'`, `'suspectedoutliers'`, `'all'`, or `False`.",
-            "If `'outliers'`, only the sample points lying outside the whiskers are shown.",
-            "If `'suspectedoutliers'`, all outlier points are shown and those less than 4*Q1-3*Q3 or greater than 4*Q3-3*Q1 are highlighted with the marker's `'outliercolor'`.",
-            "If `'outliers'`, only the sample points lying outside the whiskers are shown.",
-            "If `'all'`, all sample points are shown.",
-            "If `False`, no sample points are shown and the whiskers extend to the full range of the sample.",
-        ],
-    ))
-    r.add(ParamMeta(
-        name="box",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="boolean (default `False`)",
-        doc_desc=["If `True`, boxes are drawn inside the violins."],
-        default_value=False,
-    ))
-    r.add(ParamMeta(
-        name="notched",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="boolean (default `False`)",
-        doc_desc=["If `True`, boxes are drawn with notches."],
-        default_value=False,
-    ))
-    r.add(ParamMeta(
-        name="geojson",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="GeoJSON-formatted dict",
-        doc_desc=[
-            "Must contain a Polygon feature collection, with IDs, which are references from `locations`.",
-        ],
-    ))
-    r.add(ParamMeta(
-        name="featureidkey",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="str (default: `'id'`)",
-        doc_desc=[
-            "Path to field in GeoJSON feature object with which to match the values passed in to `locations`."
-            "The most common alternative to the default is of the form `'properties.<key>`.",
-        ],
-        default_value="id",
-    ))
-    r.add(ParamMeta(
-        name="cumulative",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="boolean (default `False`)",
-        doc_desc=["If `True`, histogram values are cumulative."],
-        default_value=False,
-    ))
-    r.add(ParamMeta(
-        name="nbins",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="int",
-        doc_desc=["Positive integer.", "Sets the number of bins."],
-    ))
-    r.add(ParamMeta(
-        name="nbinsx",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="int",
-        doc_desc=["Positive integer.", "Sets the number of bins along the x axis."],
-    ))
-    r.add(ParamMeta(
-        name="nbinsy",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="int",
-        doc_desc=["Positive integer.", "Sets the number of bins along the y axis."],
-    ))
-    r.add(ParamMeta(
-        name="branchvalues",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="str",
-        doc_desc=[
-            "'total' or 'remainder'",
-            "Determines how the items in `values` are summed. When"
-            "set to 'total', items in `values` are taken to be value"
-            "of all its descendants. When set to 'remainder', items"
-            "in `values` corresponding to the root and the branches"
-            ":sectors are taken to be the extra part not part of the"
-            "sum of the values at their leaves.",
-        ],
-    ))
-    r.add(ParamMeta(
-        name="maxdepth",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="int",
-        doc_desc=[
-            "Positive integer",
-            "Sets the number of rendered sectors from any given `level`. Set `maxdepth` to -1 to render all the"
-            "levels in the hierarchy.",
-        ],
-    ))
-    r.add(ParamMeta(
-        name="ecdfnorm",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="string or `None` (default `'probability'`)",
-        doc_desc=[
-            "One of `'probability'` or `'percent'`",
-            "If `None`, values will be raw counts or sums.",
-            "If `'probability', values will be probabilities normalized from 0 to 1.",
-            "If `'percent', values will be percentages normalized from 0 to 100.",
-        ],
-        default_value="probability",
-    ))
-    r.add(ParamMeta(
-        name="ecdfmode",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="string (default `'standard'`)",
-        doc_desc=[
-            "One of `'standard'`, `'complementary'` or `'reversed'`",
-            "If `'standard'`, the ECDF is plotted such that values represent data at or below the point.",
-            "If `'complementary'`, the CCDF is plotted such that values represent data above the point.",
-            "If `'reversed'`, a variant of the CCDF is plotted such that values represent data at or above the point.",
-        ],
-        default_value="standard",
-    ))
-    r.add(ParamMeta(
-        name="text_auto",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="bool or string (default `False`)",
-        doc_desc=[
-            "If `True` or a string, the x or y or z values will be displayed as text, depending on the orientation",
-            "A string like `'.2f'` will be interpreted as a `texttemplate` numeric formatting directive.",
-        ],
-        default_value=False,
+        default_value="v",
+        charts=_ORIENTATION_CHARTS,
     ))
 
+    # -------- TRACE_CONFIG: barmode --------
     r.add(ParamMeta(
         name="barmode",
-        category=ParamCategory.LAYOUT_CONFIG,
+        category=ParamCategory.TRACE_CONFIG,
         doc_type="str (default `'relative'`)",
         doc_desc=[
-            "One of `'group'`, `'overlay'` or `'relative'`",
+            "One of `'group'`, `'overlay'` or `'relative'`.",
             "In `'relative'` mode, bars are stacked above zero for positive values and below zero for negative values.",
             "In `'overlay'` mode, bars are drawn on top of one another.",
-            "In `'group'` mode, bars are placed beside each other.",
+            "In `'group'` mode, bars are placed beside one another.",
         ],
         default_value="relative",
+        charts=("bar", "histogram", "bar_polar"),
     ))
+
+    # -------- TRACE_CONFIG: barnorm --------
     r.add(ParamMeta(
         name="barnorm",
         category=ParamCategory.TRACE_CONFIG,
         doc_type="str (default `None`)",
         doc_desc=[
-            "One of `'fraction'` or `'percent'`",
-            "If set, bars are normalized with the fraction or percent of the total.",
+            "Set to `'fraction'` to divide the values of the bars by the sum of the values across all bars at that location on the axis.",
+            "Set to `'percent'` to use percentages instead of fractions.",
+            "Using `barnorm` changes the bar values, and therefore the values shown in the hover tooltip and used in the ticks.",
         ],
+        charts=("histogram", "bar_polar"),
     ))
-    r.add(ParamMeta(
-        name="histfunc",
-        category=ParamCategory.TRACE_CONFIG,
-        doc_type="str (default `'count'`)",
-        doc_desc=[
-            "One of `'count'`, `'sum'`, `'avg'`, `'min'`, or `'max'`",
-            "The aggregate function to use when binning data.",
-        ],
-    ))
+
+    # -------- TRACE_CONFIG: histnorm --------
     r.add(ParamMeta(
         name="histnorm",
         category=ParamCategory.TRACE_CONFIG,
         doc_type="str (default `None`)",
         doc_desc=[
-            "One of `'percent'`, `'probability'`, `'density'`, or `'probability density'`",
-            "If set, the histogram data is normalized accordingly.",
+            "Specifies the type of normalization for the histogram.",
+            "One of `'percent'`, `'probability'`, `'density'`, or `'probability density'`."
+            "If `None`, the range of the histogram values correspond to the number of occurrences in each bin.",
         ],
+        charts=("histogram", "ecdf"),
     ))
+
+    # -------- TRACE_CONFIG: histfunc --------
     r.add(ParamMeta(
-        name="groupnorm",
+        name="histfunc",
         category=ParamCategory.TRACE_CONFIG,
-        doc_type="str (default `None`)",
+        doc_type="str (default `'count'`)",
         doc_desc=[
-            "One of `'fraction'` or `'percent'`",
-            "Only relevant when `stackgroup` is used (as in `px.area`).",
-            "If set, the stacked areas are normalized to the fraction or percent of the total.",
+            "Specifies the binning function used for the histogram.",
+            "One of `'count'`, `'sum'`, `'avg'`, `'min'`, or `'max'`.",
+            "If `'count'`, the histogram values are computed by counting the number of values lying inside each bin.",
+            "If `'sum'`, `'avg'`, `'min'`, or `'max'`, the values inside the bin are summed, averaged, min-ed or max-ed.",
         ],
+        default_value="count",
+        charts=("histogram",),
     ))
+
+    # -------- TRACE_CONFIG: cumulative --------
     r.add(ParamMeta(
-        name="stripmode",
-        category=ParamCategory.LAYOUT_CONFIG,
-        doc_type="str (default `'overlay'`)",
+        name="cumulative",
+        category=ParamCategory.TRACE_CONFIG,
+        doc_type="boolean",
         doc_desc=[
-            "One of `'overlay'` or `'group'`",
-            "In `'overlay'` mode, strips are on drawn top of one another.",
-            "In `'group'` mode, strips are placed beside each other.",
+            "If `True`, the histogram values are cumulative.",
+            "The value at each bin is the sum of the values from previous bins plus the value in the current bin.",
         ],
-        default_value="overlay",
+        default_value=False,
+        charts=("histogram", "ecdf"),
+    ))
+
+    # -------- TRACE_CONFIG: nbins --------
+    r.add(ParamMeta(
+        name="nbins",
+        category=ParamCategory.TRACE_CONFIG,
+        doc_type="int",
+        doc_desc=[
+            "Positive integer that sets the number of bins in the histogram along the x and y axes.",
+            "For `histogram2d` and `histogram2dcontour`, this can be a list of two numbers: the first is the number of x bins, the second the number of y bins.",
+        ],
+        charts=("histogram", "density_mapbox"),
+    ))
+    for nb_name, axis in [("nbinsx", "x"), ("nbinsy", "y")]:
+        r.add(ParamMeta(
+            name=nb_name,
+            category=ParamCategory.TRACE_CONFIG,
+            doc_type="int",
+            doc_desc=[
+                f"Positive integer that sets the number of bins along the {axis} axis for the histogram or 2D histogram.",
+            ],
+            charts=("density_heatmap", "density_contour"),
+        ))
+
+    # -------- TRACE_CONFIG: boxmode / violinmode / stripmode --------
+    for nm, charts in [
+        ("boxmode", ("box",)),
+        ("violinmode", ("violin",)),
+        ("stripmode", ("strip",)),
+    ]:
+        r.add(ParamMeta(
+            name=nm,
+            category=ParamCategory.TRACE_CONFIG,
+            doc_type="str (default `'overlay'`)",
+            doc_desc=[
+                "One of `'group'` or `'overlay'`.",
+                "In `'overlay'` mode, violins/plots/strips are drawn on top of one another in the same location on the axis.",
+                "In `'group'` mode, violins/plots/strips are grouped per location on the axis.",
+            ],
+            default_value="overlay",
+            charts=tuple(charts),
+        ))
+
+    # -------- TRACE_CONFIG: box / violin specific --------
+    for nm, dtype, desc, charts in [
+        ("box", "boolean",
+         "If `True`, boxes are drawn inside the violin.",
+         ("violin",)),
+        ("points", "str or boolean",
+         "One of `'outliers'`, `'suspectedoutliers'`, `'all'`, or `False`.",
+         ("box", "violin", "strip")),
+        ("notched", "boolean",
+         "If `True`, boxes are drawn with notches.",
+         ("box",)),
+        ("sd", "boolean",
+         "If `True`, the quartile method is used to compute the box ends, otherwise the SD method is used.",
+         ("box",)),
+    ]:
+        r.add(ParamMeta(
+            name=nm,
+            category=ParamCategory.TRACE_CONFIG,
+            doc_type=dtype,
+            doc_desc=[desc],
+            charts=tuple(charts),
+        ))
+
+    # -------- TRACE_CONFIG: markers / lines / line_shape --------
+    for nm, dtype, desc, default, charts in [
+        ("markers", "boolean (default `False`)",
+         "If `True`, markers are shown on lines.",
+         False, ("line", "line_3d", "line_polar", "line_ternary",
+                 "line_mapbox", "line_geo", "area")),
+        ("lines", "boolean (default `True`)",
+         "If `False`, lines are not drawn (forced to `True` if `markers` is `False`).",
+         True, ("scatter", "scatter_3d", "scatter_polar", "scatter_ternary",
+                "scatter_mapbox", "scatter_geo")),
+        ("line_shape", "str (default `'linear'`)",
+         "One of `'linear'`, `'spline'`, `'hv'`, `'vh'`, `'hvh'`, `'vhv'`. The line shape.",
+         "linear", ("line", "area", "line_3d", "line_polar",
+                    "line_ternary", "line_mapbox", "line_geo", "timeline")),
+    ]:
+        r.add(ParamMeta(
+            name=nm,
+            category=ParamCategory.TRACE_CONFIG,
+            doc_type=dtype,
+            doc_desc=[desc],
+            default_value=default,
+            charts=tuple(charts),
+        ))
+
+    # -------- TRACE_CONFIG: render_mode --------
+    r.add(ParamMeta(
+        name="render_mode",
+        category=ParamCategory.TRACE_CONFIG,
+        doc_type="str",
+        doc_desc=[
+            "One of `'auto'`, `'svg'`, or `'webgl'` (default is `'auto'`).",
+            "Controls the browser API used to draw marks.",
+            "`'svg'` is appropriate for figures with less than 1000 data points, and is the only mode that supports filled areas.",
+            "`'webgl'` is appropriate for figures with more than 1000 data points, but does not support filled areas nor most Plotly.js features.",
+        ],
+        default_value="auto",
+        charts=("scatter", "line", "area"),
+    ))
+
+    # -------- TRACE_CONFIG: marginal / marginal_x / marginal_y --------
+    for nm, charts in [
+        ("marginal", ("histogram", "box", "violin", "strip", "ecdf")),
+        ("marginal_x", ("scatter", "density_contour")),
+        ("marginal_y", ("scatter", "density_contour")),
+    ]:
+        r.add(ParamMeta(
+            name=nm,
+            category=ParamCategory.TRACE_CONFIG,
+            doc_type="str",
+            doc_desc=[
+                "One of `'rug'`, `'box'`, `'violin'`, or `'histogram'`.",
+                "If set, a subplot is drawn alongside the main plot, visualizing the distribution.",
+            ],
+            charts=tuple(charts),
+        ))
+
+    # -------- TRACE_CONFIG: trendline family --------
+    for nm, dtype, desc, charts in [
+        ("trendline", "str",
+         "One of `'ols'`, `'lowess'`, `'rolling'`, `'expanding'` or `'ewm'`.",
+         ("scatter",)),
+        ("trendline_options", "dict",
+         "Options for the trendline function.",
+         ("scatter",)),
+        ("trendline_color_override", "str",
+         "Color to use for the trendline.",
+         ("scatter",)),
+        ("trendline_scope", "str (default `'trace'`)",
+         "One of `'trace'`, `'overall'` or `'x'` or `'y'`.",
+         ("scatter",)),
+    ]:
+        r.add(ParamMeta(
+            name=nm,
+            category=ParamCategory.TRACE_CONFIG,
+            doc_type=dtype,
+            doc_desc=[desc],
+            charts=tuple(charts),
+        ))
+
+    # -------- TRACE_CONFIG: text_auto --------
+    r.add(ParamMeta(
+        name="text_auto",
+        category=ParamCategory.TRACE_CONFIG,
+        doc_type="boolean or str (default `False`)",
+        doc_desc=[
+            "If `True` or a string, the text trace is turned on by default.",
+            "If the string is `'.3f'` or similar, the text is formatted with the given format.",
+        ],
+        default_value=False,
+        charts=("bar", "histogram"),
+    ))
+
+    # -------- TRACE_CONFIG: line_close (area) --------
+    r.add(ParamMeta(
+        name="line_close",
+        category=ParamCategory.TRACE_CONFIG,
+        doc_type="boolean",
+        doc_desc=["Whether to close the line for area plots."],
+        default_value=False,
+        charts=("area",),
+    ))
+
+    # -------- TRACE_CONFIG: hover_name etc for violin / box / strip --------
+    for nm, dtype, desc, default, charts in [
+        ("violingap", "float", "Gap between violins.", 0.3, ("violin",)),
+        ("violinmode", "str", "One of `'group'` or `'overlay'`.", "overlay", ("violin",)),
+        ("violinwidth", "float", "Width of the violin.", 0.3, ("violin",)),
+        ("boxgap", "float", "Gap between boxes.", 0.3, ("box",)),
+        ("boxmode", "str", "One of `'group'` or `'overlay'`.", "overlay", ("box",)),
+        ("stripgap", "float", "Gap between strips.", 0.3, ("strip",)),
+        ("stripmode", "str", "One of `'group'` or `'overlay'`.", "overlay", ("strip",)),
+    ]:
+        # These are already registered above, ignore duplicates here
+        pass
+
+    # -------- MAPPING_CONFIG: symbol --------
+    for seq_nm, map_nm, charts in [
+        ("symbol_sequence", "symbol_map", ("scatter", "scatter_3d", "scatter_polar",
+                                           "scatter_ternary", "scatter_mapbox",
+                                           "scatter_geo", "line", "line_3d",
+                                           "line_polar", "line_ternary",
+                                           "line_mapbox", "line_geo", "scatter_matrix")),
+        ("line_dash_sequence", "line_dash_map", ("line", "line_3d", "area",
+                                                 "line_polar", "line_ternary",
+                                                 "line_mapbox", "line_geo")),
+        ("pattern_shape_sequence", "pattern_shape_map", ("bar", "bar_polar",
+                                                         "histogram", "area")),
+    ]:
+        stem = seq_nm.replace("_sequence", "")
+        seq_desc_map = {
+            "symbol": ("Strings should define valid plotly.js symbols.",
+                       "When `symbol` is set, values in that column are assigned symbols by cycling through `symbol_sequence` in the order described in `category_orders`, unless the value of `symbol` is a key in `symbol_map`."),
+            "line_dash": ("Strings should define valid plotly.js dash-patterns.",
+                          "When `line_dash` is set, values in that column are assigned dash-patterns by cycling through `line_dash_sequence` in the order described in `category_orders`, unless the value of `line_dash` is a key in `line_dash_map`."),
+            "pattern_shape": ("Strings should define valid plotly.js patterns-shapes.",
+                              "When `pattern_shape` is set, values in that column are assigned patterns-shapes by cycling through `pattern_shape_sequence` in the order described in `category_orders`, unless the value of `pattern_shape` is a key in `pattern_shape_map`."),
+        }
+        seq1, seq2 = seq_desc_map[stem]
+        map1, map2 = seq_desc_map[stem]
+        # We'll rephrase map slightly
+        r.add(ParamMeta(
+            name=seq_nm,
+            category=ParamCategory.MAPPING_CONFIG,
+            doc_type="list of str",
+            doc_desc=[seq1, seq2],
+            in_defaults=True,
+            default_value=None,
+            charts=tuple(charts),
+        ))
+        r.add(ParamMeta(
+            name=map_nm,
+            category=ParamCategory.MAPPING_CONFIG,
+            doc_type="dict with str keys and str values (default `{}`)",
+            doc_desc=[
+                map1.replace("assigned symbols by cycling through...",
+                            "Used to override `" + seq_nm + "` to assign a specific " + stem + "s to marks corresponding with specific values.")
+                .split(". Used")[0] + ".",
+                f"Keys in `{map_nm}` should be values in the column denoted by `{stem}`.",
+                f"Alternatively, if the values of `{stem}` are valid {stem} names, the string `'identity'` may be passed to cause them to be used directly.",
+            ],
+            in_defaults=True,
+            default_value={},
+            charts=tuple(charts),
+        ))
+
+    # -------- MAPPING_CONFIG: color_discrete_sequence / map --------
+    r.add(ParamMeta(
+        name="color_discrete_sequence",
+        category=ParamCategory.MAPPING_CONFIG,
+        doc_type="list of str",
+        doc_desc=[
+            "Strings should define valid CSS-colors.",
+            "When `color` is set and the values in the corresponding column are not numeric, values in that column are assigned colors by cycling through `color_discrete_sequence` in the order described in `category_orders`, unless the value of `color` is a key in `color_discrete_map`.",
+            "Various useful color sequences are available in the `plotly.express.colors` submodules, specifically `plotly.express.colors.qualitative`.",
+        ],
+        in_defaults=True,
+        default_value=None,
+        charts=tuple(c for c in _COLOR_DISCRETE_CHARTS),
+    ))
+
+    r.add(ParamMeta(
+        name="color_discrete_map",
+        category=ParamCategory.MAPPING_CONFIG,
+        doc_type="dict with str keys and str values (default `{}`)",
+        doc_desc=[
+            "String values should define valid CSS-colors",
+            "Used to override `color_discrete_sequence` to assign a specific colors to marks corresponding with specific values.",
+            "Keys in `color_discrete_map` should be values in the column denoted by `color`.",
+            "Alternatively, if the values of `color` are valid colors, the string `'identity'` may be passed to cause them to be used directly.",
+        ],
+        in_defaults=True,
+        default_value={},
+        charts=tuple(c for c in _COLOR_DISCRETE_CHARTS),
+    ))
+
+    # -------- MAPPING_CONFIG: color_continuous_scale --------
+    r.add(ParamMeta(
+        name="color_continuous_scale",
+        category=ParamCategory.MAPPING_CONFIG,
+        doc_type="list of str",
+        doc_desc=[
+            "Strings should define valid CSS-colors",
+            "This list is used to build a continuous color scale when the column denoted by `color` contains numeric data.",
+            "Various useful color scales are available in the `plotly.express.colors` submodules, specifically `plotly.express.colors.sequential`, `plotly.express.colors.diverging` and `plotly.express.colors.cyclical`.",
+        ],
+        in_defaults=True,
+        default_value=None,
+        charts=tuple(c for c in _COLOR_CONTINUOUS_CHARTS),
+    ))
+
+    # -------- MAPPING_CONFIG: color_continuous_midpoint --------
+    r.add(ParamMeta(
+        name="color_continuous_midpoint",
+        category=ParamCategory.MAPPING_CONFIG,
+        doc_type="number (default `None`)",
+        doc_desc=[
+            "If set, computes the bounds of the continuous color scale to have the desired midpoint.",
+            "Setting this value is recommended when using `plotly.express.colors.diverging` color scales as the inputs to `color_continuous_scale`.",
+        ],
+        charts=tuple(c for c in _COLOR_CONTINUOUS_CHARTS),
+    ))
+
+    # -------- MAPPING_CONFIG: size_max --------
+    r.add(ParamMeta(
+        name="size_max",
+        category=ParamCategory.MAPPING_CONFIG,
+        doc_type="int (default `20`)",
+        doc_desc=["Set the maximum mark size when using `size`."],
+        in_defaults=True,
+        default_value=20,
+        charts=("scatter", "scatter_3d", "scatter_polar", "scatter_ternary",
+                "scatter_mapbox", "scatter_geo", "scatter_matrix"),
+    ))
+
+    # -------- MAPPING_CONFIG: coloraxis --------
+    r.add(ParamMeta(
+        name="coloraxis",
+        category=ParamCategory.MAPPING_CONFIG,
+        doc_type="str",
+        doc_desc=[
+            "The name of a coloraxis. If provided, the trace color bar is linked to this coloraxis.",
+            "Useful for sharing color scales across multiple traces and subplots.",
+        ],
     ))
 
     return r
 
 
 PARAMS: ParamRegistry = create_registry()
-
-__all__ = [
-    "ParamCategory",
-    "ParamMeta",
-    "ParamRegistry",
-    "PARAMS",
-]

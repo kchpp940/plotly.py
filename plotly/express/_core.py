@@ -34,6 +34,59 @@ direct_attrables, array_attrables, group_attrables, renameable_group_attrables =
 )
 all_attrables = PARAMS.get_all_attrables()
 
+# ---- Default (global) copies used when no chart_name is supplied
+_DEFAULT_ATTRABLES = (
+    list(direct_attrables),
+    list(array_attrables),
+    list(group_attrables),
+    list(renameable_group_attrables),
+    list(all_attrables),
+)
+
+
+def _install_attrable_lists(chart_name: str | None) -> tuple:
+    """Replace the module-level ``*_attrables`` globals with chart-specific lists.
+
+    Returns the previous (``direct, array, group, renameable, all``) tuple so
+    that the caller can restore them via :func:`_restore_attrable_lists`.
+
+    If ``chart_name`` is ``None`` the defaults are (re)installed.
+    """
+    import sys
+
+    if chart_name is None:
+        d, a, g, rg, al = _DEFAULT_ATTRABLES
+    else:
+        d, a, g, rg = PARAMS.get_attrable_lists(chart_name)
+        al = PARAMS.get_all_attrables(chart_name)
+    module = sys.modules[__name__]
+    prev = (
+        list(module.direct_attrables),
+        list(module.array_attrables),
+        list(module.group_attrables),
+        list(module.renameable_group_attrables),
+        list(module.all_attrables),
+    )
+    module.direct_attrables = list(d)
+    module.array_attrables = list(a)
+    module.group_attrables = list(g)
+    module.renameable_group_attrables = list(rg)
+    module.all_attrables = list(al)
+    return prev
+
+
+def _restore_attrable_lists(saved: tuple) -> None:
+    """Restore a tuple previously returned by :func:`_install_attrable_lists`."""
+    import sys
+
+    d, a, g, rg, al = saved
+    module = sys.modules[__name__]
+    module.direct_attrables = d
+    module.array_attrables = a
+    module.group_attrables = g
+    module.renameable_group_attrables = rg
+    module.all_attrables = al
+
 cartesians = [go.Scatter, go.Scattergl, go.Bar, go.Funnel, go.Box, go.Violin]
 cartesians += [go.Histogram, go.Histogram2d, go.Histogram2dContour]
 
@@ -2648,9 +2701,24 @@ def get_groups_and_orders(args, grouper):
     return groups, orders
 
 
-def make_figure(args, constructor, trace_patch=None, layout_patch=None):
+def make_figure(args, constructor, trace_patch=None, layout_patch=None, chart_name=None):
     trace_patch = trace_patch or {}
     layout_patch = layout_patch or {}
+
+    # ---- Install chart-specific attrable lists (unified ParamMeta source)
+    # This ensures that build_dataframe / process_args_into_dataframe etc. all
+    # consume exactly the parameters registered for *this* chart in the registry.
+    prev_attrables = _install_attrable_lists(chart_name)
+    try:
+        return _make_figure_impl(
+            args, constructor, trace_patch, layout_patch, chart_name
+        )
+    finally:
+        _restore_attrable_lists(prev_attrables)
+
+
+def _make_figure_impl(args, constructor, trace_patch, layout_patch, chart_name):
+    """Internal implementation (called from inside the attrable-list context)."""
     # Track if color_continuous_scale was explicitly provided by user
     # (before apply_default_cascade fills it from template/defaults)
     user_provided_colorscale = args.get("color_continuous_scale") is not None
