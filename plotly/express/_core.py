@@ -3,7 +3,6 @@ import plotly.io as pio
 from collections import namedtuple, OrderedDict
 from ._special_inputs import IdentityMap, Constant, Range
 from .trendline_functions import ols, lowess, rolling, expanding, ewm
-from ._params import PARAMS, ParamContext
 
 from _plotly_utils.basevalidators import ColorscaleValidator
 from plotly.colors import qualitative, sequential
@@ -29,48 +28,67 @@ trendline_functions = dict(
     lowess=lowess, rolling=rolling, ewm=ewm, expanding=expanding, ols=ols
 )
 
-# ---- Global / default attrable lists (read-only fallback for charts not yet migrated)
-# Use ParamContext for explicit, chart-specific, thread-safe consumption.
-direct_attrables, array_attrables, group_attrables, renameable_group_attrables = (
-    PARAMS.get_attrable_lists()
+# Declare all supported attributes, across all plot types
+direct_attrables = (
+    ["base", "x", "y", "z", "a", "b", "c", "r", "theta", "size", "x_start", "x_end"]
+    + ["hover_name", "text", "names", "values", "parents", "wide_cross"]
+    + ["ids", "error_x", "error_x_minus", "error_y", "error_y_minus", "error_z"]
+    + ["error_z_minus", "lat", "lon", "locations", "animation_group"]
 )
-all_attrables = PARAMS.get_all_attrables()
-
-_DEFAULT_CTX = ParamContext(
-    chart_name=None,
-    direct_attrables=list(direct_attrables),
-    array_attrables=list(array_attrables),
-    group_attrables=list(group_attrables),
-    renameable_group_attrables=list(renameable_group_attrables),
-    all_attrables=list(all_attrables),
+array_attrables = ["dimensions", "custom_data", "hover_data", "path", "wide_variable"]
+group_attrables = ["animation_frame", "facet_row", "facet_col", "line_group"]
+renameable_group_attrables = [
+    "color",  # renamed to marker.color or line.color in infer_config
+    "symbol",  # renamed to marker.symbol in infer_config
+    "line_dash",  # renamed to line.dash in infer_config
+    "pattern_shape",  # renamed to marker.pattern.shape in infer_config
+]
+all_attrables = (
+    direct_attrables + array_attrables + group_attrables + renameable_group_attrables
 )
-
-
-def _resolve_ctx(param_ctx: ParamContext | None) -> ParamContext:
-    """Return the given context or the module-level default if None."""
-    return param_ctx if param_ctx is not None else _DEFAULT_CTX
 
 cartesians = [go.Scatter, go.Scattergl, go.Bar, go.Funnel, go.Box, go.Violin]
 cartesians += [go.Histogram, go.Histogram2d, go.Histogram2dContour]
 
 
 class PxDefaults(object):
-    __slots__ = PARAMS.get_defaults_slots()
+    __slots__ = [
+        "template",
+        "width",
+        "height",
+        "color_discrete_sequence",
+        "color_discrete_map",
+        "color_continuous_scale",
+        "symbol_sequence",
+        "symbol_map",
+        "line_dash_sequence",
+        "line_dash_map",
+        "pattern_shape_sequence",
+        "pattern_shape_map",
+        "size_max",
+        "category_orders",
+        "labels",
+    ]
 
     def __init__(self):
         self.reset()
 
     def reset(self):
-        defaults_dict = PARAMS.build_defaults_dict()
-        for name in self.__slots__:
-            # Use copy for mutable defaults to avoid shared references
-            value = defaults_dict[name]
-            if isinstance(value, dict):
-                setattr(self, name, dict(value))
-            elif isinstance(value, list):
-                setattr(self, name, list(value))
-            else:
-                setattr(self, name, value)
+        self.template = None
+        self.width = None
+        self.height = None
+        self.color_discrete_sequence = None
+        self.color_discrete_map = {}
+        self.color_continuous_scale = None
+        self.symbol_sequence = None
+        self.symbol_map = {}
+        self.line_dash_sequence = None
+        self.line_dash_map = {}
+        self.pattern_shape_sequence = None
+        self.pattern_shape_map = {}
+        self.size_max = 20
+        self.category_orders = {}
+        self.labels = {}
 
 
 defaults = PxDefaults()
@@ -119,6 +137,101 @@ Mapping = namedtuple(
     ],
 )
 TraceSpec = namedtuple("TraceSpec", ["constructor", "attrs", "trace_patch", "marginal"])
+
+
+class NamingContext:
+    _LEGENDLESS_CONSTRUCTORS = {
+        go.Parcats,
+        go.Parcoords,
+        go.Choropleth,
+        go.Choroplethmap,
+        go.Choroplethmapbox,
+        go.Densitymap,
+        go.Densitymapbox,
+        go.Histogram2d,
+        go.Sunburst,
+        go.Treemap,
+        go.Icicle,
+    }
+
+    def __init__(self, args, grouped_mappings, grouper, orders):
+        self.args = args
+        self.grouped_mappings = grouped_mappings
+        self.grouper = grouper
+        self.orders = orders
+        self._trace_names_by_frame = {}
+        self._last_trace_name_labels = None
+
+    def _build_labels(self, group_name):
+        mapping_labels = OrderedDict()
+        trace_name_labels = OrderedDict()
+        frame_name = ""
+        for col, val, m in zip(self.grouper, group_name, self.grouped_mappings):
+            if col != one_group:
+                key = get_label(self.args, col)
+                if not isinstance(m.val_map, IdentityMap):
+                    mapping_labels[key] = str(val)
+                    if m.show_in_trace_name:
+                        trace_name_labels[key] = str(val)
+                if m.variable == "animation_frame":
+                    frame_name = val
+        return mapping_labels, trace_name_labels, frame_name
+
+    def _get_or_create_frame_names(self, frame_name):
+        if frame_name not in self._trace_names_by_frame:
+            self._trace_names_by_frame[frame_name] = set()
+        return self._trace_names_by_frame[frame_name]
+
+    def get_base_naming(self, group_name, trace_spec):
+        mapping_labels, trace_name_labels, frame_name = self._build_labels(group_name)
+        trace_name = ", ".join(trace_name_labels.values())
+        trace_names = self._get_or_create_frame_names(frame_name)
+
+        constructor = trace_spec.constructor
+        should_have_legend = constructor not in self._LEGENDLESS_CONSTRUCTORS
+
+        result = {
+            "name": trace_name,
+            "frame_name": frame_name,
+            "mapping_labels": mapping_labels,
+            "trace_name_labels": trace_name_labels,
+        }
+
+        if should_have_legend:
+            result["legendgroup"] = trace_name
+            result["showlegend"] = trace_name != "" and trace_name not in trace_names
+        else:
+            result["legendgroup"] = None
+            result["showlegend"] = None
+
+        trace_names.add(trace_name)
+        self._last_trace_name_labels = trace_name_labels
+        return result
+
+    def get_trendline_naming(self, base_naming):
+        trace_name = base_naming["name"]
+        frame_name = base_naming["frame_name"]
+        trace_names = self._get_or_create_frame_names(frame_name)
+
+        trendline_name = trace_name + " Trendline" if trace_name else "Trendline"
+
+        return {
+            "name": trendline_name,
+            "legendgroup": trace_name,
+            "showlegend": trendline_name not in trace_names,
+        }
+
+    def get_overall_trendline_naming(self):
+        return {
+            "name": "Overall Trendline",
+            "legendgroup": "Overall Trendline",
+            "showlegend": False,
+        }
+
+    def get_legend_title(self):
+        if self._last_trace_name_labels:
+            return ", ".join(self._last_trace_name_labels)
+        return None
 
 
 def get_label(args, column):
@@ -1018,10 +1131,12 @@ def one_group(x):
     return ""
 
 
-def apply_default_cascade(args, constructor, param_ctx=None):
-    ctx = _resolve_ctx(param_ctx)
+def apply_default_cascade(args, constructor):
+    # first we apply px.defaults to unspecified args
 
-    ctx.apply_px_defaults(args, defaults)
+    for param in defaults.__slots__:
+        if param in args and args[param] is None:
+            args[param] = getattr(defaults, param)
 
     # load the default template if set, otherwise "plotly"
     if args["template"] is None:
@@ -1037,7 +1152,9 @@ def apply_default_cascade(args, constructor, param_ctx=None):
         # otherwise try to build a real template
         args["template"] = go.layout.Template(args["template"])
 
-    if ctx.is_mapping_config("color_continuous_scale") and "color_continuous_scale" in args:
+    # if colors not set explicitly or in px.defaults, defer to a template
+    # if the template doesn't have one, we set some final fallback defaults
+    if "color_continuous_scale" in args:
         if (
             args["color_continuous_scale"] is None
             and args["template"].layout.colorscale.sequential
@@ -1048,7 +1165,10 @@ def apply_default_cascade(args, constructor, param_ctx=None):
         if args["color_continuous_scale"] is None:
             args["color_continuous_scale"] = sequential.Viridis
 
-    if ctx.is_mapping_config("color_discrete_sequence") and "color_discrete_sequence" in args:
+    # if color_discrete_sequence not set explicitly or in px.defaults,
+    # see if we can defer to template. Try trace-specific colors first,
+    # then layout.colorway, then set reasonable defaults
+    if "color_discrete_sequence" in args:
         if args["color_discrete_sequence"] is None and constructor is not None:
             if constructor == "timeline":
                 trace_type = "bar"
@@ -1061,14 +1181,19 @@ def apply_default_cascade(args, constructor, param_ctx=None):
                     if hasattr(trace_data, "marker")
                     and hasattr(trace_data.marker, "color")
                 ]
+                # If template contains at least one color for this trace type, assign to color_discrete_sequence
                 if any(trace_specific_colors):
                     args["color_discrete_sequence"] = trace_specific_colors
+        # fallback to layout.colorway if trace-specific colors not available
         if args["color_discrete_sequence"] is None and args["template"].layout.colorway:
             args["color_discrete_sequence"] = args["template"].layout.colorway
+        # final fallback to default qualitative palette
         if args["color_discrete_sequence"] is None:
             args["color_discrete_sequence"] = qualitative.D3
 
-    if ctx.is_mapping_config("symbol_sequence") and "symbol_sequence" in args:
+    # if symbol_sequence/line_dash_sequence not set explicitly or in px.defaults,
+    # see if we can defer to template. If not, set reasonable defaults
+    if "symbol_sequence" in args:
         if args["symbol_sequence"] is None and args["template"].data.scatter:
             args["symbol_sequence"] = [
                 scatter.marker.symbol for scatter in args["template"].data.scatter
@@ -1076,7 +1201,7 @@ def apply_default_cascade(args, constructor, param_ctx=None):
         if not args["symbol_sequence"] or not any(args["symbol_sequence"]):
             args["symbol_sequence"] = ["circle", "diamond", "square", "x", "cross"]
 
-    if ctx.is_mapping_config("line_dash_sequence") and "line_dash_sequence" in args:
+    if "line_dash_sequence" in args:
         if args["line_dash_sequence"] is None and args["template"].data.scatter:
             args["line_dash_sequence"] = [
                 scatter.line.dash for scatter in args["template"].data.scatter
@@ -1091,7 +1216,7 @@ def apply_default_cascade(args, constructor, param_ctx=None):
                 "longdashdot",
             ]
 
-    if ctx.is_mapping_config("pattern_shape_sequence") and "pattern_shape_sequence" in args:
+    if "pattern_shape_sequence" in args:
         if args["pattern_shape_sequence"] is None and args["template"].data.bar:
             args["pattern_shape_sequence"] = [
                 bar.marker.pattern.shape for bar in args["template"].data.bar
@@ -1112,19 +1237,18 @@ def _check_name_not_reserved(field_name, reserved_names):
         )
 
 
-def _get_reserved_col_names(args, param_ctx=None):
+def _get_reserved_col_names(args):
     """
     This function builds a list of columns of the data_frame argument used
     as arguments, either as str/int arguments or given as columns
     (pandas series type).
     """
-    ctx = _resolve_ctx(param_ctx)
     df: nw.DataFrame = args["data_frame"]
     reserved_names = set()
     for field in args:
-        if not ctx.has(field):
+        if field not in all_attrables:
             continue
-        names = args[field] if ctx.is_array(field) else [args[field]]
+        names = args[field] if field in array_attrables else [args[field]]
         if names is None:
             continue
         for arg in names:
@@ -1241,16 +1365,15 @@ def to_named_series(x, name=None, native_namespace=None):
 
 
 def process_args_into_dataframe(
-    args, wide_mode, var_name, value_name, is_pd_like, native_namespace, param_ctx=None
+    args, wide_mode, var_name, value_name, is_pd_like, native_namespace
 ):
     """
-    After this function runs, the ``all_attrables`` keys of `args` all contain only
+    After this function runs, the `all_attrables` keys of `args` all contain only
     references to columns of `df_output`. This function handles the extraction of data
     from `args["attrable"]` and column-name-generation as appropriate, and adds the
     data to `df_output` and then replaces `args["attrable"]` with the appropriate
     reference.
     """
-    ctx = _resolve_ctx(param_ctx)
 
     df_input: nw.DataFrame | None = args["data_frame"]
     df_provided = df_input is not None
@@ -1263,7 +1386,7 @@ def process_args_into_dataframe(
     ranges = []
     wide_id_vars = set()
     wide_deferred_data = {}
-    reserved_names = _get_reserved_col_names(args, param_ctx) if df_provided else set()
+    reserved_names = _get_reserved_col_names(args) if df_provided else set()
 
     # Case of functions with a "dimensions" kw: scatter_matrix, parcats, parcoords
     if "dimensions" in args and args["dimensions"] is None:
@@ -1293,11 +1416,11 @@ def process_args_into_dataframe(
                     % k
                 )
     # Loop over possible arguments
-    for field_name in ctx.all_attrables:
+    for field_name in all_attrables:
         # Massaging variables
         argument_list = (
             [args.get(field_name)]
-            if not ctx.is_array(field_name)
+            if field_name not in array_attrables
             else args.get(field_name)
         )
 
@@ -1315,7 +1438,7 @@ def process_args_into_dataframe(
         # Else we give names like ["hover_data_0, hover_data_1"] etc.
         field_list = (
             [field_name]
-            if not ctx.is_array(field_name)
+            if field_name not in array_attrables
             else [field_name + "_" + str(i) for i in range(len(argument_list))]
         )
         # argument_list and field_list ready, iterate over them
@@ -1469,7 +1592,7 @@ def process_args_into_dataframe(
                 "https://github.com/plotly/plotly.py/issues/new and we will try to "
                 "replicate and fix it."
             )
-            if not ctx.is_array(field_name):
+            if field_name not in array_attrables:
                 args[field_name] = str(col_name)
             elif isinstance(args[field_name], dict):
                 pass
@@ -1525,7 +1648,7 @@ def process_args_into_dataframe(
     return df_output, wide_id_vars, wide_deferred_data
 
 
-def build_dataframe(args, constructor, param_ctx=None):
+def build_dataframe(args, constructor):
     """
     Constructs a dataframe and modifies `args` in-place.
 
@@ -1540,11 +1663,10 @@ def build_dataframe(args, constructor, param_ctx=None):
     constructor : graph_object trace class
         the trace type selected for this figure
     """
-    ctx = _resolve_ctx(param_ctx)
 
     # make copies of all the fields via dict() and list()
     for field in args:
-        if ctx.is_array(field) and args[field] is not None:
+        if field in array_attrables and args[field] is not None:
             if isinstance(args[field], dict):
                 args[field] = dict(args[field])
             elif field in ["custom_data", "hover_data"] and isinstance(
@@ -1790,7 +1912,7 @@ def build_dataframe(args, constructor, param_ctx=None):
                 i for i in args.values() if isinstance(i, str) and i in columns
             }
             for field in args:
-                if args[field] is not None and ctx.is_array(field):
+                if args[field] is not None and field in array_attrables:
                     necessary_columns.update(i for i in args[field] if i in columns)
             columns = list(necessary_columns)
             args["data_frame"] = nw.from_native(
@@ -1852,7 +1974,6 @@ def build_dataframe(args, constructor, param_ctx=None):
         value_name,
         is_pd_like,
         native_namespace,
-        param_ctx=param_ctx,
     )
     df_output: nw.DataFrame
     # now that `df_output` exists and `args` contains only references, we complete
@@ -2354,9 +2475,8 @@ def process_dataframe_pie(args, trace_patch):
     return args, trace_patch
 
 
-def infer_config(args, constructor, trace_patch, layout_patch, param_ctx=None):
-    ctx = _resolve_ctx(param_ctx)
-    attrs = [k for k in ctx.direct_attrables + ctx.array_attrables if k in args]
+def infer_config(args, constructor, trace_patch, layout_patch):
+    attrs = [k for k in direct_attrables + array_attrables if k in args]
     grouped_attrs = []
     df: nw.DataFrame = args["data_frame"]
 
@@ -2574,7 +2694,7 @@ def infer_config(args, constructor, trace_patch, layout_patch, param_ctx=None):
         args["histnorm"] = args["ecdfnorm"]
 
     # Compute applicable grouping attributes
-    grouped_attrs.extend([k for k in ctx.group_attrables if k in args])
+    grouped_attrs.extend([k for k in group_attrables if k in args])
 
     # Create grouped mappings
     grouped_mappings = [make_mapping(args, a) for a in grouped_attrs]
@@ -2657,22 +2777,15 @@ def get_groups_and_orders(args, grouper):
     return groups, orders
 
 
-def make_figure(args, constructor, trace_patch=None, layout_patch=None, chart_name=None):
+def make_figure(args, constructor, trace_patch=None, layout_patch=None):
     trace_patch = trace_patch or {}
     layout_patch = layout_patch or {}
-
-    # ---- Build chart-specific parameter context (single source of truth)
-    # Every downstream function (build_dataframe, process_args_into_dataframe,
-    # infer_config, etc.) consumes this explicit context instead of relying on
-    # module-level globals.  No global state mutation, no concurrency risk.
-    param_ctx = PARAMS.context_for(chart_name)
-
     # Track if color_continuous_scale was explicitly provided by user
     # (before apply_default_cascade fills it from template/defaults)
     user_provided_colorscale = args.get("color_continuous_scale") is not None
-    apply_default_cascade(args, constructor=constructor, param_ctx=param_ctx)
+    apply_default_cascade(args, constructor=constructor)
 
-    args = build_dataframe(args, constructor, param_ctx=param_ctx)
+    args = build_dataframe(args, constructor)
     if constructor in [go.Treemap, go.Sunburst, go.Icicle] and args["path"] is not None:
         args = process_dataframe_hierarchy(args)
     if constructor in [go.Pie]:
@@ -2686,7 +2799,7 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None, chart_na
         layout_patch["barmode"] = "overlay"
 
     trace_specs, grouped_mappings, sizeref, show_colorbar = infer_config(
-        args, constructor, trace_patch, layout_patch, param_ctx=param_ctx
+        args, constructor, trace_patch, layout_patch
     )
     grouper = [x.grouper or one_group for x in grouped_mappings] or [one_group]
     groups, orders = get_groups_and_orders(args, grouper)
@@ -2713,57 +2826,37 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None, chart_na
 
     subplot_type = _subplot_type_for_trace_type(constructor().type)
 
-    trace_names_by_frame = {}
+    naming_ctx = NamingContext(args, grouped_mappings, grouper, orders)
     frames = OrderedDict()
     trendline_rows = []
-    trace_name_labels = None
     facet_col_wrap = args.get("facet_col_wrap", 0)
     for group_name, group in groups.items():
-        mapping_labels = OrderedDict()
-        trace_name_labels = OrderedDict()
-        frame_name = ""
-        for col, val, m in zip(grouper, group_name, grouped_mappings):
-            if col != one_group:
-                key = get_label(args, col)
-                if not isinstance(m.val_map, IdentityMap):
-                    mapping_labels[key] = str(val)
-                    if m.show_in_trace_name:
-                        trace_name_labels[key] = str(val)
-                if m.variable == "animation_frame":
-                    frame_name = val
-        trace_name = ", ".join(trace_name_labels.values())
-        if frame_name not in trace_names_by_frame:
-            trace_names_by_frame[frame_name] = set()
-        trace_names = trace_names_by_frame[frame_name]
+        for i, trace_spec in enumerate(trace_specs):
+            if i == 0:
+                base_naming = naming_ctx.get_base_naming(group_name, trace_spec)
+                naming = base_naming
+            else:
+                naming = naming_ctx.get_trendline_naming(base_naming)
 
-        for trace_spec in trace_specs:
-            # Create the trace
+            trace_name = naming["name"]
+            frame_name = naming["frame_name"] if i == 0 else base_naming["frame_name"]
+            mapping_labels = (
+                base_naming["mapping_labels"] if i == 0 else OrderedDict()
+            )
+
             trace = trace_spec.constructor(name=trace_name)
-            if trace_spec.constructor not in [
-                go.Parcats,
-                go.Parcoords,
-                go.Choropleth,
-                go.Choroplethmap,
-                go.Choroplethmapbox,
-                go.Densitymap,
-                go.Densitymapbox,
-                go.Histogram2d,
-                go.Sunburst,
-                go.Treemap,
-                go.Icicle,
-            ]:
+
+            if naming["legendgroup"] is not None:
                 trace.update(
-                    legendgroup=trace_name,
-                    showlegend=(trace_name != "" and trace_name not in trace_names),
+                    legendgroup=naming["legendgroup"],
+                    showlegend=naming["showlegend"],
                 )
 
-            # Set 'offsetgroup' only in group barmode (or if no barmode is set)
             barmode = layout_patch.get("barmode")
             if trace_spec.constructor in [go.Bar, go.Box, go.Violin, go.Histogram] and (
                 barmode == "group" or barmode is None
             ):
                 trace.update(alignmentgroup=True, offsetgroup=trace_name)
-            trace_names.add(trace_name)
 
             # Init subplot row/col
             trace._subplot_row = 1
@@ -2904,17 +2997,18 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None, chart_na
         if user_provided_colorscale:
             coloraxis_dict["autocolorscale"] = False
         layout_patch["coloraxis1"] = coloraxis_dict
-    for v in param_ctx.layout_config_params:
-        if v in ("height", "width") and args.get(v):
+    for v in ["height", "width"]:
+        if args[v]:
             layout_patch[v] = args[v]
     layout_patch["legend"] = dict(tracegroupgap=0)
-    if trace_name_labels:
-        layout_patch["legend"]["title_text"] = ", ".join(trace_name_labels)
-    if args.get("title"):
+    legend_title = naming_ctx.get_legend_title()
+    if legend_title:
+        layout_patch["legend"]["title_text"] = legend_title
+    if args["title"]:
         layout_patch["title_text"] = args["title"]
     elif args["template"].layout.margin.t is None:
         layout_patch["margin"] = {"t": 60}
-    if args.get("subtitle"):
+    if args["subtitle"]:
         layout_patch["title_subtitle_text"] = args["subtitle"]
     if (
         "size" in args
@@ -2963,8 +3057,11 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None, chart_na
 
     if args.get("trendline") and args.get("trendline_scope", "trace") == "overall":
         trendline_spec = make_trendline_spec(args, constructor)
+        overall_naming = naming_ctx.get_overall_trendline_naming()
         trendline_trace = trendline_spec.constructor(
-            name="Overall Trendline", legendgroup="Overall Trendline", showlegend=False
+            name=overall_naming["name"],
+            legendgroup=overall_naming["legendgroup"],
+            showlegend=overall_naming["showlegend"],
         )
         if "line" not in trendline_spec.trace_patch:  # no color override
             for m in grouped_mappings:

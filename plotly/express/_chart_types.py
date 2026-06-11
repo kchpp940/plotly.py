@@ -1,9 +1,7 @@
 from warnings import warn
-import inspect
 
 from ._core import make_figure
 from ._doc import make_docstring
-from ._params import PARAMS
 import plotly.graph_objs as go
 
 _wide_mode_xy_append = [
@@ -13,113 +11,6 @@ _wide_mode_xy_append = [
 _cartesian_append_dict = dict(x=_wide_mode_xy_append, y=_wide_mode_xy_append)
 
 
-def _register_chart(chart_name, constructor, strict=True, **doc_kwargs):
-    """Decorator that registers a chart function and auto-wraps it.
-
-    Automatically does **four** things for every chart:
-
-    1. **Signature validation** – checks that the function's parameters match
-       what's registered in ``PARAMS``. Catches missing / extra params at
-       import time instead of runtime.
-    2. **Docstring generation** – builds the full arg-by-arg docstring from the
-       registry. ``strict=True`` means every param *must* have a doc entry,
-       no silent placeholders.
-    3. **Metadata binding** – attaches ``_chart_name`` and ``_chart_constructor``
-       attributes so the function knows its own identity.
-    4. **Auto-wrapping** – replaces the function body so it automatically calls
-       :func:`make_figure` with the correct ``chart_name`` and ``constructor``.
-       The original function body becomes a *configurer* that can optionally
-       return a ``(trace_patch, layout_patch)`` tuple.
-
-    This means the chart function no longer needs to call ``make_figure()`` or
-    ``_fig()`` at all.  It only contains business-logic differences – i.e.
-    the ``trace_patch`` and ``layout_patch`` that distinguish it from other
-    charts that share the same constructor.
-
-    Examples
-    --------
-    A simple chart with no patches::
-
-        @_register_chart("scatter", go.Scatter, append_dict=_cartesian_append_dict)
-        def scatter(data_frame=None, x=None, y=None, ...):
-            '''In a scatter plot, each row of `data_frame` ...'''
-            # no return needed → equivalent to return None
-
-    A chart with patches::
-
-        @_register_chart("bar", go.Bar, append_dict=_cartesian_append_dict)
-        def bar(data_frame=None, x=None, y=None, ..., barmode="relative"):
-            '''In a bar plot, ...'''
-            return dict(trace_patch=dict(textposition="auto"),
-                        layout_patch=dict(barmode=barmode))
-
-    Parameters
-    ----------
-    chart_name : str
-        The chart's key in the ParamRegistry (e.g. ``"scatter"``).
-    constructor : callable or str
-        The trace constructor (e.g. ``go.Scatter``) or a string like
-        ``"timeline"`` for special cases.
-    strict : bool
-        Whether to use strict docstring mode (missing docs raise ``KeyError``).
-    **doc_kwargs
-        Extra kwargs passed through to :func:`make_docstring`
-        (e.g. ``append_dict``, ``override_dict``).
-    """
-    def decorator(func):
-        sig_params = list(inspect.signature(func).parameters.keys())
-        PARAMS.assert_signature_matches(chart_name, sig_params)
-        func.__doc__ = make_docstring(func, strict=strict, **doc_kwargs)
-        func._chart_name = chart_name
-        func._chart_constructor = constructor
-
-        original_func = func
-
-        def wrapper(*args_call, **kwargs_call):
-            all_kwargs = _bind_signature(original_func, args_call, kwargs_call)
-            patches = original_func(**all_kwargs)
-            trace_patch = None
-            layout_patch = None
-            if patches is not None:
-                trace_patch = patches.get("trace_patch")
-                layout_patch = patches.get("layout_patch")
-            return make_figure(
-                args=all_kwargs,
-                constructor=constructor,
-                trace_patch=trace_patch,
-                layout_patch=layout_patch,
-                chart_name=chart_name,
-            )
-
-        wrapper.__name__ = func.__name__
-        wrapper.__qualname__ = func.__qualname__
-        wrapper.__doc__ = func.__doc__
-        wrapper.__module__ = func.__module__
-        wrapper._chart_name = chart_name
-        wrapper._chart_constructor = constructor
-        wrapper.__wrapped__ = original_func
-        import functools
-        functools.update_wrapper(wrapper, func)
-        wrapper._chart_name = chart_name
-        wrapper._chart_constructor = constructor
-        wrapper.__wrapped__ = original_func
-        return wrapper
-    return decorator
-
-
-def _bind_signature(func, args_call, kwargs_call):
-    """Bind positional and keyword arguments to func's signature.
-
-    Returns a flat ``dict`` of ``{param_name: value}`` for all parameters,
-    filling in defaults for any parameters not provided by the caller.
-    """
-    sig = inspect.signature(func)
-    bound = sig.bind(*args_call, **kwargs_call)
-    bound.apply_defaults()
-    return dict(bound.arguments)
-
-
-@_register_chart("scatter", go.Scatter, append_dict=_cartesian_append_dict)
 def scatter(
     data_frame=None,
     x=None,
@@ -175,6 +66,10 @@ def scatter(
     In a scatter plot, each row of `data_frame` is represented by a symbol
     mark in 2D space.
     """
+    return make_figure(args=locals(), constructor=go.Scatter)
+
+
+scatter.__doc__ = make_docstring(scatter, append_dict=_cartesian_append_dict)
 
 
 def density_contour(
@@ -323,7 +218,6 @@ density_heatmap.__doc__ = make_docstring(
 )
 
 
-@_register_chart("line", go.Scatter, append_dict=_cartesian_append_dict)
 def line(
     data_frame=None,
     x=None,
@@ -373,6 +267,10 @@ def line(
     In a 2D line plot, each row of `data_frame` is represented as a vertex of
     a polyline mark in 2D space.
     """
+    return make_figure(args=locals(), constructor=go.Scatter)
+
+
+line.__doc__ = make_docstring(line, append_dict=_cartesian_append_dict)
 
 
 def area(
@@ -431,7 +329,6 @@ def area(
 area.__doc__ = make_docstring(area, append_dict=_cartesian_append_dict)
 
 
-@_register_chart("bar", go.Bar, append_dict=_cartesian_append_dict)
 def bar(
     data_frame=None,
     x=None,
@@ -481,10 +378,15 @@ def bar(
     In a bar plot, each row of `data_frame` is represented as a rectangular
     mark.
     """
-    return dict(
+    return make_figure(
+        args=locals(),
+        constructor=go.Bar,
         trace_patch=dict(textposition="auto"),
         layout_patch=dict(barmode=barmode),
     )
+
+
+bar.__doc__ = make_docstring(bar, append_dict=_cartesian_append_dict)
 
 
 def timeline(
@@ -538,19 +440,6 @@ def timeline(
 timeline.__doc__ = make_docstring(timeline)
 
 
-@_register_chart(
-    "histogram",
-    go.Histogram,
-    append_dict=dict(
-        x=["If `orientation` is `'h'`, these values are used as inputs to `histfunc`."]
-        + _wide_mode_xy_append,
-        y=["If `orientation` is `'v'`, these values are used as inputs to `histfunc`."]
-        + _wide_mode_xy_append,
-        histfunc=[
-            "The arguments to this function are the values of `y` (`x`) if `orientation` is `'v'` (`'h'`).",
-        ],
-    ),
-)
 def histogram(
     data_frame=None,
     x=None,
@@ -598,7 +487,9 @@ def histogram(
     function `histfunc` (e.g. the count or sum) of the value `y` (or `x` if
     `orientation` is `'h'`).
     """
-    return dict(
+    return make_figure(
+        args=locals(),
+        constructor=go.Histogram,
         trace_patch=dict(
             histnorm=histnorm,
             histfunc=histfunc,
@@ -606,6 +497,20 @@ def histogram(
         ),
         layout_patch=dict(barmode=barmode, barnorm=barnorm),
     )
+
+
+histogram.__doc__ = make_docstring(
+    histogram,
+    append_dict=dict(
+        x=["If `orientation` is `'h'`, these values are used as inputs to `histfunc`."]
+        + _wide_mode_xy_append,
+        y=["If `orientation` is `'v'`, these values are used as inputs to `histfunc`."]
+        + _wide_mode_xy_append,
+        histfunc=[
+            "The arguments to this function are the values of `y` (`x`) if `orientation` is `'v'` (`'h'`).",
+        ],
+    ),
+)
 
 
 def ecdf(
@@ -2063,31 +1968,3 @@ def funnel_area(
 
 
 funnel_area.__doc__ = make_docstring(funnel_area)
-
-
-# ---------------------------------------------------------------------------
-# Signature consistency checks – every parameter in the public function
-# signatures of the core chart types must be registered in PARAMS.  This
-# catches drift between the function signatures and the single source of
-# truth in `_params.py`.
-# ---------------------------------------------------------------------------
-import inspect as _inspect
-from ._params import PARAMS as _PARAMS
-
-
-def _assert_signatures_match_registry() -> None:
-    """Assert that core chart function signatures are covered by PARAMS.
-
-    This is a development-time / import-time guard.  It runs once at the
-    bottom of this module and raises immediately if any parameter in a
-    public chart function is missing a :class:`ParamMeta` registration.
-    """
-    core_charts = ("scatter", "line", "bar", "histogram")
-    for name in core_charts:
-        func = globals()[name]
-        sig = _inspect.signature(func)
-        sig_params = list(sig.parameters.keys())
-        _PARAMS.assert_signature_matches(name, sig_params)
-
-
-_assert_signatures_match_registry()
