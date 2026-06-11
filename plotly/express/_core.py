@@ -1,6 +1,5 @@
 import plotly.graph_objs as go
 import plotly.io as pio
-import re
 from collections import namedtuple, OrderedDict
 from ._special_inputs import IdentityMap, Constant, Range
 from .trendline_functions import ols, lowess, rolling, expanding, ewm
@@ -319,53 +318,6 @@ def make_mapping(args, variable):
         ),
         facet=None,
     )
-
-
-def _extract_customdata_columns(args, mapping_labels):
-    """
-    Build a mapping ``{column_name: column_index}`` for customdata fields
-    produced by Plotly Express.
-
-    The mapping is assembled from two sources:
-
-    1. ``args["custom_data"]`` — the explicit list of column names passed
-       by the user, in order.
-    2. ``mapping_labels`` — keys that map to ``"%{customdata[N]}"``
-       template strings (these cover hover_data-promoted columns as well).
-    """
-    col_map = {}
-    custom_data_list = args.get("custom_data") or []
-    for i, col in enumerate(custom_data_list):
-        col_map[str(col)] = i
-
-    customdata_template_re = re.compile(r"^%\{customdata\[(\d+)\]\}$")
-    for label, template in mapping_labels.items():
-        m = customdata_template_re.match(template)
-        if m:
-            col_idx = int(m.group(1))
-            col_map[label] = col_idx
-
-    hover_data = args.get("hover_data")
-    if isinstance(hover_data, (dict, list, tuple)):
-        for col in hover_data:
-            if isinstance(hover_data, dict) and not hover_data[col]:
-                continue
-            if col in [args.get("x"), args.get("y"), args.get("z"), args.get("base")]:
-                continue
-            if col not in col_map:
-                try:
-                    position = custom_data_list.index(col)
-                except (ValueError, AttributeError, KeyError):
-                    position = len(custom_data_list)
-                    custom_data_list.append(col)
-                col_map[str(col)] = position
-
-    return col_map
-
-
-def _apply_trace_patch(trace, patch):
-    if patch:
-        trace.update(patch)
 
 
 def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
@@ -688,10 +640,7 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
         hover_lines = [k + "=" + v for k, v in mapping_labels_copy.items()]
         trace_patch["hovertemplate"] = hover_header + "<br>".join(hover_lines)
         trace_patch["hovertemplate"] += "<extra></extra>"
-
-    customdata_col_map = _extract_customdata_columns(args, mapping_labels) or None
-
-    return trace_patch, fit_results, customdata_col_map
+    return trace_patch, fit_results
 
 
 def configure_axes(args, constructor, fig, orders):
@@ -2733,6 +2682,294 @@ def get_groups_and_orders(args, grouper):
     return groups, orders
 
 
+def _parse_summary_spec(args):
+    summary = args.get("summary")
+    if summary is None:
+        return []
+
+    if isinstance(summary, str):
+        summary = [summary]
+
+    specs = []
+    if isinstance(summary, list):
+        for item in summary:
+            if isinstance(item, str):
+                specs.append(dict(
+                    type=item,
+                    col=None,
+                    show="annotation",
+                    format=None,
+                ))
+            elif isinstance(item, dict):
+                specs.append(dict(
+                    type=item.get("type", "mean"),
+                    col=item.get("col"),
+                    show=item.get("show", "annotation"),
+                    format=item.get("format"),
+                ))
+    elif isinstance(summary, dict):
+        specs.append(dict(
+            type=summary.get("type", "mean"),
+            col=summary.get("col"),
+            show=summary.get("show", "annotation"),
+            format=summary.get("format"),
+        ))
+
+    valid_types = {"mean", "median", "sum", "count", "percent"}
+    for spec in specs:
+        if spec["type"] not in valid_types:
+            raise ValueError(
+                "Invalid summary type '%s'. Valid types are: %s"
+                % (spec["type"], ", ".join(sorted(valid_types)))
+            )
+
+    return specs
+
+
+def _get_summary_column(args, spec):
+    if spec["col"] is not None:
+        return _resolve_col(args, spec["col"])
+
+    orientation = args.get("orientation", "v")
+    if orientation == "h":
+        return _resolve_col(args, args.get("x"))
+    return _resolve_col(args, args.get("y"))
+
+
+def _compute_summary_stats(args, groups, grouper, grouped_mappings, orders):
+    specs = _parse_summary_spec(args)
+    if not specs:
+        return [], {}
+
+    summary_stats = {}
+    df: nw.DataFrame = args["data_frame"]
+
+    for spec in specs:
+        col = _get_summary_column(args, spec)
+        summary_type = spec["type"]
+
+        for group_name, group_df in groups.items():
+            if group_name not in summary_stats:
+                summary_stats[group_name] = {}
+
+            try:
+                value = None
+
+                if summary_type == "count":
+                    value = len(group_df)
+                elif col is not None:
+                    series = group_df.get_column(col)
+
+                    if summary_type == "mean":
+                        value = nw.to_py_scalar(series.mean())
+                    elif summary_type == "median":
+                        value = nw.to_py_scalar(series.median())
+                    elif summary_type == "sum":
+                        value = nw.to_py_scalar(series.sum())
+                    elif summary_type == "percent":
+                        if col in df.columns:
+                            group_total = series.sum()
+                            total = df.get_column(col).sum()
+                            if total != 0:
+                                value = nw.to_py_scalar(group_total / total * 100)
+                            else:
+                                value = 0
+                        else:
+                            value = 0
+
+                summary_stats[group_name][summary_type] = value
+            except Exception:
+                summary_stats[group_name][summary_type] = None
+
+    return specs, summary_stats
+
+
+def _format_summary_value(value, spec):
+    if value is None:
+        return "N/A"
+
+    fmt = spec.get("format")
+    summary_type = spec["type"]
+
+    if fmt:
+        try:
+            return format(value, fmt)
+        except (ValueError, TypeError):
+            return str(value)
+
+    if summary_type == "percent":
+        return "%.2f%%" % value
+    if summary_type == "count":
+        return "%d" % int(value)
+    if isinstance(value, float):
+        if abs(value) >= 1000 or (abs(value) < 0.01 and value != 0):
+            return "%.4g" % value
+        return "%.3f" % value
+    return str(value)
+
+
+def _build_summary_label(spec):
+    summary_type = spec["type"]
+    labels = {
+        "mean": "Mean",
+        "median": "Median",
+        "sum": "Total",
+        "count": "Count",
+        "percent": "Percent",
+    }
+    return labels.get(summary_type, summary_type)
+
+
+def _build_summary_text(specs, stats):
+    parts = []
+    for spec in specs:
+        stype = spec["type"]
+        if stype in stats and stats[stype] is not None:
+            label = _build_summary_label(spec)
+            value = _format_summary_value(stats[stype], spec)
+            parts.append("%s: %s" % (label, value))
+    return "<br>".join(parts)
+
+
+def _get_group_trace_name(args, group_name, grouper, grouped_mappings):
+    labels = []
+    for col, val, m in zip(grouper, group_name, grouped_mappings):
+        if col != one_group and m.show_in_trace_name:
+            labels.append(str(val))
+    return ", ".join(labels)
+
+
+def _create_summary_annotations(args, specs, summary_stats, groups, grouper,
+                                 grouped_mappings, orders, constructor):
+    if not specs:
+        return []
+
+    annotations = []
+
+    for group_name, stats in summary_stats.items():
+        if not stats or all(v is None for v in stats.values()):
+            continue
+
+        row = 1
+        col = 1
+
+        for _, g_val, m in zip(grouper, group_name, grouped_mappings):
+            if m.facet == "row":
+                row = m.val_map[g_val]
+            elif m.facet == "col":
+                col = m.val_map[g_val]
+
+        text = _build_summary_text(specs, stats)
+        if not text:
+            continue
+
+        trace_name = _get_group_trace_name(args, group_name, grouper, grouped_mappings)
+        if trace_name:
+            text = "<b>%s</b><br>%s" % (trace_name, text)
+
+        xref = "x%d" % col if col > 1 else "x"
+        yref = "y%d" % row if row > 1 else "y"
+
+        placed = False
+
+        if constructor in [go.Bar] and not args.get("marginal_x") and not args.get("marginal_y"):
+            group_df = groups[group_name]
+            orientation = args.get("orientation", "v")
+            val_col = _get_summary_column(args, specs[0])
+            cat_col_name = args.get("x") if orientation == "v" else args.get("y")
+            cat_col = _resolve_col(args, cat_col_name) if cat_col_name else None
+
+            if cat_col and cat_col in group_df.columns:
+                cats = group_df.get_column(cat_col).unique(maintain_order=True).to_list()
+                if cats:
+                    last_cat = cats[-1]
+                    if val_col and val_col in group_df.columns:
+                        max_val = nw.to_py_scalar(group_df.get_column(val_col).max())
+                    else:
+                        max_val = 0
+
+                    if orientation == "v":
+                        annot = dict(
+                            x=last_cat,
+                            y=max_val * 1.05 if max_val != 0 else 1,
+                            text=text,
+                            showarrow=False,
+                            xanchor="left",
+                            yanchor="bottom",
+                            xref=xref,
+                            yref=yref,
+                            font=dict(size=11),
+                            bgcolor="rgba(255,255,255,0.85)",
+                            borderpad=4,
+                        )
+                    else:
+                        annot = dict(
+                            x=max_val * 1.05 if max_val != 0 else 1,
+                            y=last_cat,
+                            text=text,
+                            showarrow=False,
+                            xanchor="left",
+                            yanchor="middle",
+                            xref=xref,
+                            yref=yref,
+                            font=dict(size=11),
+                            bgcolor="rgba(255,255,255,0.85)",
+                            borderpad=4,
+                        )
+                    annotations.append(annot)
+                    placed = True
+
+        if not placed and constructor in [go.Scatter, go.Scattergl] and not args.get("marginal_x") and not args.get("marginal_y"):
+            group_df = groups[group_name]
+            x_col = _resolve_col(args, args.get("x"))
+            y_col = _resolve_col(args, args.get("y"))
+
+            if x_col and x_col in group_df.columns and y_col and y_col in group_df.columns:
+                x_series = group_df.get_column(x_col)
+                y_series = group_df.get_column(y_col)
+                if x_series.dtype.is_numeric() and y_series.dtype.is_numeric():
+                    max_x = nw.to_py_scalar(x_series.max())
+                    max_y = nw.to_py_scalar(y_series.max())
+
+                    annot = dict(
+                        x=max_x,
+                        y=max_y,
+                        text=text,
+                        showarrow=False,
+                        xanchor="left",
+                        yanchor="bottom",
+                        xshift=5,
+                        yshift=5,
+                        xref=xref,
+                        yref=yref,
+                        font=dict(size=11),
+                        bgcolor="rgba(255,255,255,0.85)",
+                        borderpad=4,
+                    )
+                    annotations.append(annot)
+                    placed = True
+
+        if not placed:
+            annot = dict(
+                x=0.98,
+                y=0.98,
+                text=text,
+                showarrow=False,
+                xanchor="right",
+                yanchor="top",
+                xref="%s domain" % xref,
+                yref="%s domain" % yref,
+                font=dict(size=11),
+                bgcolor="rgba(255,255,255,0.85)",
+                bordercolor="rgba(0,0,0,0.2)",
+                borderwidth=1,
+                borderpad=6,
+            )
+            annotations.append(annot)
+
+    return annotations
+
+
 def make_figure(args, constructor, trace_patch=None, layout_patch=None):
     trace_patch = trace_patch or {}
     layout_patch = layout_patch or {}
@@ -2760,6 +2997,10 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
     grouper = [x.grouper or one_group for x in grouped_mappings] or [one_group]
     groups, orders = get_groups_and_orders(args, grouper)
 
+    summary_specs, summary_stats = _compute_summary_stats(
+        args, groups, grouper, grouped_mappings, orders
+    )
+
     col_labels = []
     row_labels = []
     nrows = ncols = 1
@@ -2784,7 +3025,6 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
 
     trace_names_by_frame = {}
     frames = OrderedDict()
-    customdata_columns_by_frame = OrderedDict()
     trendline_rows = []
     trace_name_labels = None
     facet_col_wrap = args.get("facet_col_wrap", 0)
@@ -2933,27 +3173,21 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
                 elif args["ecdfnorm"] == "percent":
                     group = group.with_columns((nw.col(var) / group_sum) * 100.0)
 
-            patch, fit_results, customdata_col_map = make_trace_kwargs(
+            patch, fit_results = make_trace_kwargs(
                 args, trace_spec, group, mapping_labels.copy(), sizeref
             )
-            _apply_trace_patch(trace, patch)
+            trace.update(patch)
             if fit_results is not None:
                 trendline_rows.append(mapping_labels.copy())
                 trendline_rows[-1]["px_fit_results"] = fit_results
             if frame_name not in frames:
                 frames[frame_name] = dict(data=[], name=frame_name)
-                customdata_columns_by_frame[frame_name] = []
             frames[frame_name]["data"].append(trace)
-            customdata_columns_by_frame[frame_name].append(customdata_col_map)
     frame_list = [f for f in frames.values()]
-    customdata_columns_list = list(customdata_columns_by_frame.values())
     if len(frame_list) > 1:
-        sorted_pairs = sorted(
-            zip(frame_list, customdata_columns_list),
-            key=lambda pair: orders[args["animation_frame"]].index(pair[0]["name"]),
+        frame_list = sorted(
+            frame_list, key=lambda f: orders[args["animation_frame"]].index(f["name"])
         )
-        frame_list = [p[0] for p in sorted_pairs]
-        customdata_columns_list = [p[1] for p in sorted_pairs]
 
     if show_colorbar:
         colorvar = (
@@ -3037,21 +3271,6 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
         f["name"] = str(f["name"])
     fig.frames = frame_list if len(frames) > 1 else []
 
-    # Write back _customdata_columns to traces in fig.data
-    if customdata_columns_list and len(customdata_columns_list[0]) > 0:
-        for i, col_map in enumerate(customdata_columns_list[0]):
-            if col_map is not None and i < len(fig.data):
-                fig.data[i]._customdata_columns = col_map
-
-    # Write back _customdata_columns to traces in frames
-    if len(frames) > 1:
-        for frame_idx, frame_cols in enumerate(customdata_columns_list):
-            if frame_idx < len(fig.frames):
-                frame_data = fig.frames[frame_idx].data
-                for i, col_map in enumerate(frame_cols):
-                    if col_map is not None and i < len(frame_data):
-                        frame_data[i]._customdata_columns = col_map
-
     if args.get("trendline") and args.get("trendline_scope", "trace") == "overall":
         trendline_spec = make_trendline_spec(args, constructor)
         trendline_trace = trendline_spec.constructor(
@@ -3062,15 +3281,13 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
                 if m.variable == "color":
                     next_color = m.sequence[len(m.val_map) % len(m.sequence)]
                     trendline_spec.trace_patch["line"] = dict(color=next_color)
-        patch, fit_results, trendline_customdata = make_trace_kwargs(
+        patch, fit_results = make_trace_kwargs(
             args, trendline_spec, args["data_frame"], {}, sizeref
         )
-        _apply_trace_patch(trendline_trace, patch)
+        trendline_trace.update(patch)
         fig.add_trace(
             trendline_trace, row="all", col="all", exclude_empty_subplots=True
         )
-        if trendline_customdata is not None and len(fig.data) > 0:
-            fig.data[-1]._customdata_columns = trendline_customdata
         fig.update_traces(selector=-1, showlegend=True)
         if fit_results is not None:
             trendline_rows.append(dict(px_fit_results=fit_results))
@@ -3088,6 +3305,65 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
 
     configure_axes(args, constructor, fig, orders)
     configure_animation_controls(args, constructor, fig)
+
+    if summary_specs:
+        summary_annotations = _create_summary_annotations(
+            args, summary_specs, summary_stats, groups, grouper,
+            grouped_mappings, orders, constructor
+        )
+        if summary_annotations:
+            existing_annotations = list(fig.layout.annotations) if fig.layout.annotations else []
+            fig.update_layout(annotations=existing_annotations + summary_annotations)
+
+        show_in_legend = any(
+            spec.get("show") in ("legend", "all") for spec in summary_specs
+        )
+        if show_in_legend:
+            for trace in fig.data:
+                group_name = None
+                for g_name, g_stats in summary_stats.items():
+                    trace_labels = []
+                    for col, val, m in zip(grouper, g_name, grouped_mappings):
+                        if col != one_group and m.show_in_trace_name:
+                            trace_labels.append(str(val))
+                    candidate_name = ", ".join(trace_labels)
+                    if candidate_name == trace.name:
+                        group_name = g_name
+                        break
+                if group_name and group_name in summary_stats:
+                    summary_text = _build_summary_text(summary_specs, summary_stats[group_name])
+                    if summary_text:
+                        trace.name = "%s (%s)" % (trace.name, summary_text.replace("<br>", ", "))
+
+        show_in_hover = any(
+            spec.get("show") in ("hover", "all") for spec in summary_specs
+        )
+        if show_in_hover:
+            for trace in fig.data:
+                group_name = None
+                for g_name, g_stats in summary_stats.items():
+                    trace_labels = []
+                    for col, val, m in zip(grouper, g_name, grouped_mappings):
+                        if col != one_group and m.show_in_trace_name:
+                            trace_labels.append(str(val))
+                    candidate_name = ", ".join(trace_labels)
+                    if candidate_name == trace.name or (
+                        candidate_name and trace.name.startswith(candidate_name)
+                    ):
+                        group_name = g_name
+                        break
+                if group_name and group_name in summary_stats and trace.hovertemplate:
+                    summary_text = _build_summary_text(summary_specs, summary_stats[group_name])
+                    if summary_text:
+                        original = trace.hovertemplate
+                        if "<extra></extra>" in original:
+                            trace.hovertemplate = original.replace(
+                                "<extra></extra>",
+                                "<extra>%s</extra>" % summary_text
+                            )
+                        else:
+                            trace.hovertemplate = original + "<br><br>" + summary_text
+
     return fig
 
 

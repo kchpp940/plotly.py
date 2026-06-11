@@ -606,6 +606,14 @@ docs = dict(
         "If `True` or a string, the x or y or z values will be displayed as text, depending on the orientation",
         "A string like `'.2f'` will be interpreted as a `texttemplate` numeric formatting directive.",
     ],
+    summary=[
+        "str or list of str or dict (default `None`)",
+        "Specifies data summary statistics to compute and display on the figure.",
+        "Supported summary types: `'mean'`, `'median'`, `'sum'`, `'count'`, `'percent'`.",
+        "If a string or list of strings is provided, summaries are computed on the y-axis (or x-axis for horizontal orientation) and displayed as annotations.",
+        "If a dict is provided, it may contain keys like `'type'` (summary type), `'col'` (column to summarize), `'show'` (display mode: `'annotation'`, `'legend'`, `'hover'`, or `'all'`), and `'format'` (number format string).",
+        "Summaries are automatically computed per color/facet/animation group, ensuring consistent grouping with the rest of the plot.",
+    ],
 )
 
 

@@ -130,7 +130,6 @@ if TYPE_CHECKING:
     from ..graph_objs import barpolar
     from ..graph_objs import bar
     from ..graph_objs import layout
-    from .._trace_selector import TraceSelector
 else:
     from _plotly_utils.importers import relative_import
 
@@ -266,7 +265,6 @@ else:
             "..graph_objs.YBins",
             "..graph_objs.Trace",
             "..graph_objs.Histogram2dcontour",
-            ".._trace_selector.TraceSelector",
         ],
     )
 
