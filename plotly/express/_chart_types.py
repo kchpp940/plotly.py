@@ -1,7 +1,9 @@
 from warnings import warn
+import inspect
 
 from ._core import make_figure
 from ._doc import make_docstring
+from ._params import PARAMS
 import plotly.graph_objs as go
 
 _wide_mode_xy_append = [
@@ -11,6 +13,72 @@ _wide_mode_xy_append = [
 _cartesian_append_dict = dict(x=_wide_mode_xy_append, y=_wide_mode_xy_append)
 
 
+def _register_chart(chart_name, constructor, strict=True, **doc_kwargs):
+    """Decorator that registers a chart function with the ParamRegistry.
+
+    Automatically does three things for every chart:
+
+    1. **Signature validation** – checks that the function's parameters match
+       what's registered in ``PARAMS``. Catches missing / extra params at
+       import time instead of runtime.
+    2. **Docstring generation** – builds the full arg-by-arg docstring from the
+       registry. ``strict=True`` means every param *must* have a doc entry,
+       no silent placeholders.
+    3. **Metadata binding** – attaches ``_chart_name`` and ``_chart_constructor``
+       attributes so the function knows its own identity.
+
+    This means adding a new chart (or adding a param to an existing one) only
+    requires updating :mod:`plotly.express._params` – the signature check, the
+    docs, and the data pipeline all read from the same source.
+
+    Parameters
+    ----------
+    chart_name : str
+        The chart's key in the ParamRegistry (e.g. ``"scatter"``).
+    constructor : callable or str
+        The trace constructor (e.g. ``go.Scatter``) or a string like
+        ``"timeline"`` for special cases.
+    strict : bool
+        Whether to use strict docstring mode (missing docs raise ``KeyError``).
+    **doc_kwargs
+        Extra kwargs passed through to :func:`make_docstring`
+        (e.g. ``append_dict``, ``override_dict``).
+    """
+    def decorator(func):
+        sig_params = list(inspect.signature(func).parameters.keys())
+        PARAMS.assert_signature_matches(chart_name, sig_params)
+        func.__doc__ = make_docstring(func, strict=strict, **doc_kwargs)
+        func._chart_name = chart_name
+        func._chart_constructor = constructor
+        return func
+    return decorator
+
+
+def _fig(func, args, trace_patch=None, layout_patch=None):
+    """Shortcut for ``make_figure`` that reads chart identity from ``func``.
+
+    Every ``@_register_chart``-decorated function has ``_chart_name`` and
+    ``_chart_constructor`` attributes, so instead of writing::
+
+        return make_figure(args=locals(), constructor=go.Scatter, chart_name="scatter")
+
+    you can write::
+
+        return _fig(scatter, locals())
+
+    One source of truth for chart name + constructor, less boilerplate, no
+    chance of misspelling ``chart_name``.
+    """
+    return make_figure(
+        args=args,
+        constructor=func._chart_constructor,
+        trace_patch=trace_patch,
+        layout_patch=layout_patch,
+        chart_name=func._chart_name,
+    )
+
+
+@_register_chart("scatter", go.Scatter, append_dict=_cartesian_append_dict)
 def scatter(
     data_frame=None,
     x=None,
@@ -66,10 +134,7 @@ def scatter(
     In a scatter plot, each row of `data_frame` is represented by a symbol
     mark in 2D space.
     """
-    return make_figure(args=locals(), constructor=go.Scatter, chart_name="scatter")
-
-
-scatter.__doc__ = make_docstring(scatter, append_dict=_cartesian_append_dict, strict=True)
+    return _fig(scatter, locals())
 
 
 def density_contour(
@@ -218,6 +283,7 @@ density_heatmap.__doc__ = make_docstring(
 )
 
 
+@_register_chart("line", go.Scatter, append_dict=_cartesian_append_dict)
 def line(
     data_frame=None,
     x=None,
@@ -267,10 +333,7 @@ def line(
     In a 2D line plot, each row of `data_frame` is represented as a vertex of
     a polyline mark in 2D space.
     """
-    return make_figure(args=locals(), constructor=go.Scatter, chart_name="line")
-
-
-line.__doc__ = make_docstring(line, append_dict=_cartesian_append_dict, strict=True)
+    return _fig(line, locals())
 
 
 def area(
@@ -329,6 +392,7 @@ def area(
 area.__doc__ = make_docstring(area, append_dict=_cartesian_append_dict)
 
 
+@_register_chart("bar", go.Bar, append_dict=_cartesian_append_dict)
 def bar(
     data_frame=None,
     x=None,
@@ -378,16 +442,12 @@ def bar(
     In a bar plot, each row of `data_frame` is represented as a rectangular
     mark.
     """
-    return make_figure(
-        args=locals(),
-        constructor=go.Bar,
+    return _fig(
+        bar,
+        locals(),
         trace_patch=dict(textposition="auto"),
         layout_patch=dict(barmode=barmode),
-        chart_name="bar",
     )
-
-
-bar.__doc__ = make_docstring(bar, append_dict=_cartesian_append_dict, strict=True)
 
 
 def timeline(
@@ -441,6 +501,19 @@ def timeline(
 timeline.__doc__ = make_docstring(timeline)
 
 
+@_register_chart(
+    "histogram",
+    go.Histogram,
+    append_dict=dict(
+        x=["If `orientation` is `'h'`, these values are used as inputs to `histfunc`."]
+        + _wide_mode_xy_append,
+        y=["If `orientation` is `'v'`, these values are used as inputs to `histfunc`."]
+        + _wide_mode_xy_append,
+        histfunc=[
+            "The arguments to this function are the values of `y` (`x`) if `orientation` is `'v'` (`'h'`).",
+        ],
+    ),
+)
 def histogram(
     data_frame=None,
     x=None,
@@ -488,32 +561,16 @@ def histogram(
     function `histfunc` (e.g. the count or sum) of the value `y` (or `x` if
     `orientation` is `'h'`).
     """
-    return make_figure(
-        args=locals(),
-        constructor=go.Histogram,
+    return _fig(
+        histogram,
+        locals(),
         trace_patch=dict(
             histnorm=histnorm,
             histfunc=histfunc,
             cumulative=dict(enabled=cumulative),
         ),
         layout_patch=dict(barmode=barmode, barnorm=barnorm),
-        chart_name="histogram",
     )
-
-
-histogram.__doc__ = make_docstring(
-    histogram,
-    append_dict=dict(
-        x=["If `orientation` is `'h'`, these values are used as inputs to `histfunc`."]
-        + _wide_mode_xy_append,
-        y=["If `orientation` is `'v'`, these values are used as inputs to `histfunc`."]
-        + _wide_mode_xy_append,
-        histfunc=[
-            "The arguments to this function are the values of `y` (`x`) if `orientation` is `'v'` (`'h'`).",
-        ],
-    ),
-    strict=True,
-)
 
 
 def ecdf(

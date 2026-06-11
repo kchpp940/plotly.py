@@ -249,6 +249,7 @@ class ParamRegistry:
             group_attrables=group,
             renameable_group_attrables=renameable,
             all_attrables=self.get_all_attrables(chart_name),
+            _registry=self,
         )
 
 
@@ -257,9 +258,12 @@ class ParamContext:
     """Chart-specific parameter-consumption context.
 
     A single immutable-ish bundle of every per-chart metadata slice that the
-    build_dataframe / process_args_into_dataframe / infer_config pipeline needs.
-    Eliminates module-level ``*_attrables`` globals and the concurrent / nested
-    call pollution they cause.
+    whole Express pipeline needs – from docstring generation through dataframe
+    building to trace / layout config splitting.
+
+    All queries go through the same ``ParamMeta`` source so adding / removing
+    a parameter, or changing its category, automatically propagates to every
+    consumer.
 
     Create one via :meth:`ParamRegistry.context_for`.
     """
@@ -270,6 +274,45 @@ class ParamContext:
     group_attrables: List[str]
     renameable_group_attrables: List[str]
     all_attrables: List[str]
+
+    _registry: "ParamRegistry" = None  # type: ignore[assignment]
+    _by_category_cache: Dict[str, List[str]] = None  # type: ignore[assignment]
+
+    # ---- by-category lookups (cached on first access) ----
+    def by_category(self, category: str) -> List[str]:
+        """Return parameter names belonging to ``category`` for this chart."""
+        if self._by_category_cache is None:
+            self._by_category_cache = {}
+        if category not in self._by_category_cache:
+            self._by_category_cache[category] = (
+                self._registry.by_category_for_chart(category, self.chart_name)
+            )
+        return self._by_category_cache[category]
+
+    @property
+    def trace_config_params(self) -> List[str]:
+        """Parameters that map directly to trace configuration options."""
+        return self.by_category(ParamCategory.TRACE_CONFIG)
+
+    @property
+    def layout_config_params(self) -> List[str]:
+        """Parameters that map directly to layout configuration options."""
+        return self.by_category(ParamCategory.LAYOUT_CONFIG)
+
+    @property
+    def label_params(self) -> List[str]:
+        """Parameters that control axis / legend labels."""
+        return self.by_category(ParamCategory.LABEL)
+
+    @property
+    def mapping_params(self) -> List[str]:
+        """Parameters that map data values to visual attribute sequences."""
+        return self.by_category(ParamCategory.MAPPING)
+
+    @property
+    def mapping_config_params(self) -> List[str]:
+        """Parameters that configure mapping behavior (e.g. colorbar settings)."""
+        return self.by_category(ParamCategory.MAPPING_CONFIG)
 
     # ---- convenience helpers ----
     def has(self, name: str) -> bool:
@@ -286,6 +329,12 @@ class ParamContext:
 
     def is_renameable(self, name: str) -> bool:
         return name in self.renameable_group_attrables
+
+    def is_trace_config(self, name: str) -> bool:
+        return name in self.trace_config_params
+
+    def is_layout_config(self, name: str) -> bool:
+        return name in self.layout_config_params
 
 
 _colref_type = "str or int or Series or array-like"
