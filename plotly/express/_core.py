@@ -2732,11 +2732,7 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
 
     subplot_type = _subplot_type_for_trace_type(constructor().type)
 
-    naming_ctx = NamingContext(
-        args, grouped_mappings, grouper, orders, layout_patch,
-        get_label_fn=get_label, one_group_fn=one_group,
-    )
-    last_naming = None
+    naming_ctx = NamingContext(args, grouped_mappings, grouper, orders, layout_patch)
     frames = OrderedDict()
     trendline_rows = []
     facet_col_wrap = args.get("facet_col_wrap", 0)
@@ -2746,7 +2742,6 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
             if i == 0:
                 naming = naming_ctx.get_base_naming(group_name, trace_spec)
                 base_naming = naming
-                last_naming = naming
             else:
                 naming = naming_ctx.get_trendline_naming(base_naming)
 
@@ -2896,7 +2891,7 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
         if args[v]:
             layout_patch[v] = args[v]
     layout_patch["legend"] = dict(tracegroupgap=0)
-    legend_title = last_naming.legend_title() if last_naming else None
+    legend_title = naming_ctx.get_legend_title()
     if legend_title:
         layout_patch["legend"]["title_text"] = legend_title
     if args["title"]:

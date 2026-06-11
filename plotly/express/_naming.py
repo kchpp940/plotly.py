@@ -3,6 +3,17 @@ from collections import OrderedDict
 from ._special_inputs import IdentityMap
 
 
+def get_label(args, column):
+    try:
+        return args["labels"][column]
+    except Exception:
+        return column
+
+
+def one_group(x):
+    return ""
+
+
 class NamingResult:
     __slots__ = [
         "name",
@@ -48,11 +59,6 @@ class NamingResult:
                 offsetgroup=self.offsetgroup,
             )
 
-    def legend_title(self):
-        if self.legend_title_labels:
-            return ", ".join(self.legend_title_labels)
-        return None
-
 
 class NamingContext:
     _LEGENDLESS_CONSTRUCTORS = {
@@ -71,23 +77,22 @@ class NamingContext:
 
     _ALIGNED_CONSTRUCTORS = {go.Bar, go.Box, go.Violin, go.Histogram}
 
-    def __init__(self, args, grouped_mappings, grouper, orders, layout_patch, get_label_fn, one_group_fn):
+    def __init__(self, args, grouped_mappings, grouper, orders, layout_patch):
         self.args = args
         self.grouped_mappings = grouped_mappings
         self.grouper = grouper
         self.orders = orders
         self.layout_patch = layout_patch
-        self._get_label = get_label_fn
-        self._one_group = one_group_fn
         self._trace_names_by_frame = {}
+        self._last_legend_title_labels = None
 
     def _build_labels(self, group_name):
         mapping_labels = OrderedDict()
         legend_title_labels = OrderedDict()
         frame_name = ""
         for col, val, m in zip(self.grouper, group_name, self.grouped_mappings):
-            if col != self._one_group:
-                key = self._get_label(self.args, col)
+            if not callable(col):
+                key = get_label(self.args, col)
                 if not isinstance(m.val_map, IdentityMap):
                     mapping_labels[key] = str(val)
                     if m.show_in_trace_name:
@@ -129,6 +134,7 @@ class NamingContext:
         )
 
         trace_names.add(trace_name)
+        self._last_legend_title_labels = legend_title_labels
 
         return NamingResult(
             name=trace_name,
@@ -169,3 +175,8 @@ class NamingContext:
             mapping_labels=OrderedDict(),
             legend_title_labels=OrderedDict(),
         )
+
+    def get_legend_title(self):
+        if self._last_legend_title_labels:
+            return ", ".join(self._last_legend_title_labels)
+        return None
