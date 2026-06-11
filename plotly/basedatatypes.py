@@ -3,6 +3,7 @@ from collections import OrderedDict
 import re
 import warnings
 from contextlib import contextmanager
+from typing import Union
 from copy import deepcopy, copy
 import itertools
 from functools import reduce
@@ -3714,7 +3715,16 @@ Invalid property path '{key_path_str}' for layout
 
         return pio.write_html(self, *args, **kwargs)
 
-    def to_image(self, *args, **kwargs):
+    def to_image(
+        self,
+        format: Union[str, None] = None,
+        width: Union[int, None] = None,
+        height: Union[int, None] = None,
+        scale: Union[int, float, None] = None,
+        validate: bool = True,
+        engine: Union[str, None] = None,
+        profile: Union[str, None] = None,
+    ):
         """
         Convert a figure to a static image bytes string
 
@@ -3801,21 +3811,40 @@ Invalid property path '{key_path_str}' for layout
 
         if ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS:
             if (
-                kwargs.get("engine", None) in {None, "auto", "kaleido"}
+                engine in {None, "auto", "kaleido"}
                 and kaleido_available()
                 and kaleido_major() < 1
             ):
                 warnings.warn(KALEIDO_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-            if kwargs.get("engine", None) == "orca":
+            if engine == "orca":
                 warnings.warn(ORCA_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-            if kwargs.get("engine", None):
+            if engine is not None and engine != "auto":
                 warnings.warn(
                     ENGINE_PARAM_DEPRECATION_MSG, DeprecationWarning, stacklevel=2
                 )
 
-        return pio.to_image(self, *args, **kwargs)
+        return pio.to_image(
+            self,
+            format=format,
+            width=width,
+            height=height,
+            scale=scale,
+            validate=validate,
+            engine=engine,
+            profile=profile,
+        )
 
-    def write_image(self, *args, **kwargs):
+    def write_image(
+        self,
+        file,
+        format: Union[str, None] = None,
+        scale: Union[int, float, None] = None,
+        width: Union[int, None] = None,
+        height: Union[int, None] = None,
+        validate: bool = True,
+        engine: Union[str, None] = None,
+        profile: Union[str, None] = None,
+    ):
         """
         Convert a figure to a static image and write it to a file or writeable
         object
@@ -3907,18 +3936,29 @@ Invalid property path '{key_path_str}' for layout
 
         if ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS:
             if (
-                kwargs.get("engine", None) in {None, "auto", "kaleido"}
+                engine in {None, "auto", "kaleido"}
                 and kaleido_available()
                 and kaleido_major() < 1
             ):
                 warnings.warn(KALEIDO_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-            if kwargs.get("engine", None) == "orca":
+            if engine == "orca":
                 warnings.warn(ORCA_DEPRECATION_MSG, DeprecationWarning, stacklevel=2)
-            if kwargs.get("engine", None):
+            if engine is not None and engine != "auto":
                 warnings.warn(
                     ENGINE_PARAM_DEPRECATION_MSG, DeprecationWarning, stacklevel=2
                 )
-        return pio.write_image(self, *args, **kwargs)
+
+        return pio.write_image(
+            self,
+            file,
+            format=format,
+            scale=scale,
+            width=width,
+            height=height,
+            validate=validate,
+            engine=engine,
+            profile=profile,
+        )
 
     # Static helpers
     # --------------
