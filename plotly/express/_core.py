@@ -68,7 +68,6 @@ class PxDefaults(object):
         "size_max",
         "category_orders",
         "labels",
-        "field_display",
     ]
 
     def __init__(self):
@@ -90,7 +89,6 @@ class PxDefaults(object):
         self.size_max = 20
         self.category_orders = {}
         self.labels = {}
-        self.field_display = {}
 
 
 defaults = PxDefaults()
@@ -141,6 +139,13 @@ Mapping = namedtuple(
 TraceSpec = namedtuple("TraceSpec", ["constructor", "attrs", "trace_patch", "marginal"])
 
 
+def get_label(args, column):
+    try:
+        return args["labels"][column]
+    except Exception:
+        return column
+
+
 def invert_label(args, column):
     """Invert mapping.
     Find key corresponding to value column in dict args["labels"].
@@ -153,265 +158,12 @@ def invert_label(args, column):
         return column
 
 
-_VALID_ROLES = frozenset(
-    all_attrables
-    + [
-        "x",
-        "y",
-        "z",
-        "color",
-        "size",
-        "symbol",
-        "line_dash",
-        "pattern_shape",
-        "dash",
-        "pattern",
-        "shape",
-        "facet_row",
-        "facet_col",
-        "animation_frame",
-        "line_group",
-        "hover_name",
-        "text",
-        "dimensions",
-        "trendline",
-    ]
-)
-
-_INTERNAL_DERIVED_COLUMNS = frozenset({"value", "variable", "index"})
-
-
-class FieldDisplayContext:
-    """Normalized field display context for Plotly Express.
-
-    The context holds three *independent* name-spaces that never collide:
-
-    - ``by_role``     : keyed by semantic role  — "x", "y", "color",
-                        "facet_row", "animation_frame", …
-    - ``by_column``   : keyed by original / user-facing DataFrame column names
-    - ``by_internal``  : keyed by internally derived column names produced by
-                        ``build_dataframe`` (e.g. "value", "variable", "index"
-                        from wide-form unpivot, or renamed-duplicate columns)
-
-    Construction
-    ------------
-    Accepts the explicit schema::
-
-        field_display=dict(
-            by_role   = {"x": "横轴", "color": "类别"},
-            by_column = {"sales": "销售额"},
-            by_internal = {"value": "数值", "variable": "月份"},
-        )
-
-    For backward compatibility a *flat* dict is also accepted and is
-    auto-classified: keys that match a known semantic role go to ``by_role``,
-    everything else goes to ``by_column``.
-
-    The ``labels`` parameter is also absorbed at construction time: each entry
-    is merged into ``by_column`` (unless a ``field_display`` entry already
-    exists for the same key, in which case ``field_display`` wins).
-
-    Downstream contract
-    -------------------
-    Axis titles, legend titles, hover field names, and trace names MUST query
-    this context exclusively via ``get_display_name()`` / ``is_hidden()`` /
-    ``get_trace_name()``.  They MUST NOT read ``args["labels"]`` or
-    ``args["field_display"]`` directly.
-    """
-
-    def __init__(self):
-        self.by_role = {}
-        self.by_column = {}
-        self.by_internal = {}
-        self._col_to_internal = {}
-        self._internal_to_col = {}
-
-    # ---- construction helpers ------------------------------------------------
-
-    @classmethod
-    def from_args(cls, args):
-        """Build a normalized context from the raw *args* dict.
-
-        Absorbs both ``field_display`` and ``labels`` so that downstream code
-        never needs to consult either of them again.
-        """
-        ctx = cls()
-        labels_input = args.get("labels") or {}
-        fd_input = args.get("field_display") or {}
-
-        if isinstance(labels_input, dict):
-            for k, v in labels_input.items():
-                ctx.by_column.setdefault(k, v)
-
-        if isinstance(fd_input, dict):
-            has_explicit_keys = (
-                "by_role" in fd_input
-                or "by_column" in fd_input
-                or "by_internal" in fd_input
-            )
-            if has_explicit_keys:
-                for sub_key, target in [
-                    ("by_role", ctx.by_role),
-                    ("by_column", ctx.by_column),
-                    ("by_internal", ctx.by_internal),
-                ]:
-                    sub = fd_input.get(sub_key)
-                    if isinstance(sub, dict):
-                        target.update(sub)
-            else:
-                for k, v in fd_input.items():
-                    if isinstance(k, str) and k in _VALID_ROLES:
-                        ctx.by_role[k] = v
-                    elif isinstance(k, str) and k in _INTERNAL_DERIVED_COLUMNS:
-                        ctx.by_internal[k] = v
-                    else:
-                        ctx.by_column[k] = v
-
-        return ctx
-
-    # ---- mutation helpers (used by build_dataframe) --------------------------
-
-    def register_internal_column(self, internal_name, original_name=None):
-        """Promote a column from *by_column* into *by_internal*.
-
-        If *original_name* is given and exists in ``by_column``, its display
-        config is moved into ``by_internal[internal_name]`` so that lookups
-        by the internal name will find it.
-
-        If *internal_name* itself already sits in ``by_column`` (e.g. the
-        user wrote ``field_display={"value": "销售额"}`` with the flat compat
-        syntax), it is promoted to ``by_internal`` automatically.
-        """
-        if original_name and original_name in self.by_column:
-            self.by_internal[internal_name] = self.by_column[original_name]
-
-        if internal_name in self.by_column:
-            self.by_internal[internal_name] = self.by_column.pop(internal_name)
-
-        if original_name:
-            self._col_to_internal[original_name] = internal_name
-            self._internal_to_col[internal_name] = original_name
-
-    def rename_column(self, old_name, new_name):
-        """Keep ``by_column`` in sync when a DataFrame column is renamed."""
-        if old_name in self.by_column:
-            self.by_column[new_name] = self.by_column.pop(old_name)
-
-        if old_name in self.by_internal:
-            self.by_internal[new_name] = self.by_internal.pop(old_name)
-
-        if old_name in self._col_to_internal:
-            self._col_to_internal[new_name] = self._col_to_internal.pop(old_name)
-
-        if old_name in self._internal_to_col:
-            orig = self._internal_to_col.pop(old_name)
-            self._internal_to_col[new_name] = orig
-            if orig in self._col_to_internal:
-                self._col_to_internal[orig] = new_name
-
-    # ---- query API (the ONLY way downstream may read display names) ----------
-
-    def get_display_name(self, role=None, column=None):
-        """Return the display string for a field.
-
-        Lookup priority (first match wins):
-
-        1. ``by_role[role]``            — if *role* is given and present
-        2. ``by_internal[column]``      — if *column* is an internal derived name
-        3. ``by_column[column]``        — if *column* is an original column name
-        4. *column* itself             — identity fallback
-        """
-        if role and role in self.by_role:
-            val = self.by_role[role]
-            if isinstance(val, str):
-                return val
-
-        if isinstance(column, str):
-            resolved = self._col_to_internal.get(column, column)
-
-            if resolved in self.by_internal:
-                val = self.by_internal[resolved]
-                if isinstance(val, str):
-                    return val
-
-            if column in self.by_column:
-                val = self.by_column[column]
-                if isinstance(val, str):
-                    return val
-
-            return column
-
-        return role or ""
-
-    def is_hidden(self, role=None, column=None):
-        """Return ``True`` if the field is explicitly hidden (value is ``False``)."""
-        if role and role in self.by_role:
-            if self.by_role[role] is False:
-                return True
-
-        if isinstance(column, str):
-            resolved = self._col_to_internal.get(column, column)
-
-            if resolved in self.by_internal and self.by_internal[resolved] is False:
-                return True
-
-            if column in self.by_column and self.by_column[column] is False:
-                return True
-
-        return False
-
-    def get_trace_name(self, role_value_pairs):
-        """Build a trace name from ``(role, value)`` pairs.
-
-        Each pair is rendered as ``<display_name>=<value>``, joined by ", ".
-        """
-        parts = []
-        for role, value in role_value_pairs:
-            label = self.get_display_name(role=role)
-            parts.append(f"{label}={value}")
-        return ", ".join(parts)
-
-
-def resolve_column_key(args, col_name):
-    """Resolve a real DataFrame column name to its internal name (if remapped).
-
-    Use this when you already have a column-name string (e.g. from
-    ``labels`` keys, ``hover_data`` entries, ``by_column`` lookups, or
-    the value of a role argument like ``args["color"]``).
-
-    **Never** consults ``args`` by key — that would risk confusing a
-    column name that happens to collide with a Plotly parameter name.
-    """
-    col_map = args.get("_col_map", {})
-    if isinstance(col_name, str) and col_name in col_map:
-        return col_map[col_name]
-    return col_name
-
-
-def resolve_role_arg(args, role_name):
-    """Resolve a *role parameter name* (like ``"x"``, ``"color"``) to the
-    actual DataFrame column name it refers to.
-
-    Use this only when you know the input is a semantic role key that
-    should be looked up in ``args`` first.
-    """
-    try:
-        col_map = args.get("_col_map", {})
-        if role_name in col_map:
-            return col_map[role_name]
-        if role_name in args:
-            arg_val = args[role_name]
-            if isinstance(arg_val, str) and arg_val in col_map:
-                return col_map[arg_val]
-            return arg_val
-        return role_name
-    except Exception:
-        return role_name
-
-
 def _resolve_col(args, attr_name_or_col):
-    """Deprecated alias — callers should pick :func:`resolve_column_key` or
-    :func:`resolve_role_arg` explicitly depending on what they are passing.
+    """Resolve a semantic column name to the actual DataFrame column name.
+
+    If the name is tracked in args["_col_map"], return the internal name.
+    Otherwise return the name as-is (for backward compatibility).
+    Accepts either an attribute name (like "x") or a direct column name.
     """
     try:
         col_map = args.get("_col_map", {})
@@ -419,8 +171,6 @@ def _resolve_col(args, attr_name_or_col):
             return col_map[attr_name_or_col]
         if attr_name_or_col in args:
             arg_val = args[attr_name_or_col]
-            if arg_val is None:
-                return attr_name_or_col
             if isinstance(arg_val, str) and arg_val in col_map:
                 return col_map[arg_val]
             return arg_val
@@ -483,12 +233,7 @@ def _generate_temporary_column_name(n_bytes, columns) -> str:
 
 
 def get_decorated_label(args, column, role):
-    ctx = args.get("_field_display_ctx")
-    if ctx is not None:
-        resolved_col = resolve_column_key(args, column) if isinstance(column, str) else column
-        original_label = label = ctx.get_display_name(role=role, column=resolved_col)
-    else:
-        original_label = label = column
+    original_label = label = get_label(args, column)
     if "histfunc" in args and (
         (role == "z")
         or (role == "x" and "orientation" in args and args["orientation"] == "h")
@@ -603,7 +348,7 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
     df: nw.DataFrame = args["data_frame"]
 
     def _rc(name):
-        return resolve_column_key(args, name)
+        return _resolve_col(args, name)
 
     def _rc_list(lst):
         if lst is None:
@@ -634,16 +379,8 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
                     <= args["dimensions_max_cardinality"]
                 )
             ]
-            _ctx = args.get("_field_display_ctx")
             trace_patch["dimensions"] = [
-                dict(
-                    label=(
-                        _ctx.get_display_name(role="dimensions", column=_rc(name))
-                        if _ctx is not None
-                        else name
-                    ),
-                    values=column,
-                )
+                dict(label=get_label(args, name), values=column)
                 for (name, column) in dims
             ]
             if trace_spec.constructor == go.Splom:
@@ -735,10 +472,8 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
                         "missing-data-handling failure in trendline code"
                     )
                     trace_patch["y"] = y_out
-                    _ctx = args.get("_field_display_ctx")
-                    if _ctx is not None:
-                        mapping_labels[_ctx.get_display_name(role="x", column=_rc(args["x"]))] = "%{x}"
-                        mapping_labels[_ctx.get_display_name(role="y", column=_rc(args["y"]))] = "%{y} <b>(trend)</b>"
+                    mapping_labels[get_label(args, args["x"])] = "%{x}"
+                    mapping_labels[get_label(args, args["y"])] = "%{y} <b>(trend)</b>"
             elif attr_name.startswith("error"):
                 error_xy = attr_name[:7]
                 arr = "arrayminus" if attr_name.endswith("minus") else "array"
@@ -776,9 +511,6 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
                             args.get("z"),
                             args.get("base"),
                         ]:
-                            continue
-                        _ctx = args.get("_field_display_ctx")
-                        if _ctx is not None and _ctx.is_hidden(role="hover_data", column=_rc(col)):
                             continue
                         try:
                             position = args["custom_data"].index(col)
@@ -1056,11 +788,10 @@ def configure_cartesian_axes(args, fig, orders):
 
 
 def configure_ternary_axes(args, fig, orders):
-    _ctx = args.get("_field_display_ctx")
     fig.update_ternaries(
-        aaxis=dict(title_text=_ctx.get_display_name(role="a", column=resolve_column_key(args, args["a"])) if _ctx else args["a"]),
-        baxis=dict(title_text=_ctx.get_display_name(role="b", column=resolve_column_key(args, args["b"])) if _ctx else args["b"]),
-        caxis=dict(title_text=_ctx.get_display_name(role="c", column=resolve_column_key(args, args["c"])) if _ctx else args["c"]),
+        aaxis=dict(title_text=get_label(args, args["a"])),
+        baxis=dict(title_text=get_label(args, args["b"])),
+        caxis=dict(title_text=get_label(args, args["c"])),
     )
 
 
@@ -1090,11 +821,10 @@ def configure_polar_axes(args, fig, orders):
 
 
 def configure_3d_axes(args, fig, orders):
-    _ctx = args.get("_field_display_ctx")
     patch = dict(
-        xaxis=dict(title_text=_ctx.get_display_name(role="x", column=resolve_column_key(args, args["x"])) if _ctx else args["x"]),
-        yaxis=dict(title_text=_ctx.get_display_name(role="y", column=resolve_column_key(args, args["y"])) if _ctx else args["y"]),
-        zaxis=dict(title_text=_ctx.get_display_name(role="z", column=resolve_column_key(args, args["z"])) if _ctx else args["z"]),
+        xaxis=dict(title_text=get_label(args, args["x"])),
+        yaxis=dict(title_text=get_label(args, args["y"])),
+        zaxis=dict(title_text=get_label(args, args["z"])),
     )
 
     for letter in ["x", "y", "z"]:
@@ -1191,8 +921,8 @@ def configure_animation_controls(args, constructor, fig):
                 "yanchor": "top",
                 "xanchor": "left",
                 "currentvalue": {
-                        "prefix": (args.get("_field_display_ctx") or FieldDisplayContext()).get_display_name(role="animation_frame", column=resolve_column_key(args, args["animation_frame"])) + "="
-                    },
+                    "prefix": get_label(args, args["animation_frame"]) + "="
+                },
                 "pad": {"b": 10, "t": 60},
                 "len": 0.9,
                 "x": 0.1,
@@ -1869,9 +1599,6 @@ def build_dataframe(args, constructor):
     if _labels_provided and isinstance(args["labels"], dict):
         _labels = dict(args["labels"])
 
-    _field_display_ctx = FieldDisplayContext.from_args(args)
-    args["_field_display_ctx"] = _field_display_ctx
-
     _col_map = {}
 
     _df_index_name = None
@@ -1890,7 +1617,6 @@ def build_dataframe(args, constructor):
                 new_cols = _deduplicate_columns(col_list)
                 for old, new in zip(col_list, new_cols):
                     _update_labels_for_rename(_labels, str(old), new)
-                    _field_display_ctx.rename_column(str(old), new)
                 args["data_frame"].columns = new_cols
                 columns = args["data_frame"].columns
             if hasattr(args["data_frame"].index, "name"):
@@ -2066,13 +1792,11 @@ def build_dataframe(args, constructor):
         if value_name != _semantic_value_name:
             _col_map[_semantic_value_name] = value_name
         _original_value_name = "value"
-        _field_display_ctx.register_internal_column(value_name, _semantic_value_name)
         _semantic_var_name = _intended_var_name if _intended_var_name is not None else var_name
         _captured_intended_var_name = _semantic_var_name
         var_name = _escape_col_name(columns, var_name, [])
         if _semantic_var_name is not None and var_name != _semantic_var_name:
             _col_map[_semantic_var_name] = var_name
-        _field_display_ctx.register_internal_column(var_name, _semantic_var_name or "variable")
 
     # If the data_frame has interchange-only support levelin Narwhals, then we need to
     # convert it to a full support level backend.
@@ -2214,7 +1938,6 @@ def build_dataframe(args, constructor):
             if _intended_wide_cross_name is not None
             else wide_cross_name
         )
-        _field_display_ctx.register_internal_column(wide_cross_name, _semantic_wide_cross_name)
 
         dtype = None
         for v in wide_value_vars:
@@ -2248,7 +1971,6 @@ def build_dataframe(args, constructor):
                 if escaped_name != col_name:
                     _col_map[col_name] = escaped_name
                     _update_labels_for_rename(_labels, col_name, escaped_name)
-                    _field_display_ctx.rename_column(col_name, escaped_name)
                 df_output = df_output.with_columns(
                     nw.new_series(
                         name=escaped_name,
@@ -2319,7 +2041,6 @@ def build_dataframe(args, constructor):
         args["labels"] = _labels
     elif not _labels_provided and "labels" in args:
         del args["labels"]
-
     return args
 
 
@@ -2910,7 +2631,7 @@ def get_groups_and_orders(args, grouper):
             single_group_name.append("")
         else:
             if col not in unique_cache:
-                internal_col = resolve_column_key(args, col)
+                internal_col = _resolve_col(args, col)
                 unique_cache[col] = (
                     df.get_column(internal_col).unique(maintain_order=True).to_list()
                 )
@@ -2928,7 +2649,7 @@ def get_groups_and_orders(args, grouper):
     else:
         required_grouper_semantic = [group for group in orders if group in grouper]
         required_grouper_internal = [
-            resolve_column_key(args, g) for g in required_grouper_semantic
+            _resolve_col(args, g) for g in required_grouper_semantic
         ]
         grouped = dict(df.group_by(required_grouper_internal, drop_null_keys=True).__iter__())
 
@@ -2991,20 +2712,17 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
     col_labels = []
     row_labels = []
     nrows = ncols = 1
-    _ctx = args.get("_field_display_ctx")
     for m in grouped_mappings:
         if m.grouper not in orders:
             m.val_map[""] = m.sequence[0]
         else:
             sorted_values = orders[m.grouper]
             if m.facet == "col":
-                fc = _ctx.get_display_name(role="facet_col", column=resolve_column_key(args, args["facet_col"])) if _ctx else args["facet_col"]
-                prefix = fc + "="
+                prefix = get_label(args, args["facet_col"]) + "="
                 col_labels = [prefix + str(s) for s in sorted_values]
                 ncols = len(col_labels)
             if m.facet == "row":
-                fr = _ctx.get_display_name(role="facet_row", column=resolve_column_key(args, args["facet_row"])) if _ctx else args["facet_row"]
-                prefix = fr + "="
+                prefix = get_label(args, args["facet_row"]) + "="
                 row_labels = [prefix + str(s) for s in sorted_values]
                 nrows = len(row_labels)
             for val in sorted_values:
@@ -3024,10 +2742,7 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
         frame_name = ""
         for col, val, m in zip(grouper, group_name, grouped_mappings):
             if col != one_group:
-                role = None
-                if hasattr(m, 'variable') and m.variable:
-                    role = m.variable
-                key = _ctx.get_display_name(role=role, column=resolve_column_key(args, col)) if _ctx else col
+                key = get_label(args, col)
                 if not isinstance(m.val_map, IdentityMap):
                     mapping_labels[key] = str(val)
                     if m.show_in_trace_name:

@@ -5,6 +5,39 @@ import plotly.graph_objs as go
 from plotly.offline import get_plotlyjs_version
 
 
+def resolve_export_kwargs(
+    profile=None,
+    format=None,
+    width=None,
+    height=None,
+    scale=None,
+    validate=None,
+    engine=None,
+):
+    from plotly.io._defaults import defaults
+
+    if profile is not None:
+        profile_dict = defaults.get_profile(profile)
+    else:
+        profile_dict = {}
+
+    resolved_format = format if format is not None else profile_dict.get("format")
+    resolved_width = width if width is not None else profile_dict.get("width")
+    resolved_height = height if height is not None else profile_dict.get("height")
+    resolved_scale = scale if scale is not None else profile_dict.get("scale")
+    resolved_validate = validate if validate is not None else profile_dict.get("validate")
+    resolved_engine = engine if engine is not None else profile_dict.get("engine")
+
+    return dict(
+        format=resolved_format,
+        width=resolved_width,
+        height=resolved_height,
+        scale=resolved_scale,
+        validate=resolved_validate,
+        engine=resolved_engine,
+    )
+
+
 def validate_coerce_fig_to_dict(fig, validate):
     from plotly.basedatatypes import BaseFigure
 

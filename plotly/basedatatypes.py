@@ -3729,7 +3729,8 @@ Invalid property path '{key_path_str}' for layout
               - 'pdf'
               - 'eps' (deprecated) (Requires the poppler library to be installed)
 
-            If not specified, will default to:
+            If not specified, will default to the value from the named profile
+            (if provided), or:
                 - `plotly.io.defaults.default_format` if engine is "kaleido"
                 - `plotly.io.orca.config.default_format` if engine is "orca" (deprecated)
 
@@ -3738,7 +3739,8 @@ Invalid property path '{key_path_str}' for layout
             property is 1.0, this will also be the width of the exported image
             in physical pixels.
 
-            If not specified, will default to:
+            If not specified, will default to the value from the named profile
+            (if provided), or:
                 - `plotly.io.defaults.default_width` if engine is "kaleido"
                 - `plotly.io.orca.config.default_width` if engine is "orca" (deprecated)
 
@@ -3747,7 +3749,8 @@ Invalid property path '{key_path_str}' for layout
             property is 1.0, this will also be the height of the exported image
             in physical pixels.
 
-            If not specified, will default to:
+            If not specified, will default to the value from the named profile
+            (if provided), or:
                 - `plotly.io.defaults.default_height` if engine is "kaleido"
                 - `plotly.io.orca.config.default_height` if engine is "orca" (deprecated)
 
@@ -3757,7 +3760,8 @@ Invalid property path '{key_path_str}' for layout
             to the figure's layout pixel dimensions. Whereas as scale factor of
             less than 1.0 will decrease the image resolution.
 
-            If not specified, will default to:
+            If not specified, will default to the value from the named profile
+            (if provided), or:
                 - `plotly.io.defaults.default_scale` if engine is "kaliedo"
                 - `plotly.io.orca.config.default_scale` if engine is "orca" (deprecated)
 
@@ -3771,6 +3775,14 @@ Invalid property path '{key_path_str}' for layout
             - "kaleido": Use Kaleido for image export
             - "orca": Use Orca for image export
             - "auto" (default): Use Kaleido if installed, otherwise use Orca
+
+        profile: str or None
+            The name of an export profile to use for default values. If provided,
+            values from the profile are used for any parameters not explicitly
+            specified. Explicit parameters always override profile values.
+            Profiles can be configured via ``plotly.io.defaults.profiles``.
+
+            Built-in profiles include: 'web', 'print', 'retina', 'thumbnail'.
 
         Returns
         -------
@@ -3825,7 +3837,7 @@ Invalid property path '{key_path_str}' for layout
 
             If not specified and `file` is a string then this will default to the
             file extension. If not specified and `file` is not a string then this
-            will default to:
+            will default to the value from the named profile (if provided), or:
                 - `plotly.io.defaults.default_format` if engine is "kaleido"
                 - `plotly.io.orca.config.default_format` if engine is "orca" (deprecated)
 
@@ -3834,7 +3846,8 @@ Invalid property path '{key_path_str}' for layout
             property is 1.0, this will also be the width of the exported image
             in physical pixels.
 
-            If not specified, will default to:
+            If not specified, will default to the value from the named profile
+            (if provided), or:
                 - `plotly.io.defaults.default_width` if engine is "kaleido"
                 - `plotly.io.orca.config.default_width` if engine is "orca" (deprecated)
 
@@ -3843,7 +3856,8 @@ Invalid property path '{key_path_str}' for layout
             property is 1.0, this will also be the height of the exported image
             in physical pixels.
 
-            If not specified, will default to:
+            If not specified, will default to the value from the named profile
+            (if provided), or:
                 - `plotly.io.defaults.default_height` if engine is "kaleido"
                 - `plotly.io.orca.config.default_height` if engine is "orca" (deprecated)
 
@@ -3853,7 +3867,8 @@ Invalid property path '{key_path_str}' for layout
             to the figure's layout pixel dimensions. Whereas as scale factor of
             less than 1.0 will decrease the image resolution.
 
-            If not specified, will default to:
+            If not specified, will default to the value from the named profile
+            (if provided), or:
                 - `plotly.io.defaults.default_scale` if engine is "kaleido"
                 - `plotly.io.orca.config.default_scale` if engine is "orca" (deprecated)
 
@@ -3867,6 +3882,14 @@ Invalid property path '{key_path_str}' for layout
             - "kaleido": Use Kaleido for image export
             - "orca": Use Orca for image export
             - "auto" (default): Use Kaleido if installed, otherwise use Orca
+
+        profile: str or None
+            The name of an export profile to use for default values. If provided,
+            values from the profile are used for any parameters not explicitly
+            specified. Explicit parameters always override profile values.
+            Profiles can be configured via ``plotly.io.defaults.profiles``.
+
+            Built-in profiles include: 'web', 'print', 'retina', 'thumbnail'.
 
         Returns
         -------
