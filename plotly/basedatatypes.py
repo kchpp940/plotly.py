@@ -3721,7 +3721,7 @@ Invalid property path '{key_path_str}' for layout
         width: Union[int, None] = None,
         height: Union[int, None] = None,
         scale: Union[int, float, None] = None,
-        validate: bool = True,
+        validate: Union[bool, None] = None,
         engine: Union[str, None] = None,
         profile: Union[str, None] = None,
     ):
@@ -3841,7 +3841,7 @@ Invalid property path '{key_path_str}' for layout
         scale: Union[int, float, None] = None,
         width: Union[int, None] = None,
         height: Union[int, None] = None,
-        validate: bool = True,
+        validate: Union[bool, None] = None,
         engine: Union[str, None] = None,
         profile: Union[str, None] = None,
     ):

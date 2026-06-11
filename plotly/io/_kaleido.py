@@ -7,7 +7,12 @@ from packaging.version import Version
 import warnings
 
 import plotly
-from plotly.io._utils import validate_coerce_fig_to_dict, broadcast_args_to_dicts, resolve_export_kwargs
+from plotly.io._utils import (
+    broadcast_args_to_dicts,
+    ImageExportOptions,
+    as_path_object,
+    infer_format,
+)
 from plotly.io._defaults import defaults
 
 ENGINE_SUPPORT_TIMELINE = "September 2025"
@@ -184,51 +189,13 @@ except ImportError:
     scope = None
 
 
-def as_path_object(file: Union[str, Path]) -> Union[Path, None]:
-    """
-    Cast the `file` argument, which may be either a string or a Path object,
-    to a Path object.
-    If `file` is neither a string nor a Path object, None will be returned.
-    """
-    if isinstance(file, str):
-        # Use the standard Path constructor to make a pathlib object.
-        path = Path(file)
-    elif isinstance(file, Path):
-        # `file` is already a Path object.
-        path = file
-    else:
-        # We could not make a Path object out of file. Either `file` is an open file
-        # descriptor with a `write()` method or it's an invalid object.
-        path = None
-    return path
-
-
-def infer_format(path: Union[Path, None], format: Union[str, None]) -> Union[str, None]:
-    if path is not None and format is None:
-        ext = path.suffix
-        if ext:
-            format = ext.lstrip(".")
-        else:
-            raise ValueError(
-                f"""
-Cannot infer image type from output path '{path}'.
-Please specify the type using the format parameter, or add a file extension.
-For example:
-
-    >>> import plotly.io as pio
-    >>> pio.write_image(fig, file_path, format='png')
-"""
-            )
-    return format
-
-
 def to_image(
     fig: Union[dict, plotly.graph_objects.Figure],
     format: Union[str, None] = None,
     width: Union[int, None] = None,
     height: Union[int, None] = None,
     scale: Union[int, float, None] = None,
-    validate: bool = True,
+    validate: Union[bool, None] = None,
     # Deprecated
     engine: Union[str, None] = None,
     profile: Union[str, None] = None,
@@ -311,21 +278,23 @@ def to_image(
         The image data
     """
 
-    resolved = resolve_export_kwargs(
-        profile=profile,
+    resolved = ImageExportOptions(
+        fig=fig,
         format=format,
         width=width,
         height=height,
         scale=scale,
         validate=validate,
         engine=engine,
-    )
-    format = resolved["format"]
-    width = resolved["width"]
-    height = resolved["height"]
-    scale = resolved["scale"]
-    validate = resolved["validate"] if resolved["validate"] is not None else True
-    engine = resolved["engine"] if resolved["engine"] is not None else "auto"
+        profile=profile,
+    ).resolve()
+
+    format = resolved.format
+    width = resolved.width
+    height = resolved.height
+    scale = resolved.scale
+    validate = resolved.validate
+    engine = resolved.engine
 
     # Handle engine
     if engine is not None and engine != "auto":
@@ -373,8 +342,7 @@ which can be installed using pip:
 """
         )
 
-    # Convert figure to dict (and validate if requested)
-    fig_dict = validate_coerce_fig_to_dict(fig, validate)
+    fig_dict = resolved.fig_dict
 
     # Request image bytes
     if kaleido_major() > 0:
@@ -400,33 +368,9 @@ To downgrade to Kaleido v0, run:
             if defaults.headers:
                 kopts["headers"] = defaults.headers
 
-            width = (
-                width
-                or fig_dict.get("layout", {}).get("width")
-                or fig_dict.get("layout", {})
-                .get("template", {})
-                .get("layout", {})
-                .get("width")
-                or defaults.default_width
-            )
-            height = (
-                height
-                or fig_dict.get("layout", {}).get("height")
-                or fig_dict.get("layout", {})
-                .get("template", {})
-                .get("layout", {})
-                .get("height")
-                or defaults.default_height
-            )
-
             img_bytes = kaleido.calc_fig_sync(
                 fig_dict,
-                opts=dict(
-                    format=format or defaults.default_format,
-                    width=width,
-                    height=height,
-                    scale=scale or defaults.default_scale,
-                ),
+                opts=resolved.opts,
                 topojson=defaults.topojson,
                 kopts=kopts,
             )
@@ -451,7 +395,7 @@ def write_image(
     scale: Union[int, float, None] = None,
     width: Union[int, None] = None,
     height: Union[int, None] = None,
-    validate: bool = True,
+    validate: Union[bool, None] = None,
     # Deprecated
     engine: Union[str, None] = None,
     profile: Union[str, None] = None,
@@ -602,7 +546,7 @@ def write_images(
     scale: Union[List[Union[int, float, None]], Union[int, float, None]] = None,
     width: Union[List[Union[int, None]], Union[int, None]] = None,
     height: Union[List[Union[int, None]], Union[int, None]] = None,
-    validate: Union[List[bool], bool] = True,
+    validate: Union[List[Union[bool, None]], Union[bool, None]] = None,
     profile: Union[List[Union[str, None]], Union[str, None]] = None,
 ) -> None:
     """
@@ -731,37 +675,33 @@ which can be installed using pip:
         profile=profile,
     )
 
-    # For each dict:
-    #   - resolve profile into explicit kwargs
-    #   - convert figures to dicts (and validate if requested)
-    #   - try to cast `file` as a Path object
+    # For each dict, use the unified ImageExportOptions resolver.
+    # This covers profile resolution, path conversion, format inference,
+    # fig_dict coercion with validation, and layout/template/defaults fallback,
+    # all with the same priority rules as to_image().
+    resolved_items = []
     for d in arg_dicts:
-        p = d.pop("profile", None)
-        if p is not None:
-            resolved = resolve_export_kwargs(profile=p, **{k: v for k, v in d.items() if k in ("format", "width", "height", "scale", "validate")})
-            for key in ("format", "width", "height", "scale", "validate"):
-                if d.get(key) is None:
-                    d[key] = resolved[key]
-        d["fig"] = validate_coerce_fig_to_dict(d["fig"], d["validate"])
-        d["file"] = as_path_object(d["file"])
+        opts = ImageExportOptions(
+            fig=d["fig"],
+            format=d.get("format"),
+            width=d.get("width"),
+            height=d.get("height"),
+            scale=d.get("scale"),
+            validate=d.get("validate"),
+            profile=d.get("profile"),
+            file=d["file"],
+        ).resolve()
+        resolved_items.append(opts)
 
-    # Reshape arg_dicts into correct format for passing to Kaleido
-    # We call infer_format() here rather than above so that the `file` argument
-    # has already been cast to a Path object.
-    # Also insert defaults for any missing arguments as needed
+    # Reshape into Kaleido's expected format
     kaleido_specs = [
         dict(
-            fig=d["fig"],
-            path=d["file"],
-            opts=dict(
-                format=infer_format(d["file"], d["format"]) or defaults.default_format,
-                width=d["width"] or defaults.default_width,
-                height=d["height"] or defaults.default_height,
-                scale=d["scale"] or defaults.default_scale,
-            ),
+            fig=item.fig_dict,
+            path=item.path,
+            opts=item.opts,
             topojson=defaults.topojson,
         )
-        for d in arg_dicts
+        for item in resolved_items
     ]
 
     from kaleido.errors import ChromeNotFoundError
