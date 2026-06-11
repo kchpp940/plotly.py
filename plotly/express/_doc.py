@@ -609,10 +609,12 @@ docs = dict(
     summary=[
         "str or list of str or dict (default `None`)",
         "Specifies data summary statistics to compute and display on the figure.",
-        "Supported summary types: `'mean'`, `'median'`, `'sum'`, `'count'`, `'percent'`.",
+        "Supported data summary types: `'mean'`, `'median'`, `'sum'`, `'count'`, `'percent'`.",
+        "Supported trendline summary types: `'slope'`, `'intercept'`, `'rsquared'`, `'trendline'`.",
         "If a string or list of strings is provided, summaries are computed on the y-axis (or x-axis for horizontal orientation) and displayed as annotations.",
-        "If a dict is provided, it may contain keys like `'type'` (summary type), `'col'` (column to summarize), `'show'` (display mode: `'annotation'`, `'legend'`, `'hover'`, or `'all'`), and `'format'` (number format string).",
+        "If a dict is provided, it may contain keys like `'type'` (summary type), `'col'` (column to summarize), `'show'` (display mode: `'annotation'`, `'legend'`, `'hover'`, or `'all'`), `'format'` (number format string), and `'scope'` (which traces to apply to: `'data'`, `'trendline'`, or `'all'`).",
         "Summaries are automatically computed per color/facet/animation group, ensuring consistent grouping with the rest of the plot.",
+        "Trendline summaries (slope, intercept, R²) use the `fit_results` from OLS trendline fits, and are displayed separately from data summaries.",
     ],
 )
 

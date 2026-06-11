@@ -2692,6 +2692,7 @@ class SummaryContext:
         self.specs = self._parse_specs()
         self._stats_cache = {}
         self._text_cache = {}
+        self._fit_results_cache = {}
 
     def _parse_specs(self):
         summary = self.args.get("summary")
@@ -2710,6 +2711,7 @@ class SummaryContext:
                         col=None,
                         show="annotation",
                         format=None,
+                        scope="data",
                     ))
                 elif isinstance(item, dict):
                     specs.append(dict(
@@ -2717,6 +2719,7 @@ class SummaryContext:
                         col=item.get("col"),
                         show=item.get("show", "annotation"),
                         format=item.get("format"),
+                        scope=item.get("scope", "data"),
                     ))
         elif isinstance(summary, dict):
             specs.append(dict(
@@ -2724,20 +2727,40 @@ class SummaryContext:
                 col=summary.get("col"),
                 show=summary.get("show", "annotation"),
                 format=summary.get("format"),
+                scope=summary.get("scope", "data"),
             ))
 
-        valid_types = {"mean", "median", "sum", "count", "percent"}
+        valid_types = {"mean", "median", "sum", "count", "percent", "slope", "intercept", "rsquared", "trendline"}
+        valid_scopes = {"data", "trendline", "all"}
         for spec in specs:
             if spec["type"] not in valid_types:
                 raise ValueError(
                     "Invalid summary type '%s'. Valid types are: %s"
                     % (spec["type"], ", ".join(sorted(valid_types)))
                 )
+            if spec["scope"] not in valid_scopes:
+                raise ValueError(
+                    "Invalid summary scope '%s'. Valid scopes are: %s"
+                    % (spec["scope"], ", ".join(sorted(valid_scopes)))
+                )
+            if spec["type"] in {"slope", "intercept", "rsquared", "trendline"}:
+                if spec["scope"] == "data":
+                    spec["scope"] = "trendline"
 
         return specs
 
     def is_active(self):
         return len(self.specs) > 0
+
+    def set_fit_results(self, group_name, fit_results):
+        if fit_results is not None:
+            self._fit_results_cache[group_name] = fit_results
+
+    def has_trendline_specs(self):
+        return any(s["scope"] in {"trendline", "all"} for s in self.specs)
+
+    def has_data_specs(self):
+        return any(s["scope"] in {"data", "all"} for s in self.specs)
 
     def _get_summary_column(self, spec):
         if spec["col"] is not None:
@@ -2758,31 +2781,54 @@ class SummaryContext:
         for spec in self.specs:
             col = self._get_summary_column(spec)
             summary_type = spec["type"]
+            scope = spec["scope"]
 
             try:
                 value = None
 
-                if summary_type == "count":
-                    value = len(group_df)
-                elif col is not None:
-                    series = group_df.get_column(col)
+                if scope in {"data", "all"} and summary_type not in {"slope", "intercept", "rsquared", "trendline"}:
+                    if summary_type == "count":
+                        value = len(group_df)
+                    elif col is not None:
+                        series = group_df.get_column(col)
 
-                    if summary_type == "mean":
-                        value = nw.to_py_scalar(series.mean())
-                    elif summary_type == "median":
-                        value = nw.to_py_scalar(series.median())
-                    elif summary_type == "sum":
-                        value = nw.to_py_scalar(series.sum())
-                    elif summary_type == "percent":
-                        if col in df.columns:
-                            group_total = series.sum()
-                            total = df.get_column(col).sum()
-                            if total != 0:
-                                value = nw.to_py_scalar(group_total / total * 100)
+                        if summary_type == "mean":
+                            value = nw.to_py_scalar(series.mean())
+                        elif summary_type == "median":
+                            value = nw.to_py_scalar(series.median())
+                        elif summary_type == "sum":
+                            value = nw.to_py_scalar(series.sum())
+                        elif summary_type == "percent":
+                            if col in df.columns:
+                                group_total = series.sum()
+                                total = df.get_column(col).sum()
+                                if total != 0:
+                                    value = nw.to_py_scalar(group_total / total * 100)
+                                else:
+                                    value = 0
                             else:
                                 value = 0
-                        else:
-                            value = 0
+
+                if scope in {"trendline", "all"} and group_name in self._fit_results_cache:
+                    fit = self._fit_results_cache[group_name]
+                    if fit is not None:
+                        if summary_type == "trendline":
+                            stats["slope"] = float(fit.params[1]) if len(fit.params) > 1 else None
+                            stats["intercept"] = float(fit.params[0]) if len(fit.params) > 0 else None
+                            if hasattr(fit, "rsquared"):
+                                stats["rsquared"] = float(fit.rsquared)
+                            continue
+                        elif summary_type == "slope":
+                            if len(fit.params) > 1:
+                                value = float(fit.params[1])
+                            elif len(fit.params) == 1:
+                                value = float(fit.params[0])
+                        elif summary_type == "intercept":
+                            if len(fit.params) > 1:
+                                value = float(fit.params[0])
+                        elif summary_type == "rsquared":
+                            if hasattr(fit, "rsquared"):
+                                value = float(fit.rsquared)
 
                 stats[summary_type] = value
             except Exception:
@@ -2806,6 +2852,8 @@ class SummaryContext:
 
         if summary_type == "percent":
             return "%.2f%%" % value
+        if summary_type == "rsquared":
+            return "%.4f" % value
         if summary_type == "count":
             return "%d" % int(value)
         if isinstance(value, float):
@@ -2822,47 +2870,97 @@ class SummaryContext:
             "sum": "Total",
             "count": "Count",
             "percent": "Percent",
+            "slope": "Slope",
+            "intercept": "Intercept",
+            "rsquared": "R²",
+            "trendline": "Trend",
         }
         return labels.get(summary_type, summary_type)
 
-    def get_text_html(self, group_name):
-        if group_name in self._text_cache:
-            return self._text_cache[group_name]
+    def _build_text_for_scope(self, group_name, scope_filter):
+        cache_key = (group_name, scope_filter)
+        if cache_key in self._text_cache:
+            return self._text_cache[cache_key]
 
         stats = self._stats_cache.get(group_name, {})
         parts = []
+
         for spec in self.specs:
             stype = spec["type"]
-            if stype in stats and stats[stype] is not None:
+            scope = spec["scope"]
+
+            if scope_filter is not None and scope not in (scope_filter, "all"):
+                continue
+
+            if stype == "trendline":
+                for sub_type in ["slope", "intercept", "rsquared"]:
+                    if sub_type in stats and stats[sub_type] is not None:
+                        label = self._build_label(dict(type=sub_type))
+                        value = self._format_value(stats[sub_type], dict(type=sub_type, format=spec.get("format")))
+                        parts.append("%s: %s" % (label, value))
+            elif stype in stats and stats[stype] is not None:
                 label = self._build_label(spec)
                 value = self._format_value(stats[stype], spec)
                 parts.append("%s: %s" % (label, value))
 
         text = "<br>".join(parts)
-        self._text_cache[group_name] = text
+        self._text_cache[cache_key] = text
         return text
 
+    def get_text_html(self, group_name):
+        return self._build_text_for_scope(group_name, None)
+
+    def get_data_text_html(self, group_name):
+        return self._build_text_for_scope(group_name, "data")
+
+    def get_trendline_text_html(self, group_name):
+        return self._build_text_for_scope(group_name, "trendline")
+
     def get_text_plain(self, group_name):
-        html_text = self.get_text_html(group_name)
-        return html_text.replace("<br>", ", ")
+        return self.get_text_html(group_name).replace("<br>", ", ")
 
-    def should_show(self, location):
-        return any(
-            spec.get("show") in (location, "all") for spec in self.specs
-        )
+    def get_data_text_plain(self, group_name):
+        return self.get_data_text_html(group_name).replace("<br>", ", ")
 
-    def get_trace_name_with_summary(self, base_name, group_name):
-        if not self.should_show("legend"):
+    def get_trendline_text_plain(self, group_name):
+        return self.get_trendline_text_html(group_name).replace("<br>", ", ")
+
+    def should_show(self, location, scope=None):
+        for spec in self.specs:
+            if spec.get("show") in (location, "all"):
+                if scope is None or spec.get("scope") in (scope, "all"):
+                    return True
+        return False
+
+    def get_trace_name_with_summary(self, base_name, group_name, scope=None):
+        if scope is not None and not self.should_show("legend", scope):
             return base_name
-        summary_text = self.get_text_plain(group_name)
+        if scope is None and not self.should_show("legend"):
+            return base_name
+
+        if scope == "trendline":
+            summary_text = self.get_trendline_text_plain(group_name)
+        elif scope == "data":
+            summary_text = self.get_data_text_plain(group_name)
+        else:
+            summary_text = self.get_text_plain(group_name)
+
         if not summary_text:
             return base_name
         return "%s (%s)" % (base_name, summary_text) if base_name else summary_text
 
-    def get_hover_extra(self, group_name):
-        if not self.should_show("hover"):
+    def get_hover_extra(self, group_name, scope=None):
+        if scope is not None and not self.should_show("hover", scope):
             return ""
-        return self.get_text_html(group_name)
+        if scope is None and not self.should_show("hover"):
+            return ""
+
+        if scope == "trendline":
+            return self.get_trendline_text_html(group_name)
+        elif scope == "data":
+            return self.get_data_text_html(group_name)
+        else:
+            return self.get_text_html(group_name)
 
     def get_group_trace_name(self, group_name):
         labels = []
@@ -2871,17 +2969,30 @@ class SummaryContext:
                 labels.append(str(val))
         return ", ".join(labels)
 
-    def build_annotations_for_group(self, group_name, group_df):
-        if not self.should_show("annotation"):
+    def build_annotations_for_group(self, group_name, group_df, scope=None):
+        if scope is not None and not self.should_show("annotation", scope):
+            return []
+        if scope is None and not self.should_show("annotation"):
             return []
 
         stats = self.compute_stats(group_name, group_df)
         if not stats or all(v is None for v in stats.values()):
             return []
 
-        text = self.get_text_html(group_name)
+        if scope == "trendline":
+            text = self.get_trendline_text_html(group_name)
+            title_prefix = "<b>Trend: %s</b><br>" % self.get_group_trace_name(group_name) if self.get_group_trace_name(group_name) else "<b>Trend</b><br>"
+        elif scope == "data":
+            text = self.get_data_text_html(group_name)
+            title_prefix = "<b>%s</b><br>" % self.get_group_trace_name(group_name) if self.get_group_trace_name(group_name) else ""
+        else:
+            text = self.get_text_html(group_name)
+            title_prefix = "<b>%s</b><br>" % self.get_group_trace_name(group_name) if self.get_group_trace_name(group_name) else ""
+
         if not text:
             return []
+
+        text = title_prefix + text
 
         row = 1
         col = 1
@@ -2891,15 +3002,30 @@ class SummaryContext:
             elif m.facet == "col" and g_val in m.val_map:
                 col = m.val_map[g_val]
 
-        trace_name = self.get_group_trace_name(group_name)
-        if trace_name:
-            text = "<b>%s</b><br>%s" % (trace_name, text)
-
         xref = "x%d" % col if col > 1 else "x"
         yref = "y%d" % row if row > 1 else "y"
 
         placed = False
         annotations = []
+
+        if scope == "trendline":
+            annot = dict(
+                x=0.98,
+                y=0.02,
+                text=text,
+                showarrow=False,
+                xanchor="right",
+                yanchor="bottom",
+                xref="%s domain" % xref,
+                yref="%s domain" % yref,
+                font=dict(size=11, color="#888"),
+                bgcolor="rgba(255,255,255,0.85)",
+                bordercolor="rgba(136,136,136,0.3)",
+                borderwidth=1,
+                borderpad=6,
+            )
+            annotations.append(annot)
+            return annotations
 
         if self.constructor in [go.Bar] and not self.args.get("marginal_x") and not self.args.get("marginal_y"):
             orientation = self.args.get("orientation", "v")
@@ -3082,12 +3208,20 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
         if summary_ctx.is_active() and summary_ctx.should_show("annotation"):
             if frame_name not in annotations_by_frame:
                 annotations_by_frame[frame_name] = []
-            group_annotations = summary_ctx.build_annotations_for_group(group_name, group)
+            group_annotations = summary_ctx.build_annotations_for_group(group_name, group, scope="data")
             annotations_by_frame[frame_name].extend(group_annotations)
 
         for trace_spec in trace_specs:
+            is_trendline = "trendline" in trace_spec.attrs
+
+            if is_trendline:
+                trace_base_name = base_trace_name + " Trend" if base_trace_name else "Trend"
+                current_trace_name = trace_base_name
+            else:
+                current_trace_name = trace_name
+
             # Create the trace
-            trace = trace_spec.constructor(name=trace_name)
+            trace = trace_spec.constructor(name=current_trace_name)
             if trace_spec.constructor not in [
                 go.Parcats,
                 go.Parcoords,
@@ -3103,7 +3237,7 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
             ]:
                 trace.update(
                     legendgroup=trace_name,
-                    showlegend=(trace_name != "" and trace_name not in trace_names),
+                    showlegend=(current_trace_name != "" and current_trace_name not in trace_names),
                 )
 
             # Set 'offsetgroup' only in group barmode (or if no barmode is set)
@@ -3112,7 +3246,7 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
                 barmode == "group" or barmode is None
             ):
                 trace.update(alignmentgroup=True, offsetgroup=trace_name)
-            trace_names.add(trace_name)
+            trace_names.add(current_trace_name)
 
             # Init subplot row/col
             trace._subplot_row = 1
@@ -3219,9 +3353,37 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
             if fit_results is not None:
                 trendline_rows.append(mapping_labels.copy())
                 trendline_rows[-1]["px_fit_results"] = fit_results
+                if summary_ctx.is_active():
+                    summary_ctx.set_fit_results(group_name, fit_results)
+                    if group_name in summary_ctx._stats_cache:
+                        del summary_ctx._stats_cache[group_name]
+                    if (group_name, None) in summary_ctx._text_cache:
+                        del summary_ctx._text_cache[(group_name, None)]
+                    if (group_name, "trendline") in summary_ctx._text_cache:
+                        del summary_ctx._text_cache[(group_name, "trendline")]
+                    summary_ctx.compute_stats(group_name, group)
 
-            if summary_ctx.is_active() and summary_ctx.should_show("hover"):
-                hover_extra = summary_ctx.get_hover_extra(group_name)
+                    if is_trendline:
+                        if current_trace_name in trace_names:
+                            trace_names.remove(current_trace_name)
+                        current_trace_name = summary_ctx.get_trace_name_with_summary(
+                            trace_base_name, group_name, scope="trendline"
+                        )
+                        trace.name = current_trace_name
+                        trace_names.add(current_trace_name)
+                        trace.showlegend = (current_trace_name != "" and current_trace_name not in trace_names) or True
+
+                    if is_trendline and summary_ctx.should_show("annotation", scope="trendline"):
+                        if frame_name not in annotations_by_frame:
+                            annotations_by_frame[frame_name] = []
+                        trendline_annotations = summary_ctx.build_annotations_for_group(
+                            group_name, group, scope="trendline"
+                        )
+                        annotations_by_frame[frame_name].extend(trendline_annotations)
+
+            if summary_ctx.is_active():
+                scope = "trendline" if is_trendline else "data"
+                hover_extra = summary_ctx.get_hover_extra(group_name, scope=scope)
                 if hover_extra and trace.hovertemplate:
                     original = trace.hovertemplate
                     if "<extra></extra>" in original:
