@@ -858,19 +858,18 @@ class TestToHtmlWithContext:
         )
         assert plotly_cdn_url() in html
 
-    def test_resource_policy_vs_context_priority(self, fig1):
+    def test_resource_policy_vs_context_conflict(self, fig1):
         policy_set = create_policy_set(include_plotlyjs=False)
         ctx = ResourcePolicyContext.from_legacy_params(
             include_plotlyjs="cdn",
         )
-        html = pio.to_html(
-            fig1,
-            resource_policy=policy_set,
-            resource_context=ctx,
-            full_html=True,
-        )
-        # context should take highest priority
-        assert plotly_cdn_url() in html
+        with pytest.raises(ValueError, match="Both resource_context and resource_policy"):
+            pio.to_html(
+                fig1,
+                resource_policy=policy_set,
+                resource_context=ctx,
+                full_html=True,
+            )
 
 
 class TestWriteHtmlWithContext:
@@ -1013,4 +1012,115 @@ class TestRendererWithContext:
 
         renderer = DatabricksRenderer(resource_context=ctx)
         assert renderer.resource_context is ctx
+
+
+class TestResolveResourceContext:
+    def test_legacy_params_default(self, fig1):
+        from plotly.io._resource_policy import _resolve_resource_context
+
+        ctx = _resolve_resource_context()
+        assert ctx is not None
+        html = ctx.get_head_html()
+        assert "plotly" in html.lower()
+
+    def test_resource_context_pass_through(self):
+        from plotly.io._resource_policy import _resolve_resource_context
+
+        ctx = ResourcePolicyContext.from_legacy_params(include_plotlyjs="cdn")
+        result = _resolve_resource_context(resource_context=ctx)
+        assert result is ctx
+
+    def test_resource_policy_builds_context(self):
+        from plotly.io._resource_policy import _resolve_resource_context
+
+        policy_set = create_policy_set(include_plotlyjs="cdn")
+        ctx = _resolve_resource_context(resource_policy=policy_set)
+        assert isinstance(ctx, ResourcePolicyContext)
+        assert ctx.policy_set is policy_set
+
+    def test_context_plus_policy_raises(self):
+        from plotly.io._resource_policy import _resolve_resource_context
+
+        policy_set = create_policy_set(include_plotlyjs=False)
+        ctx = ResourcePolicyContext.from_legacy_params(include_plotlyjs="cdn")
+        with pytest.raises(ValueError, match="Both resource_context and resource_policy"):
+            _resolve_resource_context(resource_context=ctx, resource_policy=policy_set)
+
+    def test_context_with_legacy_warns(self):
+        from plotly.io._resource_policy import _resolve_resource_context
+
+        ctx = ResourcePolicyContext.from_legacy_params(include_plotlyjs="cdn")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = _resolve_resource_context(
+                resource_context=ctx,
+                include_plotlyjs=False,
+            )
+            assert result is ctx
+            assert any("resource_context" in str(warning.message) for warning in w)
+
+    def test_policy_with_legacy_warns(self):
+        from plotly.io._resource_policy import _resolve_resource_context
+
+        policy_set = create_policy_set(include_plotlyjs="cdn")
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            result = _resolve_resource_context(
+                resource_policy=policy_set,
+                include_plotlyjs=False,
+            )
+            assert isinstance(result, ResourcePolicyContext)
+            assert any("resource_policy" in str(warning.message) for warning in w)
+
+    def test_output_path_and_overwrite_propagated(self):
+        from plotly.io._resource_policy import _resolve_resource_context
+
+        ctx = _resolve_resource_context(
+            include_plotlyjs="directory",
+            output_path="/tmp/test/test.html",
+            overwrite=True,
+        )
+        assert ctx.output_path == Path("/tmp/test/test.html")
+        assert ctx.overwrite is True
+
+
+class TestFinalizeResourceContext:
+    def test_finalize_executes_copies_and_warns(self):
+        from plotly.io._resource_policy import (
+            _resolve_resource_context,
+            _finalize_resource_context,
+        )
+
+        with tempfile.TemporaryDirectory() as tmpdir:
+            output_file = Path(tmpdir) / "test.html"
+            ctx = _resolve_resource_context(
+                include_plotlyjs="directory",
+                output_path=output_file,
+            )
+            _finalize_resource_context(ctx)
+            copied_file = Path(tmpdir) / "plotly.min.js"
+            assert copied_file.exists()
+
+    def test_finalize_warns_on_missing(self):
+        from plotly.io._resource_policy import (
+            _resolve_resource_context,
+            _finalize_resource_context,
+            DirectoryPolicy,
+            ResourceType,
+            ResourcePolicySet,
+        )
+
+        policy_set = ResourcePolicySet()
+        policy_set.plotlyjs = DirectoryPolicy(
+            resource_type=ResourceType.PLOTLYJS,
+            filename="missing.js",
+        )
+        ctx = _resolve_resource_context(
+            resource_policy=policy_set,
+            output_path="/tmp/test/test.html",
+        )
+        with warnings.catch_warnings(record=True) as w:
+            warnings.simplefilter("always")
+            _finalize_resource_context(ctx)
+            assert any("no usable source" in str(warning.message).lower() for warning in w)
 

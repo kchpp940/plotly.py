@@ -3,65 +3,16 @@ from pathlib import Path
 import webbrowser
 
 from _plotly_utils.optional_imports import get_module
-from plotly.io._utils import validate_coerce_fig_to_dict, plotly_cdn_url
-from plotly.offline.offline import _get_jconfig, get_plotlyjs
+from plotly.io._utils import validate_coerce_fig_to_dict
+from plotly.offline.offline import _get_jconfig
 from plotly.io._resource_policy import (
-    create_policy_set,
     ResourcePolicySet,
     ResourcePolicyContext,
-    ResourceType,
-    DirectoryPolicy,
-    CdnPolicy,
-    InlinePolicy,
-    UrlPolicy,
-    ManifestPolicy,
-    ExcludePolicy,
+    _resolve_resource_context,
+    _finalize_resource_context,
 )
 
 _json = get_module("json")
-
-
-def _build_resource_context(
-    include_plotlyjs=True,
-    include_mathjax=False,
-    resource_policy=None,
-    resource_context=None,
-    output_path=None,
-    html_dir=None,
-    overwrite_resources=False,
-    include_meta_charset=True,
-) -> ResourcePolicyContext:
-    """
-    Build a ResourcePolicyContext from various input formats.
-
-    Handles the priority: resource_context > resource_policy > legacy params.
-
-    Returns
-    -------
-    ResourcePolicyContext
-    """
-    if resource_context is not None:
-        return resource_context
-
-    if resource_policy is not None:
-        return ResourcePolicyContext.from_policy_set(
-            resource_policy,
-            output_path=output_path,
-            html_dir=html_dir,
-            overwrite=overwrite_resources,
-        )
-
-    plotlyjs_content = get_plotlyjs()
-    return ResourcePolicyContext.from_legacy_params(
-        include_plotlyjs=include_plotlyjs,
-        include_mathjax=include_mathjax,
-        plotlyjs_cdn_url=plotly_cdn_url(),
-        plotlyjs_content=plotlyjs_content,
-        include_meta_charset=include_meta_charset,
-        output_path=output_path,
-        html_dir=html_dir,
-        overwrite=overwrite_resources,
-    )
 
 
 def to_html(
@@ -289,11 +240,11 @@ def to_html(
 
     # ## Build resource context ##
     # For to_html (no file output), we don't know output_path yet
-    ctx = _build_resource_context(
+    ctx = _resolve_resource_context(
+        resource_context=resource_context,
+        resource_policy=resource_policy,
         include_plotlyjs=include_plotlyjs,
         include_mathjax=include_mathjax,
-        resource_policy=resource_policy,
-        resource_context=resource_context,
         include_meta_charset=False,
     )
 
@@ -302,13 +253,13 @@ def to_html(
     # For full_html output, resources go in <head>
     if full_html:
         head_html = ctx.get_head_html()
-        # Add meta charset if not already in policy
         if ctx.meta is None:
             head_html = '<meta charset="utf-8" />\n' + head_html
         resources_in_div = ""
     else:
         head_html = ""
-        resources_in_div = ctx.get_head_html()
+        raw_resources = ctx.get_head_html()
+        resources_in_div = raw_resources.replace("\n", "\n        ")
 
     plotly_html_div = """\
 <div style="height:{height}; width:{width};">\
@@ -484,13 +435,13 @@ def write_html(
         path = None
 
     # Build resource context
-    ctx = _build_resource_context(
+    ctx = _resolve_resource_context(
+        resource_context=resource_context,
+        resource_policy=resource_policy,
         include_plotlyjs=include_plotlyjs,
         include_mathjax=include_mathjax,
-        resource_policy=resource_policy,
-        resource_context=resource_context,
         output_path=path,
-        overwrite_resources=overwrite_resources,
+        overwrite=overwrite_resources,
         include_meta_charset=True,
     )
 
@@ -517,10 +468,9 @@ def write_html(
     else:
         file.write(html_str)
 
-    # Execute resource copies using the context
+    # Execute resource copies, manifest writes, and missing warnings
     if path is not None and full_html:
-        ctx.execute_copies()
-        ctx.warn_on_missing()
+        _finalize_resource_context(ctx)
 
     # Handle auto_open
     if path is not None and full_html and auto_open:

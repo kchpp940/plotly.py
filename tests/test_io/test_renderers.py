@@ -12,7 +12,7 @@ import plotly.graph_objs as go
 import plotly.io as pio
 from plotly.offline import get_plotlyjs
 from plotly.io._utils import plotly_cdn_url
-from plotly.io._html import _generate_sri_hash
+from plotly.io._resource_policy import _generate_sri_hash
 
 import unittest.mock as mock
 from unittest.mock import MagicMock
@@ -307,13 +307,13 @@ def test_repr_html(renderer):
     sri_hash = _generate_sri_hash(plotlyjs_content)
 
     template = (
-        '<div style="height:100%; width:100%;">                        <script>'
+        '<div style="height:100%; width:100%;">        <script>'
         "window.PlotlyConfig = {MathJaxConfig: 'local'};</script>\n        "
         '<script charset="utf-8" src="'
         + plotly_cdn_url()
         + '" integrity="'
         + sri_hash
-        + '" crossorigin="anonymous"></script>                '
+        + '" crossorigin="anonymous"></script>            '
         '<div id="cd462b94-79ce-42a2-887f-2650a761a144" class="plotly-graph-div" '
         'style="height:100%; width:100%;"></div>            <script>'
         "                window.PLOTLYENV=window.PLOTLYENV || {};"

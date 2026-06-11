@@ -154,22 +154,43 @@ class CdnPolicy(BaseResourcePolicy):
         if not self.cdn_url:
             return ResourceRef(html="", missing_hint=self._get_missing_hint())
 
-        attributes = dict(self.attributes)
+        pre_attrs = {}
+        post_attrs = {}
+        for k, v in self.attributes.items():
+            if k in ("integrity", "crossorigin"):
+                post_attrs[k] = v
+            else:
+                pre_attrs[k] = v
+
         if self.sri and self.content:
             integrity = _generate_sri_hash(self.content)
-            attributes["integrity"] = integrity
-            attributes["crossorigin"] = "anonymous"
+            post_attrs["integrity"] = integrity
+            post_attrs["crossorigin"] = "anonymous"
 
-        attr_str = " ".join(f'{k}="{v}"' for k, v in attributes.items())
-        if attr_str:
-            attr_str = " " + attr_str
+        pre_str = " ".join(f'{k}="{v}"' for k, v in pre_attrs.items())
+        post_str = " ".join(f'{k}="{v}"' for k, v in post_attrs.items())
 
         if self.resource_type == ResourceType.META:
-            html = f'<meta{attr_str} />'
+            parts = [f'<meta']
+            if pre_str:
+                parts.append(f' {pre_str}')
+            parts.append(' />')
+            html = "".join(parts)
         elif self.resource_type == ResourceType.CSS:
-            html = f'<link rel="stylesheet" href="{self.cdn_url}"{attr_str} />'
+            html = f'<link rel="stylesheet" href="{self.cdn_url}"'
+            if pre_str:
+                html += f' {pre_str}'
+            if post_str:
+                html += f' {post_str}'
+            html += ' />'
         else:
-            html = f'<script src="{self.cdn_url}"{attr_str}></script>'
+            html = '<script'
+            if pre_str:
+                html += f' {pre_str}'
+            html += f' src="{self.cdn_url}"'
+            if post_str:
+                html += f' {post_str}'
+            html += '></script>'
 
         return ResourceRef(html=html)
 
@@ -1126,3 +1147,138 @@ class ResourcePolicyContext:
     @meta.setter
     def meta(self, value: Optional[BaseResourcePolicy]) -> None:
         self.policy_set.meta = value
+
+
+def _resolve_resource_context(
+    resource_context=None,
+    resource_policy=None,
+    include_plotlyjs=True,
+    include_mathjax=False,
+    output_path=None,
+    html_dir=None,
+    overwrite=False,
+    include_meta_charset=True,
+) -> ResourcePolicyContext:
+    """
+    Single private resolution function for building a ResourcePolicyContext.
+
+    All HTML export entry points must call this function instead of
+    building contexts themselves.  It enforces the three-layer priority:
+
+        resource_context  >  resource_policy  >  legacy params
+
+    and validates that the layers do not conflict.
+
+    Parameters
+    ----------
+    resource_context : ResourcePolicyContext or None
+        Pre-built context.  If provided, all other parameters are ignored
+        except for a conflict check against resource_policy and legacy params.
+    resource_policy : ResourcePolicySet or None
+        Policy set to wrap in a context.  Takes precedence over legacy params.
+    include_plotlyjs : bool or str, default True
+        Legacy parameter for plotly.js inclusion.
+    include_mathjax : bool or str, default False
+        Legacy parameter for MathJax inclusion.
+    output_path : str or Path or None
+        Path to the HTML output file.
+    html_dir : str or Path or None
+        Directory for relative path calculation.
+    overwrite : bool, default False
+        Whether to overwrite existing resource files when copying.
+    include_meta_charset : bool, default True
+        Whether to include <meta charset="utf-8">.
+
+    Returns
+    -------
+    ResourcePolicyContext
+
+    Raises
+    ------
+    ValueError
+        If resource_context is provided together with resource_policy
+        or with non-default legacy params that would be silently ignored.
+    """
+    import warnings as _warnings
+
+    if resource_context is not None:
+        if resource_policy is not None:
+            raise ValueError(
+                "Both resource_context and resource_policy were provided. "
+                "resource_context takes highest priority; remove resource_policy "
+                "to resolve this conflict."
+            )
+
+        legacy_overridden = (
+            include_plotlyjs is not True
+            or include_mathjax is not False
+        )
+        if legacy_overridden:
+            _warnings.warn(
+                "resource_context was provided together with legacy parameters "
+                "(include_plotlyjs={!r}, include_mathjax={!r}). "
+                "resource_context takes priority and the legacy parameters "
+                "are ignored.".format(include_plotlyjs, include_mathjax),
+                stacklevel=3,
+            )
+
+        return resource_context
+
+    if resource_policy is not None:
+        legacy_overridden = (
+            include_plotlyjs is not True
+            or include_mathjax is not False
+        )
+        if legacy_overridden:
+            _warnings.warn(
+                "resource_policy was provided together with legacy parameters "
+                "(include_plotlyjs={!r}, include_mathjax={!r}). "
+                "resource_policy takes priority and the legacy parameters "
+                "are ignored.".format(include_plotlyjs, include_mathjax),
+                stacklevel=3,
+            )
+
+        return ResourcePolicyContext.from_policy_set(
+            resource_policy,
+            output_path=output_path,
+            html_dir=html_dir,
+            overwrite=overwrite,
+        )
+
+    from plotly.io._utils import plotly_cdn_url as _plotly_cdn_url
+    from plotly.offline.offline import get_plotlyjs as _get_plotlyjs
+
+    plotlyjs_content = None
+    try:
+        plotlyjs_content = _get_plotlyjs()
+    except Exception:
+        pass
+
+    return ResourcePolicyContext.from_legacy_params(
+        include_plotlyjs=include_plotlyjs,
+        include_mathjax=include_mathjax,
+        plotlyjs_cdn_url=_plotly_cdn_url(),
+        plotlyjs_content=plotlyjs_content,
+        include_meta_charset=include_meta_charset,
+        output_path=output_path,
+        html_dir=html_dir,
+        overwrite=overwrite,
+    )
+
+
+def _finalize_resource_context(ctx: ResourcePolicyContext) -> None:
+    """
+    Execute all side effects for a resource context after HTML generation.
+
+    This includes: copying resource files, writing manifest entries,
+    and warning about missing resources.  Only call this for entry points
+    that actually write files (write_html, offline.plot with output_type='file',
+    IFrameRenderer, SphinxGalleryOrcaRenderer).
+
+    Parameters
+    ----------
+    ctx : ResourcePolicyContext
+        The context whose side effects should be finalized.
+    """
+    ctx.execute_copies()
+    ctx.warn_on_missing()
