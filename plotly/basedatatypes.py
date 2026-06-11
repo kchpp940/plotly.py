@@ -1434,20 +1434,38 @@ class BaseFigure(object):
             )
 
         if trace_selector.uses_subplot:
-            grid_ref = self._validate_get_grid_ref()
-            grid_subplot_refs = self._build_subplot_refs(
-                grid_ref,
-                trace_selector.row,
-                trace_selector.col,
-                trace_selector.secondary_y,
-            )
-            from plotly._subplots import _get_subplot_ref_for_trace
+            try:
+                grid_ref = self._validate_get_grid_ref()
+            except Exception:
+                grid_ref = None
 
-            def _subplot_filter(trace):
-                trace_ref = _get_subplot_ref_for_trace(trace)
-                return trace_ref in grid_subplot_refs
+            if grid_ref is not None:
+                grid_subplot_refs = self._build_subplot_refs(
+                    grid_ref,
+                    trace_selector.row,
+                    trace_selector.col,
+                    trace_selector.secondary_y,
+                )
+                from plotly._subplots import _get_subplot_ref_for_trace
 
-            candidates = filter(_subplot_filter, self.data)
+                def _subplot_filter(trace):
+                    trace_ref = _get_subplot_ref_for_trace(trace)
+                    return trace_ref in grid_subplot_refs
+
+                candidates = filter(_subplot_filter, self.data)
+            else:
+                target_axes = self._infer_subplot_axes(
+                    trace_selector.row,
+                    trace_selector.col,
+                    trace_selector.secondary_y,
+                )
+                if target_axes is not None:
+                    candidates = filter(
+                        lambda tr: self._trace_uses_any_axis(tr, target_axes),
+                        self.data,
+                    )
+                else:
+                    candidates = self.data
         else:
             candidates = self.data
 
@@ -1476,6 +1494,203 @@ class BaseFigure(object):
                 grid_subplot_refs.append(refs[1])
 
         return grid_subplot_refs
+
+    def _infer_subplot_axes(self, row=None, col=None, secondary_y=None):
+        """
+        When ``_grid_ref`` is unavailable, build a mapping from axis pairs
+        to grid positions by scanning the layout for xaxis/yaxis (and
+        scene/geo/domain) properties.
+
+        Returns a set of ``(xaxis_key, yaxis_key)`` tuples that match the
+        requested row/col, or ``None`` if the figure has only a single
+        subplot (in which case all traces match and no filtering is
+        needed).
+        """
+        import re as _re
+
+        layout = self.layout
+        xaxis_pattern = _re.compile(r"^xaxis(\d*)$")
+        yaxis_pattern = _re.compile(r"^yaxis(\d*)$")
+        scene_pattern = _re.compile(r"^scene(\d*)$")
+        geo_pattern = _re.compile(r"^geo(\d*)$")
+        domain_pattern = _re.compile(r"^domain(\d*)$")
+
+        x_axes = {}
+        y_axes = {}
+        scenes = {}
+        geos = {}
+        domains = {}
+
+        has_xy_traces = any(
+            getattr(t, "type", None) in ("scatter", "scattergl", "bar", "box", "violin", "histogram", "heatmap", "contour", "funnel", "waterfall", "ohlc", "candlestick")
+            for t in self.data
+        )
+
+        if has_xy_traces:
+            x_axes["xaxis"] = 1
+            y_axes["yaxis"] = 1
+
+        for key in layout._subplotid_props if hasattr(layout, "_subplotid_props") else []:
+            m = xaxis_pattern.match(key)
+            if m:
+                x_axes[key] = int(m.group(1)) if m.group(1) else 1
+                continue
+            m = yaxis_pattern.match(key)
+            if m:
+                y_axes[key] = int(m.group(1)) if m.group(1) else 1
+                continue
+            m = scene_pattern.match(key)
+            if m:
+                scenes[key] = int(m.group(1)) if m.group(1) else 1
+                continue
+            m = geo_pattern.match(key)
+            if m:
+                geos[key] = int(m.group(1)) if m.group(1) else 1
+                continue
+            m = domain_pattern.match(key)
+            if m:
+                domains[key] = int(m.group(1)) if m.group(1) else 1
+
+        for trace in self.data:
+            x_val = getattr(trace, "xaxis", None)
+            y_val = getattr(trace, "yaxis", None)
+            if x_val:
+                x_key = "xaxis" + x_val[1:] if x_val != "x" else "xaxis"
+                x_idx = int(x_val[1:]) if x_val != "x" else 1
+                if x_key not in x_axes:
+                    x_axes[x_key] = x_idx
+            if y_val:
+                y_key = "yaxis" + y_val[1:] if y_val != "y" else "yaxis"
+                y_idx = int(y_val[1:]) if y_val != "y" else 1
+                if y_key not in y_axes:
+                    y_axes[y_key] = y_idx
+            scene_val = getattr(trace, "scene", None)
+            if scene_val:
+                s_key = scene_val
+                s_idx = int(scene_val[5:]) if len(scene_val) > 5 else 1
+                if s_key not in scenes:
+                    scenes[s_key] = s_idx
+            geo_val = getattr(trace, "geo", None)
+            if geo_val:
+                g_key = geo_val
+                g_idx = int(geo_val[3:]) if len(geo_val) > 3 else 1
+                if g_key not in geos:
+                    geos[g_key] = g_idx
+
+        if not x_axes and not y_axes and not scenes and not geos and not domains:
+            if row is None and col is None:
+                return None
+            x_axes = {"xaxis": 1}
+            y_axes = {"yaxis": 1}
+
+        xy_pairs = self._pair_xy_axes(x_axes, y_axes)
+
+        all_pairs = list(xy_pairs)
+        for s_key, _ in sorted(scenes.items(), key=lambda x: x[1]):
+            all_pairs.append((s_key, None))
+        for g_key, _ in sorted(geos.items(), key=lambda x: x[1]):
+            all_pairs.append((g_key, None))
+        for d_key, _ in sorted(domains.items(), key=lambda x: x[1]):
+            all_pairs.append((d_key, None))
+
+        if not all_pairs:
+            all_pairs = [("xaxis", "yaxis")]
+
+        ncols = self._infer_ncols(x_axes, y_axes)
+        if ncols < 1:
+            ncols = 1
+        nrows = (len(all_pairs) + ncols - 1) // ncols
+        if nrows < 1:
+            nrows = 1
+
+        target_pairs = set()
+        if row is not None and col is not None:
+            idx = (row - 1) * ncols + (col - 1)
+            if 0 <= idx < len(all_pairs):
+                target_pairs.add(all_pairs[idx])
+        elif row is not None and col is None:
+            for c in range(ncols):
+                idx = (row - 1) * ncols + c
+                if 0 <= idx < len(all_pairs):
+                    target_pairs.add(all_pairs[idx])
+        elif col is not None and row is None:
+            for r in range(nrows):
+                idx = r * ncols + (col - 1)
+                if 0 <= idx < len(all_pairs):
+                    target_pairs.add(all_pairs[idx])
+        else:
+            target_pairs = set(all_pairs)
+
+        return target_pairs
+
+    @staticmethod
+    def _pair_xy_axes(x_axes, y_axes):
+        """
+        Pair xaxis keys with their corresponding yaxis keys based on
+        matching index numbers.
+
+        Returns a list of ``(xaxis_key, yaxis_key)`` tuples sorted by
+        index number.
+        """
+        all_indices = set(x_axes.values()) | set(y_axes.values())
+        pairs = []
+        for idx in sorted(all_indices):
+            x_key = None
+            y_key = None
+            for k, v in x_axes.items():
+                if v == idx:
+                    x_key = k
+                    break
+            for k, v in y_axes.items():
+                if v == idx:
+                    y_key = k
+                    break
+            if x_key and y_key:
+                pairs.append((x_key, y_key))
+            elif x_key:
+                pairs.append((x_key, None))
+            elif y_key:
+                pairs.append((None, y_key))
+        return pairs
+
+    @staticmethod
+    def _infer_ncols(x_axes, _y_axes):
+        """
+        Infer the number of columns from the axis indices.
+
+        For a standard make_subplots grid with shared x-axes across
+        columns and shared y-axes across rows, the number of unique
+        x-axis indices equals the number of columns.
+        """
+        return len(set(x_axes.values()))
+
+    @staticmethod
+    def _trace_uses_any_axis(trace, axis_pairs):
+        """
+        Return True if *trace* uses any of the axis pairs in
+        *axis_pairs*.
+        """
+        for x_key, y_key in axis_pairs:
+            if x_key is not None and y_key is not None:
+                x_val = getattr(trace, "xaxis", None)
+                y_val = getattr(trace, "yaxis", None)
+                x_layout = "xaxis" + x_val[1:] if x_val and x_val != "x" else "xaxis"
+                y_layout = "yaxis" + y_val[1:] if y_val and y_val != "y" else "yaxis"
+                if x_layout == x_key and y_layout == y_key:
+                    return True
+            elif x_key is not None and y_key is None:
+                x_val = getattr(trace, "xaxis", None)
+                if x_val:
+                    x_layout = "xaxis" + x_val[1:] if x_val != "x" else "xaxis"
+                    if x_layout == x_key:
+                        return True
+            elif x_key is None and y_key is not None:
+                y_val = getattr(trace, "yaxis", None)
+                if y_val:
+                    y_layout = "yaxis" + y_val[1:] if y_val != "y" else "yaxis"
+                    if y_layout == y_key:
+                        return True
+        return False
 
     def update_traces_by_selector(
         self,

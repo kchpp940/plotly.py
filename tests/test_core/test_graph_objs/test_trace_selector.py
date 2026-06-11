@@ -55,22 +55,28 @@ class TestTraceSelectorInit(TestCase):
     def test_customdata_callable(self):
         fn = lambda x: x is not None
         sel = TraceSelector(customdata=fn)
-        assert sel._customdata_predicate is fn
-        assert sel._customdata_exact is None
+        assert sel._customdata_mode == "callable"
 
     def test_customdata_exact(self):
         sel = TraceSelector(customdata=[1, 2])
-        assert sel._customdata_predicate is None
-        assert sel._customdata_exact == [1, 2]
+        assert sel._customdata_mode == "exact"
+
+    def test_customdata_dict(self):
+        sel = TraceSelector(customdata={"0": "APAC"})
+        assert sel._customdata_mode == "dict"
 
     def test_meta_callable(self):
         fn = lambda x: True
         sel = TraceSelector(meta=fn)
-        assert sel._meta_predicate is fn
+        assert sel._meta_mode == "callable"
 
     def test_meta_exact(self):
         sel = TraceSelector(meta="experiment_a")
-        assert sel._meta_exact == "experiment_a"
+        assert sel._meta_mode == "exact"
+
+    def test_meta_dict(self):
+        sel = TraceSelector(meta={"source": "train"})
+        assert sel._meta_mode == "dict"
 
     def test_uses_subplot_row(self):
         sel = TraceSelector(row=1)
@@ -279,12 +285,12 @@ class TestSelectTracesBySelector(TestCaseNoTemplate):
         assert len(matches) == 1
         assert matches[0].name == "secondary"
 
-    def test_subplot_no_grid_raises(self):
+    def test_subplot_no_grid_fallback(self):
         fig = go.Figure()
         fig.add_scatter(y=[1, 2, 3])
-        sel = TraceSelector(row=1)
-        with self.assertRaises(Exception):
-            list(fig.select_traces_by_selector(sel))
+        sel = TraceSelector(row=1, col=1)
+        matches = list(fig.select_traces_by_selector(sel))
+        assert len(matches) == 1
 
     def test_all_none_matches_all(self):
         fig = go.Figure()
@@ -502,3 +508,181 @@ class TestFilterInvalidTraceProps(TestCaseNoTemplate):
         )
         assert "bogus_property" not in result
         assert "visible" in result
+
+
+class TestCustomdataFieldPath(TestCaseNoTemplate):
+    def setUp(self):
+        self.fig = go.Figure()
+        self.fig.add_scatter(
+            y=[1, 2, 3],
+            customdata=[["APAC", 100], ["EMEA", 200], ["APAC", 300]],
+            name="t1",
+        )
+        self.fig.add_scatter(
+            y=[4, 5, 6],
+            customdata=[["AMER", 400], ["AMER", 500], ["APAC", 600]],
+            name="t2",
+        )
+        self.fig.add_scatter(
+            y=[7, 8, 9],
+            name="t3",
+        )
+
+    def test_field_0_match(self):
+        sel = TraceSelector(customdata={"0": "APAC"})
+        matches = list(self.fig.select_traces_by_selector(sel))
+        assert len(matches) == 2
+        names = {m.name for m in matches}
+        assert "t1" in names
+        assert "t2" in names
+
+    def test_field_1_match(self):
+        sel = TraceSelector(customdata={"1": 400})
+        matches = list(self.fig.select_traces_by_selector(sel))
+        assert len(matches) == 1
+        assert matches[0].name == "t2"
+
+    def test_no_match(self):
+        sel = TraceSelector(customdata={"0": "LATAM"})
+        matches = list(self.fig.select_traces_by_selector(sel))
+        assert len(matches) == 0
+
+    def test_trace_without_customdata(self):
+        sel = TraceSelector(customdata={"0": "APAC"})
+        matches = list(self.fig.select_traces_by_selector(sel))
+        names = {m.name for m in matches}
+        assert "t3" not in names
+
+    def test_combined_with_type(self):
+        sel = TraceSelector(customdata={"0": "AMER"}, type="scatter")
+        matches = list(self.fig.select_traces_by_selector(sel))
+        assert len(matches) == 1
+        assert matches[0].name == "t2"
+
+
+class TestMetaFieldPath(TestCaseNoTemplate):
+    def setUp(self):
+        self.fig = go.Figure()
+        self.fig.add_scatter(
+            y=[1, 2, 3],
+            meta={"source": "train", "version": 2, "nested": {"key": "val_a"}},
+            name="t1",
+        )
+        self.fig.add_scatter(
+            y=[4, 5, 6],
+            meta={"source": "test", "version": 1, "nested": {"key": "val_b"}},
+            name="t2",
+        )
+        self.fig.add_scatter(
+            y=[7, 8, 9],
+            name="t3",
+        )
+
+    def test_single_field_match(self):
+        sel = TraceSelector(meta={"source": "train"})
+        matches = list(self.fig.select_traces_by_selector(sel))
+        assert len(matches) == 1
+        assert matches[0].name == "t1"
+
+    def test_multiple_fields_match(self):
+        sel = TraceSelector(meta={"source": "train", "version": 2})
+        matches = list(self.fig.select_traces_by_selector(sel))
+        assert len(matches) == 1
+        assert matches[0].name == "t1"
+
+    def test_nested_field_match(self):
+        sel = TraceSelector(meta={"nested.key": "val_a"})
+        matches = list(self.fig.select_traces_by_selector(sel))
+        assert len(matches) == 1
+        assert matches[0].name == "t1"
+
+    def test_no_match(self):
+        sel = TraceSelector(meta={"source": "validation"})
+        matches = list(self.fig.select_traces_by_selector(sel))
+        assert len(matches) == 0
+
+    def test_missing_key(self):
+        sel = TraceSelector(meta={"nonexistent": "value"})
+        matches = list(self.fig.select_traces_by_selector(sel))
+        assert len(matches) == 0
+
+    def test_trace_without_meta(self):
+        sel = TraceSelector(meta={"source": "train"})
+        matches = list(self.fig.select_traces_by_selector(sel))
+        names = {m.name for m in matches}
+        assert "t3" not in names
+
+    def test_update_with_meta_field_path(self):
+        sel = TraceSelector(meta={"source": "test"})
+        self.fig.update_traces_by_selector(sel, patch={"visible": "legendonly"})
+        assert self.fig.data[1].visible == "legendonly"
+        assert self.fig.data[0].visible != "legendonly"
+
+
+class TestAxisInferenceSubplotSelection(TestCaseNoTemplate):
+    def test_manual_multi_axis_col1(self):
+        fig = go.Figure()
+        fig.add_scatter(y=[1, 2, 3], xaxis="x", yaxis="y", name="s1")
+        fig.add_scatter(y=[4, 5, 6], xaxis="x2", yaxis="y2", name="s2")
+        fig.update_layout(xaxis2={}, yaxis2={})
+        sel = TraceSelector(col=1)
+        matches = list(fig.select_traces_by_selector(sel))
+        assert len(matches) == 1
+        assert matches[0].name == "s1"
+
+    def test_manual_multi_axis_col2(self):
+        fig = go.Figure()
+        fig.add_scatter(y=[1, 2, 3], xaxis="x", yaxis="y", name="s1")
+        fig.add_scatter(y=[4, 5, 6], xaxis="x2", yaxis="y2", name="s2")
+        fig.update_layout(xaxis2={}, yaxis2={})
+        sel = TraceSelector(col=2)
+        matches = list(fig.select_traces_by_selector(sel))
+        assert len(matches) == 1
+        assert matches[0].name == "s2"
+
+    def test_simple_figure_row1_col1(self):
+        fig = go.Figure()
+        fig.add_scatter(y=[1, 2, 3], name="s1")
+        fig.add_bar(y=[3, 2, 1], name="b1")
+        sel = TraceSelector(row=1, col=1)
+        matches = list(fig.select_traces_by_selector(sel))
+        assert len(matches) == 2
+
+    def test_pe_facet_col_selection(self):
+        import plotly.express as px
+
+        df = px.data.tips()
+        fig = px.scatter(df, x="total_bill", y="tip", facet_col="sex", color="time")
+        sel = TraceSelector(col=1)
+        matches_col1 = list(fig.select_traces_by_selector(sel))
+        sel2 = TraceSelector(col=2)
+        matches_col2 = list(fig.select_traces_by_selector(sel2))
+        assert len(matches_col1) + len(matches_col2) == len(fig.data)
+
+    def test_pe_facet_row_col_selection(self):
+        import plotly.express as px
+
+        df = px.data.tips()
+        fig = px.scatter(df, x="total_bill", y="tip", facet_row="time", facet_col="sex")
+        sel = TraceSelector(row=1, col=1)
+        matches = list(fig.select_traces_by_selector(sel))
+        assert len(matches) >= 1
+
+    def test_make_subplots_still_primary(self):
+        fig = make_subplots(rows=1, cols=2)
+        fig.add_scatter(y=[1, 2, 3], row=1, col=1, name="s1")
+        fig.add_scatter(y=[4, 5, 6], row=1, col=2, name="s2")
+        sel = TraceSelector(col=1)
+        matches = list(fig.select_traces_by_selector(sel))
+        assert len(matches) == 1
+        assert matches[0].name == "s1"
+
+    def test_axis_inference_with_type_filter(self):
+        fig = go.Figure()
+        fig.add_scatter(y=[1, 2, 3], xaxis="x", yaxis="y", name="s1")
+        fig.add_bar(y=[3, 2, 1], xaxis="x2", yaxis="y2", name="b1")
+        fig.update_layout(xaxis2={}, yaxis2={})
+        sel = TraceSelector(col=2, type="bar")
+        matches = list(fig.select_traces_by_selector(sel))
+        assert len(matches) == 1
+        assert matches[0].name == "b1"

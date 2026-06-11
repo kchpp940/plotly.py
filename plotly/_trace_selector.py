@@ -19,13 +19,105 @@ def _values_equal(a, b):
     return a == b
 
 
+def _resolve_path(obj, path):
+    """
+    Resolve a dot-separated *path* against *obj*, returning the value
+    at that path or a ``_MISSING`` sentinel if any segment is absent.
+
+    Supports both dict-key access and numeric-index access:
+
+    >>> _resolve_path({"a": {"b": 1}}, "a.b")
+    1
+    >>> _resolve_path({"items": [10, 20]}, "items.1")
+    20
+    """
+    parts = path.split(".")
+    cur = obj
+    for part in parts:
+        if isinstance(cur, dict):
+            if part not in cur:
+                return _MISSING
+            cur = cur[part]
+        elif isinstance(cur, (list, tuple)):
+            try:
+                idx = int(part)
+            except ValueError:
+                return _MISSING
+            if idx < 0 or idx >= len(cur):
+                return _MISSING
+            cur = cur[idx]
+        else:
+            return _MISSING
+    return cur
+
+
+class _MissingSentinel:
+    pass
+
+
+_MISSING = _MissingSentinel()
+
+
+def _match_dict_spec(trace_val, spec):
+    """
+    Match a dict *spec* against *trace_val* using field-path semantics.
+
+    *spec* is a dict where each key is a dot-separated path and each
+    value is the expected value at that path.  A trace matches only
+    when **every** path in *spec* resolves and the resolved value
+    equals the expected one (using :func:`_values_equal`).
+
+    For ``customdata`` (which is a 2-D array per data-point), the
+    spec is checked against **every row** in the array and the trace
+    matches when **at least one row** satisfies all spec entries.
+
+    For ``meta`` (which is typically a scalar dict), the spec is
+    checked against the value directly.
+
+    Parameters
+    ----------
+    trace_val : object
+        The value retrieved from the trace property (may be a tuple of
+        rows for customdata, or a dict for meta).
+    spec : dict
+        Mapping of dot-separated paths to expected values.
+
+    Returns
+    -------
+    bool
+    """
+    if trace_val is None:
+        return False
+
+    if isinstance(trace_val, (list, tuple)) and len(trace_val) > 0 and isinstance(
+        trace_val[0], (list, tuple, dict)
+    ):
+        for row in trace_val:
+            if _all_paths_match(row, spec):
+                return True
+        return False
+
+    return _all_paths_match(trace_val, spec)
+
+
+def _all_paths_match(obj, spec):
+    """Return True if every path in *spec* resolves in *obj* and equals expected."""
+    for path, expected in spec.items():
+        resolved = _resolve_path(obj, path)
+        if isinstance(resolved, _MissingSentinel):
+            return False
+        if not _values_equal(resolved, expected):
+            return False
+    return True
+
+
 class TraceSelector:
     """
     A rich selector for filtering traces in a Figure.
 
     Supports selecting traces by trace type, subplot position,
-    legendgroup, name pattern (regex), customdata predicate,
-    and meta predicate. All criteria are combined with AND logic --
+    legendgroup, name pattern (regex), customdata field paths,
+    and meta field paths. All criteria are combined with AND logic --
     a trace must satisfy every non-None criterion to be selected.
 
     Parameters
@@ -34,36 +126,52 @@ class TraceSelector:
         Trace type(s) to match (e.g. ``"scatter"``, ``["scatter", "bar"]``).
         Case-insensitive comparison against ``trace.type``.
     row : int or None
-        Subplot row index (1-based). Requires that the Figure was created
-        with :func:`plotly.subplots.make_subplots`.
+        Subplot row index (1-based).  Works with figures created via
+        :func:`plotly.subplots.make_subplots` **and** with figures that
+        use Plotly Express facets (row/col is inferred from axis
+        references when no ``_grid_ref`` exists).
     col : int or None
-        Subplot column index (1-based). Requires that the Figure was created
-        with :func:`plotly.subplots.make_subplots`.
+        Subplot column index (1-based).  Same fallback logic as *row*.
     secondary_y : bool or None
         If ``True``, only traces on the secondary y-axis.
         If ``False``, only traces on the primary y-axis.
         If ``None``, do not filter by y-axis.
     legendgroup : str or re.Pattern or None
         Exact string or regex pattern to match against ``trace.legendgroup``.
-        An empty string legendgroup on the trace is treated as no legendgroup.
     name : str or re.Pattern or None
         Exact string or compiled regex pattern to match against ``trace.name``.
         When a plain string is given, it is compiled as a full-match regex
-        (``^...$``) so that ``name="foo"`` matches only traces whose name is
-        exactly ``"foo"``.  Pass a compiled pattern for partial / substring
+        (``^...$``).  Pass a compiled pattern for partial / substring
         matching, e.g. ``name=re.compile("series_\\d+")``.
-    customdata : object or callable or None
-        If a callable, it is called with ``trace.customdata`` and must return
-        a boolean.  If not callable, the value is compared for equality with
-        ``trace.customdata``.
-    meta : object or callable or None
-        If a callable, it is called with ``trace.meta`` and must return a
-        boolean.  If not callable, the value is compared for equality with
-        ``trace.meta``.
+    customdata : dict or callable or object or None
+        **Dict** — field-path selector: each key is a dot-separated path,
+        each value is the expected value at that path.  For 2-D
+        customdata arrays (one row per data-point), at least one row
+        must satisfy all path constraints.  Numeric path segments
+        select into arrays, e.g. ``customdata={"0": "APAC"}`` matches
+        traces where the first customdata field of any row is
+        ``"APAC"``.
+
+        **Callable** — called with ``trace.customdata``; must return
+        a boolean.
+
+        **Other** — compared for equality with ``trace.customdata``
+        (using :func:`_values_equal` which normalises list/tuple
+        mismatches).
+    meta : dict or callable or object or None
+        **Dict** — field-path selector: each key is a dot-separated
+        path into the trace's ``meta`` value, each value is the
+        expected value.  E.g. ``meta={"source": "train"}`` matches
+        traces whose ``meta`` dict has ``"source" == "train"``.
+
+        **Callable** — called with ``trace.meta``; must return a
+        boolean.
+
+        **Other** — compared for equality with ``trace.meta``.
     selector : dict or callable or int or str or None
         Backward-compatible selector as accepted by
-        :meth:`BaseFigure.select_traces`.  Applied *in addition* to all the
-        other criteria (AND logic).
+        :meth:`BaseFigure.select_traces`.  Applied *in addition* to
+        all the other criteria (AND logic).
 
     Examples
     --------
@@ -72,6 +180,8 @@ class TraceSelector:
     >>> sel = TraceSelector(type="scatter", legendgroup="group_a")
     >>> sel = TraceSelector(name=re.compile("series_\\d+"))
     >>> sel = TraceSelector(row=1, col=2, secondary_y=True)
+    >>> sel = TraceSelector(customdata={"0": "APAC"})
+    >>> sel = TraceSelector(meta={"source": "train", "version": 2})
     >>> sel = TraceSelector(customdata=lambda cd: cd is not None and len(cd) > 3)
     """
 
@@ -132,16 +242,23 @@ class TraceSelector:
         else:
             self._legendgroup_pattern = None
 
-        self._customdata_predicate = (
-            customdata if callable(customdata) else None
-        )
-        self._customdata_exact = customdata if not callable(customdata) else None
+        if callable(customdata):
+            self._customdata_mode = "callable"
+        elif isinstance(customdata, dict):
+            self._customdata_mode = "dict"
+        elif customdata is not None:
+            self._customdata_mode = "exact"
+        else:
+            self._customdata_mode = None
 
-        self._meta_predicate = meta if callable(meta) else None
-        self._meta_exact = meta if not callable(meta) else None
-
-        self._has_customdata = customdata is not None
-        self._has_meta = meta is not None
+        if callable(meta):
+            self._meta_mode = "callable"
+        elif isinstance(meta, dict):
+            self._meta_mode = "dict"
+        elif meta is not None:
+            self._meta_mode = "exact"
+        else:
+            self._meta_mode = None
 
     def matches(self, trace):
         """
@@ -175,28 +292,34 @@ class TraceSelector:
             ):
                 return False
 
-        if self._has_customdata:
+        if self._customdata_mode is not None:
             trace_cd = getattr(trace, "customdata", None)
-            if self._customdata_predicate is not None:
+            if self._customdata_mode == "callable":
                 try:
-                    if not self._customdata_predicate(trace_cd):
+                    if not self.customdata(trace_cd):
                         return False
                 except Exception:
                     return False
+            elif self._customdata_mode == "dict":
+                if not _match_dict_spec(trace_cd, self.customdata):
+                    return False
             else:
-                if not _values_equal(trace_cd, self._customdata_exact):
+                if not _values_equal(trace_cd, self.customdata):
                     return False
 
-        if self._has_meta:
+        if self._meta_mode is not None:
             trace_meta = getattr(trace, "meta", None)
-            if self._meta_predicate is not None:
+            if self._meta_mode == "callable":
                 try:
-                    if not self._meta_predicate(trace_meta):
+                    if not self.meta(trace_meta):
                         return False
                 except Exception:
                     return False
+            elif self._meta_mode == "dict":
+                if not _match_dict_spec(trace_meta, self.meta):
+                    return False
             else:
-                if not _values_equal(trace_meta, self._meta_exact):
+                if not _values_equal(trace_meta, self.meta):
                     return False
 
         if self.selector is not None:
@@ -230,9 +353,9 @@ class TraceSelector:
             parts.append(f"legendgroup={self.legendgroup!r}")
         if self.name is not None:
             parts.append(f"name={self.name!r}")
-        if self._has_customdata:
+        if self.customdata is not None:
             parts.append(f"customdata={self.customdata!r}")
-        if self._has_meta:
+        if self.meta is not None:
             parts.append(f"meta={self.meta!r}")
         if self.selector is not None:
             parts.append(f"selector={self.selector!r}")
