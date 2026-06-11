@@ -234,6 +234,59 @@ class ParamRegistry:
                    f"parameters not registered in ParamRegistry: {missing}")
             raise AssertionError(msg)
 
+    def context_for(self, chart_name: Optional[str]) -> "ParamContext":
+        """Build a :class:`ParamContext` for a specific chart (or global defaults).
+
+        The returned object bundles every chart-specific piece of metadata that
+        the data pipeline needs, so it can be passed explicitly through the call
+        stack instead of relying on module-level globals.
+        """
+        direct, array, group, renameable = self.get_attrable_lists(chart_name)
+        return ParamContext(
+            chart_name=chart_name,
+            direct_attrables=direct,
+            array_attrables=array,
+            group_attrables=group,
+            renameable_group_attrables=renameable,
+            all_attrables=self.get_all_attrables(chart_name),
+        )
+
+
+@dataclass
+class ParamContext:
+    """Chart-specific parameter-consumption context.
+
+    A single immutable-ish bundle of every per-chart metadata slice that the
+    build_dataframe / process_args_into_dataframe / infer_config pipeline needs.
+    Eliminates module-level ``*_attrables`` globals and the concurrent / nested
+    call pollution they cause.
+
+    Create one via :meth:`ParamRegistry.context_for`.
+    """
+
+    chart_name: Optional[str]
+    direct_attrables: List[str]
+    array_attrables: List[str]
+    group_attrables: List[str]
+    renameable_group_attrables: List[str]
+    all_attrables: List[str]
+
+    # ---- convenience helpers ----
+    def has(self, name: str) -> bool:
+        return name in self.all_attrables
+
+    def is_array(self, name: str) -> bool:
+        return name in self.array_attrables
+
+    def is_direct(self, name: str) -> bool:
+        return name in self.direct_attrables
+
+    def is_group(self, name: str) -> bool:
+        return name in self.group_attrables
+
+    def is_renameable(self, name: str) -> bool:
+        return name in self.renameable_group_attrables
+
 
 _colref_type = "str or int or Series or array-like"
 _colref_desc = (

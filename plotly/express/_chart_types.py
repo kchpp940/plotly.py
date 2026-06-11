@@ -69,7 +69,7 @@ def scatter(
     return make_figure(args=locals(), constructor=go.Scatter, chart_name="scatter")
 
 
-scatter.__doc__ = make_docstring(scatter, append_dict=_cartesian_append_dict)
+scatter.__doc__ = make_docstring(scatter, append_dict=_cartesian_append_dict, strict=True)
 
 
 def density_contour(
@@ -270,7 +270,7 @@ def line(
     return make_figure(args=locals(), constructor=go.Scatter, chart_name="line")
 
 
-line.__doc__ = make_docstring(line, append_dict=_cartesian_append_dict)
+line.__doc__ = make_docstring(line, append_dict=_cartesian_append_dict, strict=True)
 
 
 def area(
@@ -387,7 +387,7 @@ def bar(
     )
 
 
-bar.__doc__ = make_docstring(bar, append_dict=_cartesian_append_dict)
+bar.__doc__ = make_docstring(bar, append_dict=_cartesian_append_dict, strict=True)
 
 
 def timeline(
@@ -512,6 +512,7 @@ histogram.__doc__ = make_docstring(
             "The arguments to this function are the values of `y` (`x`) if `orientation` is `'v'` (`'h'`).",
         ],
     ),
+    strict=True,
 )
 
 

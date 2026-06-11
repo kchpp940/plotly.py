@@ -3,7 +3,7 @@ import plotly.io as pio
 from collections import namedtuple, OrderedDict
 from ._special_inputs import IdentityMap, Constant, Range
 from .trendline_functions import ols, lowess, rolling, expanding, ewm
-from ._params import PARAMS
+from ._params import PARAMS, ParamContext
 
 from _plotly_utils.basevalidators import ColorscaleValidator
 from plotly.colors import qualitative, sequential
@@ -29,63 +29,26 @@ trendline_functions = dict(
     lowess=lowess, rolling=rolling, ewm=ewm, expanding=expanding, ols=ols
 )
 
+# ---- Global / default attrable lists (read-only fallback for charts not yet migrated)
+# Use ParamContext for explicit, chart-specific, thread-safe consumption.
 direct_attrables, array_attrables, group_attrables, renameable_group_attrables = (
     PARAMS.get_attrable_lists()
 )
 all_attrables = PARAMS.get_all_attrables()
 
-# ---- Default (global) copies used when no chart_name is supplied
-_DEFAULT_ATTRABLES = (
-    list(direct_attrables),
-    list(array_attrables),
-    list(group_attrables),
-    list(renameable_group_attrables),
-    list(all_attrables),
+_DEFAULT_CTX = ParamContext(
+    chart_name=None,
+    direct_attrables=list(direct_attrables),
+    array_attrables=list(array_attrables),
+    group_attrables=list(group_attrables),
+    renameable_group_attrables=list(renameable_group_attrables),
+    all_attrables=list(all_attrables),
 )
 
 
-def _install_attrable_lists(chart_name: str | None) -> tuple:
-    """Replace the module-level ``*_attrables`` globals with chart-specific lists.
-
-    Returns the previous (``direct, array, group, renameable, all``) tuple so
-    that the caller can restore them via :func:`_restore_attrable_lists`.
-
-    If ``chart_name`` is ``None`` the defaults are (re)installed.
-    """
-    import sys
-
-    if chart_name is None:
-        d, a, g, rg, al = _DEFAULT_ATTRABLES
-    else:
-        d, a, g, rg = PARAMS.get_attrable_lists(chart_name)
-        al = PARAMS.get_all_attrables(chart_name)
-    module = sys.modules[__name__]
-    prev = (
-        list(module.direct_attrables),
-        list(module.array_attrables),
-        list(module.group_attrables),
-        list(module.renameable_group_attrables),
-        list(module.all_attrables),
-    )
-    module.direct_attrables = list(d)
-    module.array_attrables = list(a)
-    module.group_attrables = list(g)
-    module.renameable_group_attrables = list(rg)
-    module.all_attrables = list(al)
-    return prev
-
-
-def _restore_attrable_lists(saved: tuple) -> None:
-    """Restore a tuple previously returned by :func:`_install_attrable_lists`."""
-    import sys
-
-    d, a, g, rg, al = saved
-    module = sys.modules[__name__]
-    module.direct_attrables = d
-    module.array_attrables = a
-    module.group_attrables = g
-    module.renameable_group_attrables = rg
-    module.all_attrables = al
+def _resolve_ctx(param_ctx: ParamContext | None) -> ParamContext:
+    """Return the given context or the module-level default if None."""
+    return param_ctx if param_ctx is not None else _DEFAULT_CTX
 
 cartesians = [go.Scatter, go.Scattergl, go.Bar, go.Funnel, go.Box, go.Violin]
 cartesians += [go.Histogram, go.Histogram2d, go.Histogram2dContour]
@@ -1161,18 +1124,19 @@ def _check_name_not_reserved(field_name, reserved_names):
         )
 
 
-def _get_reserved_col_names(args):
+def _get_reserved_col_names(args, param_ctx=None):
     """
     This function builds a list of columns of the data_frame argument used
     as arguments, either as str/int arguments or given as columns
     (pandas series type).
     """
+    ctx = _resolve_ctx(param_ctx)
     df: nw.DataFrame = args["data_frame"]
     reserved_names = set()
     for field in args:
-        if field not in all_attrables:
+        if not ctx.has(field):
             continue
-        names = args[field] if field in array_attrables else [args[field]]
+        names = args[field] if ctx.is_array(field) else [args[field]]
         if names is None:
             continue
         for arg in names:
@@ -1289,15 +1253,16 @@ def to_named_series(x, name=None, native_namespace=None):
 
 
 def process_args_into_dataframe(
-    args, wide_mode, var_name, value_name, is_pd_like, native_namespace
+    args, wide_mode, var_name, value_name, is_pd_like, native_namespace, param_ctx=None
 ):
     """
-    After this function runs, the `all_attrables` keys of `args` all contain only
+    After this function runs, the ``all_attrables`` keys of `args` all contain only
     references to columns of `df_output`. This function handles the extraction of data
     from `args["attrable"]` and column-name-generation as appropriate, and adds the
     data to `df_output` and then replaces `args["attrable"]` with the appropriate
     reference.
     """
+    ctx = _resolve_ctx(param_ctx)
 
     df_input: nw.DataFrame | None = args["data_frame"]
     df_provided = df_input is not None
@@ -1310,7 +1275,7 @@ def process_args_into_dataframe(
     ranges = []
     wide_id_vars = set()
     wide_deferred_data = {}
-    reserved_names = _get_reserved_col_names(args) if df_provided else set()
+    reserved_names = _get_reserved_col_names(args, param_ctx) if df_provided else set()
 
     # Case of functions with a "dimensions" kw: scatter_matrix, parcats, parcoords
     if "dimensions" in args and args["dimensions"] is None:
@@ -1340,11 +1305,11 @@ def process_args_into_dataframe(
                     % k
                 )
     # Loop over possible arguments
-    for field_name in all_attrables:
+    for field_name in ctx.all_attrables:
         # Massaging variables
         argument_list = (
             [args.get(field_name)]
-            if field_name not in array_attrables
+            if not ctx.is_array(field_name)
             else args.get(field_name)
         )
 
@@ -1362,7 +1327,7 @@ def process_args_into_dataframe(
         # Else we give names like ["hover_data_0, hover_data_1"] etc.
         field_list = (
             [field_name]
-            if field_name not in array_attrables
+            if not ctx.is_array(field_name)
             else [field_name + "_" + str(i) for i in range(len(argument_list))]
         )
         # argument_list and field_list ready, iterate over them
@@ -1516,7 +1481,7 @@ def process_args_into_dataframe(
                 "https://github.com/plotly/plotly.py/issues/new and we will try to "
                 "replicate and fix it."
             )
-            if field_name not in array_attrables:
+            if not ctx.is_array(field_name):
                 args[field_name] = str(col_name)
             elif isinstance(args[field_name], dict):
                 pass
@@ -1572,7 +1537,7 @@ def process_args_into_dataframe(
     return df_output, wide_id_vars, wide_deferred_data
 
 
-def build_dataframe(args, constructor):
+def build_dataframe(args, constructor, param_ctx=None):
     """
     Constructs a dataframe and modifies `args` in-place.
 
@@ -1587,10 +1552,11 @@ def build_dataframe(args, constructor):
     constructor : graph_object trace class
         the trace type selected for this figure
     """
+    ctx = _resolve_ctx(param_ctx)
 
     # make copies of all the fields via dict() and list()
     for field in args:
-        if field in array_attrables and args[field] is not None:
+        if ctx.is_array(field) and args[field] is not None:
             if isinstance(args[field], dict):
                 args[field] = dict(args[field])
             elif field in ["custom_data", "hover_data"] and isinstance(
@@ -1836,7 +1802,7 @@ def build_dataframe(args, constructor):
                 i for i in args.values() if isinstance(i, str) and i in columns
             }
             for field in args:
-                if args[field] is not None and field in array_attrables:
+                if args[field] is not None and ctx.is_array(field):
                     necessary_columns.update(i for i in args[field] if i in columns)
             columns = list(necessary_columns)
             args["data_frame"] = nw.from_native(
@@ -1898,6 +1864,7 @@ def build_dataframe(args, constructor):
         value_name,
         is_pd_like,
         native_namespace,
+        param_ctx=param_ctx,
     )
     df_output: nw.DataFrame
     # now that `df_output` exists and `args` contains only references, we complete
@@ -2399,8 +2366,9 @@ def process_dataframe_pie(args, trace_patch):
     return args, trace_patch
 
 
-def infer_config(args, constructor, trace_patch, layout_patch):
-    attrs = [k for k in direct_attrables + array_attrables if k in args]
+def infer_config(args, constructor, trace_patch, layout_patch, param_ctx=None):
+    ctx = _resolve_ctx(param_ctx)
+    attrs = [k for k in ctx.direct_attrables + ctx.array_attrables if k in args]
     grouped_attrs = []
     df: nw.DataFrame = args["data_frame"]
 
@@ -2618,7 +2586,7 @@ def infer_config(args, constructor, trace_patch, layout_patch):
         args["histnorm"] = args["ecdfnorm"]
 
     # Compute applicable grouping attributes
-    grouped_attrs.extend([k for k in group_attrables if k in args])
+    grouped_attrs.extend([k for k in ctx.group_attrables if k in args])
 
     # Create grouped mappings
     grouped_mappings = [make_mapping(args, a) for a in grouped_attrs]
@@ -2705,26 +2673,18 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None, chart_na
     trace_patch = trace_patch or {}
     layout_patch = layout_patch or {}
 
-    # ---- Install chart-specific attrable lists (unified ParamMeta source)
-    # This ensures that build_dataframe / process_args_into_dataframe etc. all
-    # consume exactly the parameters registered for *this* chart in the registry.
-    prev_attrables = _install_attrable_lists(chart_name)
-    try:
-        return _make_figure_impl(
-            args, constructor, trace_patch, layout_patch, chart_name
-        )
-    finally:
-        _restore_attrable_lists(prev_attrables)
+    # ---- Build chart-specific parameter context (single source of truth)
+    # Every downstream function (build_dataframe, process_args_into_dataframe,
+    # infer_config, etc.) consumes this explicit context instead of relying on
+    # module-level globals.  No global state mutation, no concurrency risk.
+    param_ctx = PARAMS.context_for(chart_name)
 
-
-def _make_figure_impl(args, constructor, trace_patch, layout_patch, chart_name):
-    """Internal implementation (called from inside the attrable-list context)."""
     # Track if color_continuous_scale was explicitly provided by user
     # (before apply_default_cascade fills it from template/defaults)
     user_provided_colorscale = args.get("color_continuous_scale") is not None
     apply_default_cascade(args, constructor=constructor)
 
-    args = build_dataframe(args, constructor)
+    args = build_dataframe(args, constructor, param_ctx=param_ctx)
     if constructor in [go.Treemap, go.Sunburst, go.Icicle] and args["path"] is not None:
         args = process_dataframe_hierarchy(args)
     if constructor in [go.Pie]:
@@ -2738,7 +2698,7 @@ def _make_figure_impl(args, constructor, trace_patch, layout_patch, chart_name):
         layout_patch["barmode"] = "overlay"
 
     trace_specs, grouped_mappings, sizeref, show_colorbar = infer_config(
-        args, constructor, trace_patch, layout_patch
+        args, constructor, trace_patch, layout_patch, param_ctx=param_ctx
     )
     grouper = [x.grouper or one_group for x in grouped_mappings] or [one_group]
     groups, orders = get_groups_and_orders(args, grouper)

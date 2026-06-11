@@ -72,17 +72,21 @@ _docs_overrides = dict(
 )
 
 
-def make_docstring(fn, override_dict=None, append_dict=None):
+def make_docstring(fn, override_dict=None, append_dict=None, strict=False):
     """Build a docstring for a plotly.express chart-type function.
 
     The parameter documentation is resolved, in order of decreasing precedence:
       1. ``override_dict[param]`` – per-call override
       2. ``_docs_overrides[param]`` – project-wide hand-written overrides
       3. ``PARAMS.build_docs_dict(chart_name)[param]`` – chart-specific registry
-      4. A sentinel ``"(missing from registry)"`` entry when none of the above match
 
     ``chart_name`` is taken from the decorated function's ``__name__`` (i.e. the
     public ``px.scatter`` / ``px.line`` / ... names).
+
+    When ``strict=True`` every parameter in the function signature **must** have
+    a documentation entry; missing parameters raise ``KeyError`` instead of being
+    silently filled with a placeholder.  Use strict mode for charts whose
+    registry coverage has been verified via ``PARAMS.assert_signature_matches``.
     """
     override_dict = {} if override_dict is None else override_dict
     append_dict = {} if append_dict is None else append_dict
@@ -102,7 +106,15 @@ def make_docstring(fn, override_dict=None, append_dict=None):
     for param in getfullargspec(fn)[0]:
         if override_dict.get(param):
             param_doc = list(override_dict[param])
+        elif strict:
+            # Strict mode: every param must be in the registry/overrides.
+            # Missing params raise KeyError — fail fast, don't silently degrade.
+            param_doc = list(chart_docs[param])
+            if append_dict.get(param):
+                param_doc += append_dict[param]
         else:
+            # Backward-compat mode: fall back to a placeholder for unregistered params.
+            # Use strict=True once the chart's registry coverage is verified.
             param_doc = list(chart_docs.get(param, ["(missing from registry)", ""]))
             if append_dict.get(param):
                 param_doc += append_dict[param]
