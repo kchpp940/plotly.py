@@ -14,9 +14,9 @@ _cartesian_append_dict = dict(x=_wide_mode_xy_append, y=_wide_mode_xy_append)
 
 
 def _register_chart(chart_name, constructor, strict=True, **doc_kwargs):
-    """Decorator that registers a chart function with the ParamRegistry.
+    """Decorator that registers a chart function and auto-wraps it.
 
-    Automatically does three things for every chart:
+    Automatically does **four** things for every chart:
 
     1. **Signature validation** – checks that the function's parameters match
        what's registered in ``PARAMS``. Catches missing / extra params at
@@ -26,10 +26,32 @@ def _register_chart(chart_name, constructor, strict=True, **doc_kwargs):
        no silent placeholders.
     3. **Metadata binding** – attaches ``_chart_name`` and ``_chart_constructor``
        attributes so the function knows its own identity.
+    4. **Auto-wrapping** – replaces the function body so it automatically calls
+       :func:`make_figure` with the correct ``chart_name`` and ``constructor``.
+       The original function body becomes a *configurer* that can optionally
+       return a ``(trace_patch, layout_patch)`` tuple.
 
-    This means adding a new chart (or adding a param to an existing one) only
-    requires updating :mod:`plotly.express._params` – the signature check, the
-    docs, and the data pipeline all read from the same source.
+    This means the chart function no longer needs to call ``make_figure()`` or
+    ``_fig()`` at all.  It only contains business-logic differences – i.e.
+    the ``trace_patch`` and ``layout_patch`` that distinguish it from other
+    charts that share the same constructor.
+
+    Examples
+    --------
+    A simple chart with no patches::
+
+        @_register_chart("scatter", go.Scatter, append_dict=_cartesian_append_dict)
+        def scatter(data_frame=None, x=None, y=None, ...):
+            '''In a scatter plot, each row of `data_frame` ...'''
+            # no return needed → equivalent to return None
+
+    A chart with patches::
+
+        @_register_chart("bar", go.Bar, append_dict=_cartesian_append_dict)
+        def bar(data_frame=None, x=None, y=None, ..., barmode="relative"):
+            '''In a bar plot, ...'''
+            return dict(trace_patch=dict(textposition="auto"),
+                        layout_patch=dict(barmode=barmode))
 
     Parameters
     ----------
@@ -50,32 +72,51 @@ def _register_chart(chart_name, constructor, strict=True, **doc_kwargs):
         func.__doc__ = make_docstring(func, strict=strict, **doc_kwargs)
         func._chart_name = chart_name
         func._chart_constructor = constructor
-        return func
+
+        original_func = func
+
+        def wrapper(*args_call, **kwargs_call):
+            all_kwargs = _bind_signature(original_func, args_call, kwargs_call)
+            patches = original_func(**all_kwargs)
+            trace_patch = None
+            layout_patch = None
+            if patches is not None:
+                trace_patch = patches.get("trace_patch")
+                layout_patch = patches.get("layout_patch")
+            return make_figure(
+                args=all_kwargs,
+                constructor=constructor,
+                trace_patch=trace_patch,
+                layout_patch=layout_patch,
+                chart_name=chart_name,
+            )
+
+        wrapper.__name__ = func.__name__
+        wrapper.__qualname__ = func.__qualname__
+        wrapper.__doc__ = func.__doc__
+        wrapper.__module__ = func.__module__
+        wrapper._chart_name = chart_name
+        wrapper._chart_constructor = constructor
+        wrapper.__wrapped__ = original_func
+        import functools
+        functools.update_wrapper(wrapper, func)
+        wrapper._chart_name = chart_name
+        wrapper._chart_constructor = constructor
+        wrapper.__wrapped__ = original_func
+        return wrapper
     return decorator
 
 
-def _fig(func, args, trace_patch=None, layout_patch=None):
-    """Shortcut for ``make_figure`` that reads chart identity from ``func``.
+def _bind_signature(func, args_call, kwargs_call):
+    """Bind positional and keyword arguments to func's signature.
 
-    Every ``@_register_chart``-decorated function has ``_chart_name`` and
-    ``_chart_constructor`` attributes, so instead of writing::
-
-        return make_figure(args=locals(), constructor=go.Scatter, chart_name="scatter")
-
-    you can write::
-
-        return _fig(scatter, locals())
-
-    One source of truth for chart name + constructor, less boilerplate, no
-    chance of misspelling ``chart_name``.
+    Returns a flat ``dict`` of ``{param_name: value}`` for all parameters,
+    filling in defaults for any parameters not provided by the caller.
     """
-    return make_figure(
-        args=args,
-        constructor=func._chart_constructor,
-        trace_patch=trace_patch,
-        layout_patch=layout_patch,
-        chart_name=func._chart_name,
-    )
+    sig = inspect.signature(func)
+    bound = sig.bind(*args_call, **kwargs_call)
+    bound.apply_defaults()
+    return dict(bound.arguments)
 
 
 @_register_chart("scatter", go.Scatter, append_dict=_cartesian_append_dict)
@@ -134,7 +175,6 @@ def scatter(
     In a scatter plot, each row of `data_frame` is represented by a symbol
     mark in 2D space.
     """
-    return _fig(scatter, locals())
 
 
 def density_contour(
@@ -333,7 +373,6 @@ def line(
     In a 2D line plot, each row of `data_frame` is represented as a vertex of
     a polyline mark in 2D space.
     """
-    return _fig(line, locals())
 
 
 def area(
@@ -442,9 +481,7 @@ def bar(
     In a bar plot, each row of `data_frame` is represented as a rectangular
     mark.
     """
-    return _fig(
-        bar,
-        locals(),
+    return dict(
         trace_patch=dict(textposition="auto"),
         layout_patch=dict(barmode=barmode),
     )
@@ -561,9 +598,7 @@ def histogram(
     function `histfunc` (e.g. the count or sum) of the value `y` (or `x` if
     `orientation` is `'h'`).
     """
-    return _fig(
-        histogram,
-        locals(),
+    return dict(
         trace_patch=dict(
             histnorm=histnorm,
             histfunc=histfunc,

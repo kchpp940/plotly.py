@@ -1018,12 +1018,10 @@ def one_group(x):
     return ""
 
 
-def apply_default_cascade(args, constructor):
-    # first we apply px.defaults to unspecified args
+def apply_default_cascade(args, constructor, param_ctx=None):
+    ctx = _resolve_ctx(param_ctx)
 
-    for param in defaults.__slots__:
-        if param in args and args[param] is None:
-            args[param] = getattr(defaults, param)
+    ctx.apply_px_defaults(args, defaults)
 
     # load the default template if set, otherwise "plotly"
     if args["template"] is None:
@@ -1039,9 +1037,7 @@ def apply_default_cascade(args, constructor):
         # otherwise try to build a real template
         args["template"] = go.layout.Template(args["template"])
 
-    # if colors not set explicitly or in px.defaults, defer to a template
-    # if the template doesn't have one, we set some final fallback defaults
-    if "color_continuous_scale" in args:
+    if ctx.is_mapping_config("color_continuous_scale") and "color_continuous_scale" in args:
         if (
             args["color_continuous_scale"] is None
             and args["template"].layout.colorscale.sequential
@@ -1052,10 +1048,7 @@ def apply_default_cascade(args, constructor):
         if args["color_continuous_scale"] is None:
             args["color_continuous_scale"] = sequential.Viridis
 
-    # if color_discrete_sequence not set explicitly or in px.defaults,
-    # see if we can defer to template. Try trace-specific colors first,
-    # then layout.colorway, then set reasonable defaults
-    if "color_discrete_sequence" in args:
+    if ctx.is_mapping_config("color_discrete_sequence") and "color_discrete_sequence" in args:
         if args["color_discrete_sequence"] is None and constructor is not None:
             if constructor == "timeline":
                 trace_type = "bar"
@@ -1068,19 +1061,14 @@ def apply_default_cascade(args, constructor):
                     if hasattr(trace_data, "marker")
                     and hasattr(trace_data.marker, "color")
                 ]
-                # If template contains at least one color for this trace type, assign to color_discrete_sequence
                 if any(trace_specific_colors):
                     args["color_discrete_sequence"] = trace_specific_colors
-        # fallback to layout.colorway if trace-specific colors not available
         if args["color_discrete_sequence"] is None and args["template"].layout.colorway:
             args["color_discrete_sequence"] = args["template"].layout.colorway
-        # final fallback to default qualitative palette
         if args["color_discrete_sequence"] is None:
             args["color_discrete_sequence"] = qualitative.D3
 
-    # if symbol_sequence/line_dash_sequence not set explicitly or in px.defaults,
-    # see if we can defer to template. If not, set reasonable defaults
-    if "symbol_sequence" in args:
+    if ctx.is_mapping_config("symbol_sequence") and "symbol_sequence" in args:
         if args["symbol_sequence"] is None and args["template"].data.scatter:
             args["symbol_sequence"] = [
                 scatter.marker.symbol for scatter in args["template"].data.scatter
@@ -1088,7 +1076,7 @@ def apply_default_cascade(args, constructor):
         if not args["symbol_sequence"] or not any(args["symbol_sequence"]):
             args["symbol_sequence"] = ["circle", "diamond", "square", "x", "cross"]
 
-    if "line_dash_sequence" in args:
+    if ctx.is_mapping_config("line_dash_sequence") and "line_dash_sequence" in args:
         if args["line_dash_sequence"] is None and args["template"].data.scatter:
             args["line_dash_sequence"] = [
                 scatter.line.dash for scatter in args["template"].data.scatter
@@ -1103,7 +1091,7 @@ def apply_default_cascade(args, constructor):
                 "longdashdot",
             ]
 
-    if "pattern_shape_sequence" in args:
+    if ctx.is_mapping_config("pattern_shape_sequence") and "pattern_shape_sequence" in args:
         if args["pattern_shape_sequence"] is None and args["template"].data.bar:
             args["pattern_shape_sequence"] = [
                 bar.marker.pattern.shape for bar in args["template"].data.bar
@@ -2682,7 +2670,7 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None, chart_na
     # Track if color_continuous_scale was explicitly provided by user
     # (before apply_default_cascade fills it from template/defaults)
     user_provided_colorscale = args.get("color_continuous_scale") is not None
-    apply_default_cascade(args, constructor=constructor)
+    apply_default_cascade(args, constructor=constructor, param_ctx=param_ctx)
 
     args = build_dataframe(args, constructor, param_ctx=param_ctx)
     if constructor in [go.Treemap, go.Sunburst, go.Icicle] and args["path"] is not None:
@@ -2916,17 +2904,17 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None, chart_na
         if user_provided_colorscale:
             coloraxis_dict["autocolorscale"] = False
         layout_patch["coloraxis1"] = coloraxis_dict
-    for v in ["height", "width"]:
-        if args[v]:
+    for v in param_ctx.layout_config_params:
+        if v in ("height", "width") and args.get(v):
             layout_patch[v] = args[v]
     layout_patch["legend"] = dict(tracegroupgap=0)
     if trace_name_labels:
         layout_patch["legend"]["title_text"] = ", ".join(trace_name_labels)
-    if args["title"]:
+    if args.get("title"):
         layout_patch["title_text"] = args["title"]
     elif args["template"].layout.margin.t is None:
         layout_patch["margin"] = {"t": 60}
-    if args["subtitle"]:
+    if args.get("subtitle"):
         layout_patch["title_subtitle_text"] = args["subtitle"]
     if (
         "size" in args

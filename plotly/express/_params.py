@@ -277,6 +277,8 @@ class ParamContext:
 
     _registry: "ParamRegistry" = None  # type: ignore[assignment]
     _by_category_cache: Dict[str, List[str]] = None  # type: ignore[assignment]
+    _param_metas_cache: Dict[str, "ParamMeta"] = None  # type: ignore[assignment]
+    _defaults_slots_cache: List[str] = None  # type: ignore[assignment]
 
     # ---- by-category lookups (cached on first access) ----
     def by_category(self, category: str) -> List[str]:
@@ -335,6 +337,41 @@ class ParamContext:
 
     def is_layout_config(self, name: str) -> bool:
         return name in self.layout_config_params
+
+    def is_mapping_config(self, name: str) -> bool:
+        return name in self.mapping_config_params
+
+    def is_mapping(self, name: str) -> bool:
+        return name in self.mapping_params
+
+    # ---- param-meta lookups ----
+    def get_param_meta(self, name: str) -> "ParamMeta":
+        """Return the :class:`ParamMeta` for ``name``, or ``None``."""
+        if self._param_metas_cache is None:
+            self._param_metas_cache = {}
+        if name not in self._param_metas_cache:
+            self._param_metas_cache[name] = self._registry.get(name)
+        return self._param_metas_cache.get(name)
+
+    @property
+    def defaults_slots(self) -> List[str]:
+        """Parameter names that participate in the px.defaults cascade."""
+        if self._defaults_slots_cache is None:
+            self._defaults_slots_cache = [
+                m.name for m in self._registry._params.values()
+                if m.in_defaults and m.applies_to(self.chart_name)
+            ]
+        return self._defaults_slots_cache
+
+    def apply_px_defaults(self, args: dict, defaults_obj) -> None:
+        """Fill ``None`` args from ``px.defaults`` for parameters in this context.
+
+        This is the ctx-driven replacement for the old
+        ``for param in defaults.__slots__`` loop.
+        """
+        for param in self.defaults_slots:
+            if param in args and args[param] is None:
+                args[param] = getattr(defaults_obj, param)
 
 
 _colref_type = "str or int or Series or array-like"
