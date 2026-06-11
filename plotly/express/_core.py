@@ -2690,9 +2690,27 @@ class SummaryContext:
         self.grouper = grouper
         self.orders = orders
         self.specs = self._parse_specs()
+        self.trendline_type = args.get("trendline")
         self._stats_cache = {}
         self._text_cache = {}
         self._fit_results_cache = {}
+
+    _trendline_parsers = {}
+
+    @classmethod
+    def register_trendline_parser(cls, trendline_type, parser_func):
+        cls._trendline_parsers[trendline_type] = parser_func
+
+    def _get_trendline_stats(self, fit_results):
+        if self.trendline_type is None:
+            return {}
+        parser = self._trendline_parsers.get(self.trendline_type)
+        if parser is None:
+            return {}
+        try:
+            return parser(fit_results)
+        except Exception:
+            return {}
 
     def _parse_specs(self):
         summary = self.args.get("summary")
@@ -2810,25 +2828,15 @@ class SummaryContext:
                                 value = 0
 
                 if scope in {"trendline", "all"} and group_name in self._fit_results_cache:
-                    fit = self._fit_results_cache[group_name]
-                    if fit is not None:
-                        if summary_type == "trendline":
-                            stats["slope"] = float(fit.params[1]) if len(fit.params) > 1 else None
-                            stats["intercept"] = float(fit.params[0]) if len(fit.params) > 0 else None
-                            if hasattr(fit, "rsquared"):
-                                stats["rsquared"] = float(fit.rsquared)
-                            continue
-                        elif summary_type == "slope":
-                            if len(fit.params) > 1:
-                                value = float(fit.params[1])
-                            elif len(fit.params) == 1:
-                                value = float(fit.params[0])
-                        elif summary_type == "intercept":
-                            if len(fit.params) > 1:
-                                value = float(fit.params[0])
-                        elif summary_type == "rsquared":
-                            if hasattr(fit, "rsquared"):
-                                value = float(fit.rsquared)
+                    trendline_stats = self._get_trendline_stats(
+                        self._fit_results_cache[group_name]
+                    )
+                    if summary_type == "trendline":
+                        for k, v in trendline_stats.items():
+                            stats[k] = v
+                        continue
+                    elif summary_type in trendline_stats:
+                        value = trendline_stats[summary_type]
 
                 stats[summary_type] = value
             except Exception:
@@ -3121,6 +3129,39 @@ class SummaryContext:
             annotations.append(annot)
 
         return annotations
+
+
+def _ols_trendline_parser(fit_results):
+    if fit_results is None:
+        return {}
+    stats = {}
+    try:
+        params = fit_results.params
+        if len(params) >= 2:
+            stats["slope"] = float(params[1])
+            stats["intercept"] = float(params[0])
+        elif len(params) == 1:
+            stats["slope"] = float(params[0])
+            stats["intercept"] = 0.0
+    except (AttributeError, IndexError, TypeError):
+        pass
+    try:
+        if hasattr(fit_results, "rsquared"):
+            stats["rsquared"] = float(fit_results.rsquared)
+    except (AttributeError, TypeError):
+        pass
+    return stats
+
+
+def _generic_trendline_parser(fit_results):
+    return {}
+
+
+SummaryContext.register_trendline_parser("ols", _ols_trendline_parser)
+SummaryContext.register_trendline_parser("lowess", _generic_trendline_parser)
+SummaryContext.register_trendline_parser("rolling", _generic_trendline_parser)
+SummaryContext.register_trendline_parser("expanding", _generic_trendline_parser)
+SummaryContext.register_trendline_parser("ewm", _generic_trendline_parser)
 
 
 def make_figure(args, constructor, trace_patch=None, layout_patch=None):
