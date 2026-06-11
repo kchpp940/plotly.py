@@ -2,7 +2,7 @@ import plotly.graph_objs as go
 import plotly.io as pio
 from collections import namedtuple, OrderedDict
 from ._special_inputs import IdentityMap, Constant, Range
-from ._naming import NamingContext, NamingResult
+from ._naming import NamingContext, NamingResult, ONE_GROUP
 from .trendline_functions import ols, lowess, rolling, expanding, ewm
 
 from _plotly_utils.basevalidators import ColorscaleValidator
@@ -1031,10 +1031,6 @@ def make_trendline_spec(args, constructor):
     if args["trendline_color_override"]:
         trace_spec.trace_patch["line"] = dict(color=args["trendline_color_override"])
     return trace_spec
-
-
-def one_group(x):
-    return ""
 
 
 def apply_default_cascade(args, constructor):
@@ -2628,7 +2624,7 @@ def get_groups_and_orders(args, grouper):
     unique_cache = dict()
 
     for i, col in enumerate(grouper):
-        if col == one_group:
+        if col is ONE_GROUP:
             single_group_name.append("")
         else:
             if col not in unique_cache:
@@ -2668,7 +2664,7 @@ def get_groups_and_orders(args, grouper):
                 [
                     (
                         ""
-                        if col == one_group
+                        if col is ONE_GROUP
                         else sub_group_names[required_grouper_semantic.index(col)]
                     )
                     for col in grouper
@@ -2707,7 +2703,7 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
     trace_specs, grouped_mappings, sizeref, show_colorbar = infer_config(
         args, constructor, trace_patch, layout_patch
     )
-    grouper = [x.grouper or one_group for x in grouped_mappings] or [one_group]
+    grouper = [x.grouper or ONE_GROUP for x in grouped_mappings] or [ONE_GROUP]
     groups, orders = get_groups_and_orders(args, grouper)
 
     col_labels = []

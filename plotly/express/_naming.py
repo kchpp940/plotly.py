@@ -3,15 +3,21 @@ from collections import OrderedDict
 from ._special_inputs import IdentityMap
 
 
+class _OneGroup:
+    __slots__ = ()
+
+    def __repr__(self):
+        return "ONE_GROUP"
+
+
+ONE_GROUP = _OneGroup()
+
+
 def get_label(args, column):
     try:
         return args["labels"][column]
     except Exception:
         return column
-
-
-def one_group(x):
-    return ""
 
 
 class NamingResult:
@@ -84,19 +90,20 @@ class NamingContext:
         self.orders = orders
         self.layout_patch = layout_patch
         self._trace_names_by_frame = {}
-        self._last_legend_title_labels = None
+        self._legend_title_labels = OrderedDict()
 
     def _build_labels(self, group_name):
         mapping_labels = OrderedDict()
         legend_title_labels = OrderedDict()
         frame_name = ""
         for col, val, m in zip(self.grouper, group_name, self.grouped_mappings):
-            if not callable(col):
+            if col is not ONE_GROUP:
                 key = get_label(self.args, col)
                 if not isinstance(m.val_map, IdentityMap):
                     mapping_labels[key] = str(val)
                     if m.show_in_trace_name:
                         legend_title_labels[key] = str(val)
+                        self._legend_title_labels[key] = None
                 if m.variable == "animation_frame":
                     frame_name = val
         return mapping_labels, legend_title_labels, frame_name
@@ -134,7 +141,6 @@ class NamingContext:
         )
 
         trace_names.add(trace_name)
-        self._last_legend_title_labels = legend_title_labels
 
         return NamingResult(
             name=trace_name,
@@ -177,6 +183,6 @@ class NamingContext:
         )
 
     def get_legend_title(self):
-        if self._last_legend_title_labels:
-            return ", ".join(self._last_legend_title_labels)
+        if self._legend_title_labels:
+            return ", ".join(self._legend_title_labels)
         return None
