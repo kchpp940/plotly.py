@@ -3,6 +3,39 @@ from numbers import Number as Num
 from unittest import TestCase
 import plotly.io as pio
 
+from _plotly_utils.dependencies import deps, requires, skip_if_missing
+
+
+def pytest_missing_dep_marker(dep_name: str, min_version=None, *, feature=None):
+    """Return a pytest mark that skips a test when a dependency is missing.
+
+    Thin wrapper around :func:`_plotly_utils.dependencies.requires` so test
+    authors have a single, obvious entry point in ``tests.utils``.
+
+    Usage::
+
+        import pytest
+
+        @pytest.mark.usefixtures("something")
+        @pytest_missing_dep_marker("pandas")
+        def test_with_pandas(): ...
+    """
+    return requires(dep_name, min_version, feature=feature)
+
+
+__all__ = [
+    "TestCaseNoTemplate",
+    "compare_dict",
+    "strip_dict_params",
+    "comp_nums",
+    "comp_num_list",
+    "is_num_list",
+    "deps",
+    "requires",
+    "skip_if_missing",
+    "pytest_missing_dep_marker",
+]
+
 
 class TestCaseNoTemplate(TestCase):
     def setUp(self):

@@ -10,6 +10,7 @@ from .trendline_functions import ols, lowess, rolling, expanding, ewm
 
 from _plotly_utils.basevalidators import ColorscaleValidator
 from plotly.colors import qualitative, sequential
+from plotly.optional_imports import deps
 import math
 
 from plotly._subplots import (
@@ -1993,13 +1994,10 @@ def to_named_series(x, name=None, native_namespace=None):
     elif native_namespace is not None:
         return nw.new_series(name=name, values=x, native_namespace=native_namespace)
     else:
-        try:
-            import pandas as pd
+        deps.pandas.require("building a Series without an explicit native_namespace")
+        import pandas as pd
 
-            return nw.new_series(name=name, values=x, native_namespace=pd)
-        except ImportError:
-            msg = "Pandas installation is required if no dataframe is provided."
-            raise NotImplementedError(msg)
+        return nw.new_series(name=name, values=x, native_namespace=pd)
 
 
 def process_args_into_dataframe(
@@ -2242,13 +2240,10 @@ def process_args_into_dataframe(
     length = len(df_output[next(iter(df_output))]) if len(df_output) else 0
 
     if native_namespace is None:
-        try:
-            import pandas as pd
+        deps.pandas.require("constructing a DataFrame without an explicit native_namespace")
+        import pandas as pd
 
-            native_namespace = pd
-        except ImportError:
-            msg = "Pandas installation is required if no dataframe is provided."
-            raise NotImplementedError(msg)
+        native_namespace = pd
 
     if ranges:
         import numpy as np
@@ -2277,11 +2272,9 @@ def process_args_into_dataframe(
     if df_output:
         df_output = nw.from_dict(df_output)
     else:
-        try:
-            import pandas as pd
-        except ImportError:
-            msg = "Pandas installation is required."
-            raise NotImplementedError(msg)
+        deps.pandas.require("plotly.express")
+        import pandas as pd
+
         df_output = nw.from_native(pd.DataFrame({}), eager_only=True)
     return df_output, wide_id_vars, wide_deferred_data
 
@@ -2405,29 +2398,22 @@ def build_dataframe(args, constructor):
         # We try to import pandas, and then try to instantiate a pandas dataframe from
         # this such object
         else:
+            deps.pandas.require("converting arbitrary input to a DataFrame")
+            import pandas as pd
+
             try:
-                import pandas as pd
-
-                try:
-                    args["data_frame"] = nw.from_native(
-                        pd.DataFrame(args["data_frame"])
-                    )
-                    columns = args["data_frame"].columns
-                    is_pd_like = True
-                except Exception:
-                    msg = (
-                        f"Unable to convert data_frame of type {type(args['data_frame'])} "
-                        "to pandas DataFrame. Please provide a supported dataframe type "
-                        "or a type that can be passed to pd.DataFrame."
-                    )
-
-                    raise NotImplementedError(msg)
-            except ImportError:
-                msg = (
-                    f"Attempting to convert data_frame of type {type(args['data_frame'])} "
-                    "to pandas DataFrame, but Pandas is not installed. "
-                    "Convert it to supported dataframe type or install pandas."
+                args["data_frame"] = nw.from_native(
+                    pd.DataFrame(args["data_frame"])
                 )
+                columns = args["data_frame"].columns
+                is_pd_like = True
+            except Exception:
+                msg = (
+                    f"Unable to convert data_frame of type {type(args['data_frame'])} "
+                    "to pandas DataFrame. Please provide a supported dataframe type "
+                    "or a type that can be passed to pd.DataFrame."
+                )
+
                 raise NotImplementedError(msg)
 
     # data_frame is not provided
@@ -3728,13 +3714,10 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
             annotation_collector.add(trendline_ann)
 
     if trendline_rows:
-        try:
-            import pandas as pd
+        deps.pandas.require("trendline result reporting")
+        import pandas as pd
 
-            fig._px_trendlines = pd.DataFrame(trendline_rows)
-        except ImportError:
-            msg = "Trendlines require pandas to be installed."
-            raise NotImplementedError(msg)
+        fig._px_trendlines = pd.DataFrame(trendline_rows)
     else:
         fig._px_trendlines = []
 

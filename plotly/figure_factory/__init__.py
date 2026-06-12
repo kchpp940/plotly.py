@@ -1,16 +1,8 @@
 # ruff: noqa: E402
 
-from plotly.optional_imports import deps
+from plotly.optional_imports import deps, fallback_function
 
-# Require that numpy exists for figure_factory
-if not deps.numpy.available:
-    raise ImportError("""\
-The figure factory module requires the numpy package.
-
-$ pip install 'numpy>=1.22'
-
-Or install with: $ pip install 'plotly[express]'
-""")
+deps.numpy.require("the plotly.figure_factory module")
 
 from plotly.figure_factory._2d_density import create_2d_density
 from plotly.figure_factory._annotated_heatmap import create_annotated_heatmap
@@ -35,23 +27,15 @@ if deps.pandas.available:
         create_hexbin_mapbox,
     )
 else:
-
-    def create_choropleth(*args, **kwargs):
-        deps.pandas.require("`create_choropleth`")
-
-    def create_hexbin_map(*args, **kwargs):
-        deps.pandas.require("`create_hexbin_map`")
-
-    def create_hexbin_mapbox(*args, **kwargs):
-        deps.pandas.require("`create_hexbin_mapbox`")
+    create_choropleth = fallback_function("pandas", "`create_choropleth`")
+    create_hexbin_map = fallback_function("pandas", "`create_hexbin_map`")
+    create_hexbin_mapbox = fallback_function("pandas", "`create_hexbin_mapbox`")
 
 
 if deps.skimage.available:
     from plotly.figure_factory._ternary_contour import create_ternary_contour
 else:
-
-    def create_ternary_contour(*args, **kwargs):
-        deps.skimage.require("`create_ternary_contour`")
+    create_ternary_contour = fallback_function("skimage", "`create_ternary_contour`")
 
 
 __all__ = [

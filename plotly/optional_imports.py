@@ -1,21 +1,38 @@
 """
 Optional dependency imports for Plotly.
 
-This module provides both the legacy ``get_module`` function (backwards compatible)
-and the unified dependency capability layer via ``deps``.
+Exposes the **unified dependency capability layer** (``deps``, ``get_module``,
+``requires``, ``skip_if_missing``, ``fallback_function``).
 
-Prefer using ``deps`` for new code::
+Quick reference
+---------------
+* Check availability – ``deps.pandas.available`` / ``deps.pandas.installed``
+* Get the module – ``deps.pandas.module`` / ``deps.get_module("scipy.stats")``
+* Guard a code path – ``deps.scipy.require("create_distplot")``
+* Version query – ``deps.numpy.version`` / ``deps.kaleido.version_obj_installed.major``
+* Build a fallback stub – ``fallback_function("pandas", "`create_choropleth`")``
+* Skip a pytest test – ``@requires("pandas")`` / ``@skip_if_missing("kaleido")``
 
-    from plotly.optional_imports import deps
-
-    if deps.pandas.available:
-        import pandas as pd
-
-    deps.scipy.require("create_distplot")
-    scipy = deps.scipy.module
+``get_module(name, should_load=True)`` preserves 100% backwards compatibility
+with legacy call sites but is now backed by the unified registry.
 """
 
-from _plotly_utils.optional_imports import get_module  # noqa: F401
-from _plotly_utils.dependencies import deps, Dependency, DependencyRegistry  # noqa: F401
+from _plotly_utils.optional_imports import (  # noqa: F401
+    get_module,
+    deps,
+    Dependency,
+    DependencyRegistry,
+    requires,
+    skip_if_missing,
+    fallback_function,
+)
 
-__all__ = ["get_module", "deps", "Dependency", "DependencyRegistry"]
+__all__ = [
+    "get_module",
+    "deps",
+    "Dependency",
+    "DependencyRegistry",
+    "requires",
+    "skip_if_missing",
+    "fallback_function",
+]
