@@ -10,11 +10,6 @@ from ._annotations import (
     AnnotationSpec,
     AnnotationCollector,
     AnnotationApplier,
-    create_facet_annotations,
-    create_trendline_annotation,
-    create_stat_annotation,
-    create_marginal_annotation,
-    create_frame_annotation,
     extract_subplot_title_specs,
 )
 
@@ -2978,24 +2973,6 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
             if fit_results is not None:
                 trendline_rows.append(mapping_labels.copy())
                 trendline_rows[-1]["px_fit_results"] = fit_results
-                if trace_spec != trace_specs[0]:
-                    target = (
-                        AnnotationTarget.FRAME_LAYOUT
-                        if frame_name
-                        else AnnotationTarget.INITIAL_LAYOUT
-                    )
-                    xaxis = trace.xaxis or "x"
-                    yaxis = trace.yaxis or "y"
-                    trendline_ann = create_trendline_annotation(
-                        fit_results,
-                        x=0.05,
-                        y=0.95,
-                        xref=f"{xaxis} domain",
-                        yref=f"{yaxis} domain",
-                        frame_name=frame_name,
-                        target=target,
-                    )
-                    annotation_collector.add(trendline_ann)
             if frame_name not in frames:
                 frames[frame_name] = dict(data=[], name=frame_name)
             frames[frame_name]["data"].append(trace)
@@ -3113,15 +3090,6 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
         fig.update_traces(selector=-1, showlegend=True)
         if fit_results is not None:
             trendline_rows.append(dict(px_fit_results=fit_results))
-            trendline_ann = create_trendline_annotation(
-                fit_results,
-                x=0.05,
-                y=0.95,
-                xref="paper",
-                yref="paper",
-                target=AnnotationTarget.INITIAL_LAYOUT,
-            )
-            annotation_collector.add(trendline_ann)
 
     if trendline_rows:
         try:

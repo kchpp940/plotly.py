@@ -114,14 +114,8 @@ class AnnotationApplier:
                 ann_dicts = [a.to_dict() for a in all_anns]
                 for frame in fig.frames:
                     if frame.name == frame_name:
-                        if not hasattr(frame, "layout") or frame.layout is None:
-                            frame.layout = {}
-                        if "annotations" not in frame.layout or frame.layout["annotations"] is None:
-                            existing = []
-                        else:
-                            existing = list(frame.layout["annotations"])
-                        existing.extend(ann_dicts)
-                        frame.layout["annotations"] = existing
+                        existing = list(frame.layout.annotations or ())
+                        frame.layout.annotations = existing + ann_dicts
                         break
 
     @staticmethod
@@ -203,90 +197,34 @@ def create_facet_annotations(
     return annotations
 
 
-def create_trendline_annotation(
-    fit_results: Any,
-    x: float,
-    y: float,
-    xref: str = "x",
-    yref: str = "y",
-    frame_name: Optional[str] = None,
-    target: AnnotationTarget = AnnotationTarget.INITIAL_LAYOUT,
-) -> AnnotationSpec:
-    text = f"R² = {fit_results.rsquared:.4f}" if hasattr(fit_results, "rsquared") else "Trendline"
-    return AnnotationSpec(
-        text=text,
-        x=x,
-        y=y,
-        xref=xref,
-        yref=yref,
-        showarrow=True,
-        frame_name=frame_name,
-        target=target,
-        extra=dict(arrowhead=1, ax=20, ay=-30),
-    )
+# Extension points for future annotation types.
+# These are placeholder signatures. Override or replace them when adding
+# new annotation sources (trendline stats, marginal labels, etc.).
+# They intentionally return empty lists so that no visible annotation
+# is added by default.
+
+def create_trendline_annotations(
+    **kwargs,
+) -> List[AnnotationSpec]:
+    return []
 
 
-def create_stat_annotation(
-    text: str,
-    x: float,
-    y: float,
-    xref: str = "paper",
-    yref: str = "paper",
-    frame_name: Optional[str] = None,
-    target: AnnotationTarget = AnnotationTarget.INITIAL_LAYOUT,
-) -> AnnotationSpec:
-    return AnnotationSpec(
-        text=text,
-        x=x,
-        y=y,
-        xref=xref,
-        yref=yref,
-        showarrow=False,
-        align="left",
-        xanchor="left",
-        yanchor="top",
-        frame_name=frame_name,
-        target=target,
-        font=dict(size=10),
-    )
+def create_stat_annotations(
+    **kwargs,
+) -> List[AnnotationSpec]:
+    return []
 
 
-def create_marginal_annotation(
-    text: str,
-    x: float,
-    y: float,
-    xref: str = "paper",
-    yref: str = "paper",
-) -> AnnotationSpec:
-    return AnnotationSpec(
-        text=text,
-        x=x,
-        y=y,
-        xref=xref,
-        yref=yref,
-        showarrow=False,
-        font=dict(size=9),
-        target=AnnotationTarget.INITIAL_LAYOUT,
-    )
+def create_marginal_annotations(
+    **kwargs,
+) -> List[AnnotationSpec]:
+    return []
 
 
-def create_frame_annotation(
-    text: str,
-    x: float,
-    y: float,
-    frame_name: str,
-    xref: str = "paper",
-    yref: str = "paper",
-) -> AnnotationSpec:
-    return AnnotationSpec(
-        text=text,
-        x=x,
-        y=y,
-        xref=xref,
-        yref=yref,
-        frame_name=frame_name,
-        target=AnnotationTarget.FRAME_LAYOUT,
-    )
+def create_frame_annotations(
+    **kwargs,
+) -> List[AnnotationSpec]:
+    return []
 
 
 def extract_subplot_title_specs(fig: go.Figure) -> List[AnnotationSpec]:
