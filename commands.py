@@ -463,6 +463,60 @@ def bump_version(args):
     )
 
 
+def check_deps(args):
+    """Check dependency registry consistency against pyproject.toml.
+
+    Validates that every registered dependency and capability lines up with
+    ``[project.optional-dependencies]`` declarations – no drift in min
+    version, no orphan extras, no missing registrations.
+
+    Exits with non-zero status when *error*-level issues are found.
+    """
+    import os
+
+    from _plotly_utils.dependencies import check_pyproject_consistency
+
+    pyproject_path = os.path.join(PROJECT_ROOT, "pyproject.toml")
+
+    issues = check_pyproject_consistency(
+        pyproject_path=pyproject_path,
+        ignore_extras=args.ignore_extras,
+        ignore_packages=args.ignore_packages,
+        include_dev_extras=args.include_dev,
+    )
+
+    errors = issues.get("error", [])
+    warnings = issues.get("warning", [])
+
+    # Detailed category output (backwards-compatible keys)
+    categories = [
+        ("mismatch_min_version", "Version mismatches"),
+        ("dep_extra_missing", "Missing extras"),
+        ("capability_missing_dep", "Capability→dep broken links"),
+        ("unregistered_package", "Unregistered packages"),
+    ]
+    for key, label in categories:
+        items = issues.get(key, [])
+        if items:
+            print(f"\n{label} ({len(items)}):")
+            for item in items:
+                print(f"  - {item}")
+
+    if warnings:
+        print(f"\nWarnings ({len(warnings)}):")
+        for w in warnings:
+            print(f"  - {w}")
+
+    if errors:
+        print(f"\n*** FAILED: {len(errors)} dependency consistency error(s). ***")
+        print("Run with --include-dev or adjust ignore_extras/ignore_packages if needed.")
+        sys.exit(1)
+    else:
+        print("\n*** SUCCESS: dependency registry is consistent with pyproject.toml. ***")
+        if warnings:
+            print(f"  ({len(warnings)} warning(s) – informational only)")
+
+
 def make_parser():
     """Make argument parser."""
 
@@ -492,6 +546,27 @@ def make_parser():
     p_bump_version = subparsers.add_parser("bumpversion", help="bump plotly.py version")
     # Add a positional argument for the version
     p_bump_version.add_argument("version", help="version number")
+
+    p_check_deps = subparsers.add_parser(
+        "checkdeps", help="check dependency registry vs pyproject.toml"
+    )
+    p_check_deps.add_argument(
+        "--include-dev",
+        action="store_true",
+        help="also validate dev_* extras",
+    )
+    p_check_deps.add_argument(
+        "--ignore-extras",
+        nargs="*",
+        default=None,
+        help="extra names to skip validation for (e.g. dev self-referencing extras)",
+    )
+    p_check_deps.add_argument(
+        "--ignore-packages",
+        nargs="*",
+        default=None,
+        help="package names to skip when checking unregistered_package",
+    )
 
     return parser
 
@@ -529,6 +604,9 @@ def main():
 
     elif args.cmd == "bumpversion":
         bump_version(args)
+
+    elif args.cmd == "checkdeps":
+        check_deps(args)
 
     elif args.cmd is None:
         parser.print_help()

@@ -54,6 +54,8 @@ from _plotly_utils.optional_imports import (  # noqa: F401
     require_capability,
     available_capability,
     capability_module,
+    requires_capability,
+    skip_if_missing_capability,
 )
 
 __all__ = [
@@ -68,4 +70,6 @@ __all__ = [
     "require_capability",
     "available_capability",
     "capability_module",
+    "requires_capability",
+    "skip_if_missing_capability",
 ]

@@ -23,6 +23,8 @@ from _plotly_utils.dependencies import (
     require_capability,
     available_capability,
     capability_module,
+    requires_capability,
+    skip_if_missing_capability,
 )
 
 _not_importable = set()  # mirror of the original – keeps exploding_module sticky
@@ -79,4 +81,6 @@ __all__ = [
     "require_capability",
     "available_capability",
     "capability_module",
+    "requires_capability",
+    "skip_if_missing_capability",
 ]

@@ -1193,6 +1193,10 @@ def _canonical_pkg_name(name: str) -> str:
 def check_pyproject_consistency(
     pyproject_path: Optional[str] = None,
     registry: Optional[DependencyRegistry] = None,
+    *,
+    ignore_extras: Optional[List[str]] = None,
+    ignore_packages: Optional[List[str]] = None,
+    include_dev_extras: bool = False,
 ) -> Dict[str, list]:
     """Compare the dependency registry against ``pyproject.toml`` extras.
 
@@ -1200,29 +1204,51 @@ def check_pyproject_consistency(
     :class:`packaging.requirements.Requirement` so every specifier is
     compared on a canonical footing.
 
-    Returns a dict of issues grouped by severity:
+    Parameters
+    ----------
+    ignore_extras : list of str, optional
+        Extra names to completely skip validation for (e.g. ``["dev"]`` for
+        self-referential meta-extras).
+    ignore_packages : list of str, optional
+        Package names to skip when checking ``unregistered_package``
+        (e.g. ``["plotly"]`` for self-references inside dev extras).
+    include_dev_extras : bool, default False
+        Whether to also validate extras whose name starts with ``dev_``.
+        By default only user-facing extras (``express``, ``kaleido`` …)
+        are checked.
 
-    * ``"mismatch_min_version"`` – a registered ``Dependency.min_version``
-      disagrees with the version specifier declared in pyproject.toml.
-    * ``"mismatch_dist_name"`` – the registered ``dist_name`` /
-      ``import_name`` does not map to any package in pyproject.toml.
-    * ``"dep_extra_missing"`` – a registered Dependency claims an ``extra``
-      that does not exist in ``pyproject.toml``.
-    * ``"capability_missing_dep"`` – a :class:`_Capability` references a
-      dependency name that is not registered.
-    * ``"unregistered_package"`` – a package that appears in a user-facing
-      extra has no :class:`Dependency` registration at all.
+    Returns
+    -------
+    dict
+        Issues grouped by category and severity.  Keys are:
 
-    User-facing extras are defined as all extras *except* those whose name
-    starts with ``dev_`` (internal build/test extras).
+        * ``"error"`` – issues that should cause a CI / build failure.
+        * ``"warning"`` – issues that are expected or low-priority.
+
+        Each value is a list of human-readable strings.  Within ``"error"``
+        the following sub-keys are also exposed as top-level keys for
+        backward compatibility:
+
+        * ``"mismatch_min_version"`` – registered ``min_version`` disagrees
+          with the version specifier in pyproject.toml.
+        * ``"dep_extra_missing"`` – a registered Dependency claims an
+          ``extra`` that does not exist in ``pyproject.toml``.
+        * ``"capability_missing_dep"`` – a :class:`_Capability` references
+          a dependency name that is not registered.
+        * ``"unregistered_package"`` – a package in a user-facing extra
+          has no :class:`Dependency` registration at all.
     """
     if registry is None:
         from _plotly_utils.dependencies import deps as registry
 
     extras = _parse_pyproject_extras(pyproject_path)
+    ignore_extras = set(ignore_extras or [])
+    ignore_packages_canon = {_canonical_pkg_name(p) for p in (ignore_packages or [])}
+
     issues: Dict[str, list] = {
+        "error": [],
+        "warning": [],
         "mismatch_min_version": [],
-        "mismatch_dist_name": [],
         "dep_extra_missing": [],
         "capability_missing_dep": [],
         "unregistered_package": [],
@@ -1240,19 +1266,33 @@ def check_pyproject_consistency(
             reg_by_canonical.setdefault(_canonical_pkg_name(n), dep)
 
     # ----- 1. Walk every package in every user-facing extra -----
-    user_extras = {name: pkgs for name, pkgs in extras.items()
-                   if not name.startswith("dev_")}
+    if include_dev_extras:
+        user_extras = dict(extras)
+    else:
+        user_extras = {name: pkgs for name, pkgs in extras.items()
+                       if not name.startswith("dev_")}
+
+    # Drop extras the caller explicitly asked us to ignore
+    for extra_name in list(user_extras.keys()):
+        if extra_name in ignore_extras:
+            del user_extras[extra_name]
 
     for extra_name, reqs in user_extras.items():
         for canonical_pkg, req in reqs.items():
+            # Skip self-references and other explicitly ignored packages
+            if canonical_pkg in ignore_packages_canon:
+                continue
+
             dep = reg_by_canonical.get(canonical_pkg)
 
             # --- 1a. Completely unregistered? ---
             if dep is None:
-                issues["unregistered_package"].append(
+                msg = (
                     f"Package '{req.name}' in extra '{extra_name}' has no "
                     "Dependency registration"
                 )
+                issues["unregistered_package"].append(msg)
+                issues["error"].append(f"[unregistered_package] {msg}")
                 continue
 
             # --- 1b. Version mismatch? ---
@@ -1265,38 +1305,41 @@ def check_pyproject_consistency(
                         min_from_pyproject = spec.version
                         break
                 if min_from_pyproject and min_from_pyproject != dep.min_version:
-                    issues["mismatch_min_version"].append(
+                    msg = (
                         f"{dep.name}: registry min_version='{dep.min_version}' "
                         f"but pyproject extra '{extra_name}' declares "
                         f"'{min_from_pyproject}' (full spec: {str(req)})"
                     )
+                    issues["mismatch_min_version"].append(msg)
+                    issues["error"].append(f"[mismatch_min_version] {msg}")
 
             # --- 1c. Extra name on dep points somewhere nonexistent? ---
             if dep.extra and dep.extra not in known_extras:
-                issues["dep_extra_missing"].append(
+                msg = (
                     f"{dep.name} declares extra='{dep.extra}' "
                     "but that extra is not in pyproject.toml"
                 )
+                issues["dep_extra_missing"].append(msg)
+                issues["error"].append(f"[dep_extra_missing] {msg}")
 
     # ----- 2. Walk every registered dep with an explicit extra -----
     for dep in registry.values():
         if dep.extra and dep.extra not in known_extras:
-            # Avoid double-reporting the same dep we flagged above under
-            # dep_extra_missing for a *user* extra.  Here we just make sure
-            # every explicitly declared extra actually exists.
             already = any(dep.name in item for item in issues["dep_extra_missing"])
             if not already:
-                issues["dep_extra_missing"].append(
+                msg = (
                     f"{dep.name} declares extra='{dep.extra}' "
                     "but that extra is not in pyproject.toml"
                 )
+                issues["dep_extra_missing"].append(msg)
+                issues["error"].append(f"[dep_extra_missing] {msg}")
 
     # ----- 3. Sanity-check every capability references a real dep -----
     for cap_name, cap in registry._caps.items():
         if cap.dep_name not in registry._deps:
-            issues["capability_missing_dep"].append(
-                f"Capability '{cap_name}' references unknown dep '{cap.dep_name}'"
-            )
+            msg = f"Capability '{cap_name}' references unknown dep '{cap.dep_name}'"
+            issues["capability_missing_dep"].append(msg)
+            issues["error"].append(f"[capability_missing_dep] {msg}")
 
     return issues
 
@@ -1342,6 +1385,48 @@ def capability_module(name: str):
     return deps.module(name)
 
 
+def requires_capability(cap_name: str) -> Callable:
+    """Pytest decorator that skips a test when a *semantic capability*
+    is unavailable.
+
+    Use this instead of :func:`requires` so tests express their
+    dependencies in terms of *what they need* (e.g. ``"trendline.ols"``)
+    rather than *which module* (e.g. ``"statsmodels"``).
+
+    The skip reason automatically includes the capability's
+    :attr:`~_Capability.feature_label` when available.
+
+    Usage::
+
+        @requires_capability("trendline.ols")
+        def test_ols_trendline():
+            ...
+    """
+    from _plotly_utils.dependencies import deps
+
+    try:
+        cap = deps.capability(cap_name)
+    except KeyError:
+        return _pytest_skip_decorator(
+            f"Unknown capability '{cap_name}' – check spelling"
+        )
+
+    dep = deps[cap.dep_name]
+
+    if not dep.available:
+        label = cap.feature_label or cap_name
+        return _pytest_skip_decorator(
+            f"Requires capability '{cap_name}' ({label})"
+        )
+
+    return lambda f: f
+
+
+def skip_if_missing_capability(cap_name: str) -> Callable:
+    """Convenience alias for :func:`requires_capability`."""
+    return requires_capability(cap_name)
+
+
 # ---------------------------------------------------------------------
 # Export list
 # ---------------------------------------------------------------------
@@ -1359,4 +1444,6 @@ __all__ = [
     "require_capability",
     "available_capability",
     "capability_module",
+    "requires_capability",
+    "skip_if_missing_capability",
 ]

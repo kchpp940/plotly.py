@@ -10,6 +10,8 @@ from _plotly_utils.dependencies import (
     require_capability,
     available_capability,
     capability_module,
+    requires_capability,
+    skip_if_missing_capability,
     check_pyproject_consistency,
 )
 
@@ -35,12 +37,16 @@ def pytest_missing_capability_marker(cap_name: str):
     """Return a pytest mark that skips a test when a **semantic capability**
     is unavailable.
 
+    Preferred over :func:`pytest_missing_dep_marker` because it expresses
+    *what* the test needs (e.g. OLS trendline support) rather than *which*
+    module it happens to use (e.g. statsmodels).
+
     Example::
 
         @pytest_missing_capability_marker("trendline.ols")
         def test_ols_trendline(): ...
     """
-    return requires(deps.capability(cap_name).dep_name, feature=cap_name)
+    return requires_capability(cap_name)
 
 
 __all__ = [
@@ -56,6 +62,8 @@ __all__ = [
     "require_capability",
     "available_capability",
     "capability_module",
+    "requires_capability",
+    "skip_if_missing_capability",
     "check_pyproject_consistency",
     "pytest_missing_dep_marker",
     "pytest_missing_capability_marker",
