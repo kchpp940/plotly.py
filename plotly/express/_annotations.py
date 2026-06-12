@@ -98,8 +98,8 @@ class AnnotationApplier:
 
         if all_anns:
             ann_dicts = [a.to_dict() for a in all_anns]
-            existing = fig.layout.annotations or ()
-            fig.layout.annotations = list(existing) + ann_dicts
+            existing = list(fig.layout.annotations or ())
+            fig.layout.annotations = existing + ann_dicts
 
     @staticmethod
     def apply_frame_layouts(
@@ -107,16 +107,22 @@ class AnnotationApplier:
         collector: AnnotationCollector,
         frame_names: List[str],
     ) -> None:
+        if not fig.frames:
+            return
+
         for frame_name in frame_names:
             all_anns = collector.get_by_frame(frame_name)
+            if not all_anns:
+                continue
 
-            if all_anns:
-                ann_dicts = [a.to_dict() for a in all_anns]
-                for frame in fig.frames:
-                    if frame.name == frame_name:
-                        existing = list(frame.layout.annotations or ())
-                        frame.layout.annotations = existing + ann_dicts
-                        break
+            ann_dicts = [a.to_dict() for a in all_anns]
+            for frame in fig.frames:
+                if frame.name == frame_name:
+                    if frame.layout is None:
+                        frame.layout = {}
+                    existing = list(frame.layout.annotations or ())
+                    frame.layout.annotations = existing + ann_dicts
+                    break
 
     @staticmethod
     def apply_all(
