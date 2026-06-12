@@ -455,47 +455,57 @@ class AggregationNorm(str, Enum):
 
 @dataclass
 class AggregationPlan:
-    """聚合图表的统一数据口径计划。
+    """聚合图表的统一数据口径计划（两阶段模型）。
 
-    四层消费入口：
-    1. 数据列层: ensure_count_column / get_value_column_name
-    2. trace 参数层: apply_to_trace_patch
-    3. layout 参数层: apply_to_layout_patch
-    4. 文案层: get_label / get_hover_key
+    Phase 1 (intent):  build_dataframe 前记录用户原始聚合意图，不访问 DataFrame
+    Phase 1.5 (mark):  build_dataframe 中记录 count 列创建意图
+    Phase 2 (resolve): build_dataframe 后用真实数据口径 resolve 最终字段
+
+    所有消费方（trace_patch / layout_patch / label / hover）只读 resolved 字段。
     """
 
     chart_kind: AggregationChartKind
     constructor: Any = None
+
+    _user_histfunc: Optional[str] = None
+    _user_histnorm: Optional[str] = None
+    _user_barnorm: Optional[str] = None
+    text_auto: Any = False
+    _pending_count: Optional[dict] = None
+
+    _resolved: bool = False
+    orientation: Optional[str] = None
+    value_role: Optional[str] = None
     source_column: Optional[str] = None
     histfunc: Optional[str] = None
     histnorm: Optional[str] = None
     barnorm: Optional[str] = None
-    orientation: Optional[str] = None
-    value_role: Optional[str] = None
     needs_count_column: bool = False
     count_column_name: Optional[str] = None
-    text_auto: Any = False
 
     # ------------------------------------------------------------------
-    # 工厂方法
+    # Phase 1: Capture intent (before build_dataframe, no DataFrame access)
     # ------------------------------------------------------------------
     @classmethod
-    def infer_from_args(cls, args, constructor):
+    def capture_intent(cls, args, constructor):
         chart_kind = cls._infer_chart_kind(constructor, args)
         if chart_kind is None:
             return None
 
         plan = cls(chart_kind=chart_kind, constructor=constructor)
+        plan._user_histfunc = args.get("histfunc")
+        plan._user_histnorm = args.get("histnorm")
+        plan._user_barnorm = args.get("barnorm")
         plan.text_auto = args.get("text_auto", False)
 
-        if chart_kind == AggregationChartKind.HISTOGRAM_1D:
-            plan._infer_histogram_1d(args)
-        elif chart_kind == AggregationChartKind.HISTOGRAM_2D:
-            plan._infer_histogram_2d(args)
-        elif chart_kind == AggregationChartKind.BAR:
-            plan._infer_bar(args)
-        elif chart_kind == AggregationChartKind.ECDF:
-            plan._infer_ecdf(args)
+        if chart_kind == AggregationChartKind.ECDF:
+            ecdfnorm = args.get("ecdfnorm", "probability")
+            if ecdfnorm not in [None, "percent", "probability"]:
+                raise ValueError(
+                    "`ecdfnorm` must be one of None, 'percent' or 'probability'. "
+                    + "'%s' was provided." % ecdfnorm
+                )
+            args["histnorm"] = ecdfnorm
 
         return plan
 
@@ -511,37 +521,73 @@ class AggregationPlan:
             return AggregationChartKind.ECDF
         return None
 
-    def _infer_histogram_1d(self, args):
+    # ------------------------------------------------------------------
+    # Phase 1.5: build_dataframe marks count column intent
+    # ------------------------------------------------------------------
+    def ensure_count_column(self, args, df_output, count_name, value_role):
+        """在 df_output 中创建 count 列，并记录意图供 resolve() 消费。"""
+        self._pending_count = {
+            "count_name": count_name,
+            "value_role": value_role,
+        }
+        args[value_role] = count_name
+        args["_count_column_created"] = count_name
+        args["_count_column_role"] = value_role
+        return df_output.with_columns(nw.lit(1).alias(count_name))
+
+    # ------------------------------------------------------------------
+    # Phase 2: Resolve (after build_dataframe, using real data)
+    # ------------------------------------------------------------------
+    def resolve(self, args):
+        """基于 build_dataframe 后的真实 args，resolve 最终口径字段。"""
+        df = args["data_frame"]
+
+        if self.chart_kind == AggregationChartKind.HISTOGRAM_1D:
+            self._resolve_histogram_1d(args, df)
+        elif self.chart_kind == AggregationChartKind.HISTOGRAM_2D:
+            self._resolve_histogram_2d(args, df)
+        elif self.chart_kind == AggregationChartKind.BAR:
+            self._resolve_bar(args, df)
+        elif self.chart_kind == AggregationChartKind.ECDF:
+            self._resolve_ecdf(args, df)
+
+        self._resolved = True
+
+    def _ensure_orientation(self, args, df):
+        orientation = args.get("orientation")
+        if orientation is not None:
+            return orientation
+
         has_x = args.get("x") is not None
         has_y = args.get("y") is not None
-        orientation = args.get("orientation")
 
-        if orientation is None:
-            if self.constructor in [go.Histogram, go.Scatter]:
-                if has_y and not has_x:
-                    orientation = "h"
-
-        if orientation is None and has_x and has_y:
-            df = args["data_frame"]
-            x_is_continuous = _is_continuous(df, args["x"]) if has_x else False
-            y_is_continuous = _is_continuous(df, args["y"]) if has_y else False
+        if has_x and has_y:
+            x_is_continuous = _is_continuous(df, args["x"])
+            y_is_continuous = _is_continuous(df, args["y"])
             if x_is_continuous and not y_is_continuous:
                 orientation = "h"
-            if y_is_continuous and not x_is_continuous:
+            elif y_is_continuous and not x_is_continuous:
                 orientation = "v"
 
         if orientation is None:
             orientation = "v"
 
-        self.orientation = orientation
         args["orientation"] = orientation
+        return orientation
 
-        if has_x and has_y and args.get("histfunc") is None:
+    def _resolve_histogram_1d(self, args, df):
+        orientation = self._ensure_orientation(args, df)
+        self.orientation = orientation
+
+        has_x = args.get("x") is not None
+        has_y = args.get("y") is not None
+
+        if has_x and has_y and self._user_histfunc is None:
             args["histfunc"] = "sum"
 
         self.histfunc = args.get("histfunc")
         self.histnorm = args.get("histnorm")
-        self.barnorm = args.get("barnorm")
+        self.barnorm = self._user_barnorm
 
         if orientation == "v":
             self.source_column = args.get("y")
@@ -550,10 +596,12 @@ class AggregationPlan:
             self.source_column = args.get("x")
             self.value_role = "x"
 
-    def _infer_histogram_2d(self, args):
+        self._apply_pending_count()
+
+    def _resolve_histogram_2d(self, args, df):
         has_z = args.get("z") is not None
 
-        if has_z and args.get("histfunc") is None:
+        if has_z and self._user_histfunc is None:
             args["histfunc"] = "sum"
 
         self.histfunc = args.get("histfunc")
@@ -561,30 +609,12 @@ class AggregationPlan:
         self.source_column = args.get("z")
         self.value_role = "z"
 
-    def _infer_bar(self, args):
-        has_x = args.get("x") is not None
-        has_y = args.get("y") is not None
-        orientation = args.get("orientation")
+        self._apply_pending_count()
 
-        if orientation is None:
-            if self.constructor in [go.Bar, go.Violin, go.Box, go.Funnel]:
-                if has_x and not has_y:
-                    orientation = "h"
-
-        if orientation is None and has_x and has_y:
-            df = args["data_frame"]
-            x_is_continuous = _is_continuous(df, args["x"]) if has_x else False
-            y_is_continuous = _is_continuous(df, args["y"]) if has_y else False
-            if x_is_continuous and not y_is_continuous:
-                orientation = "h"
-            if y_is_continuous and not x_is_continuous:
-                orientation = "v"
-
-        if orientation is None:
-            orientation = "v"
-
+    def _resolve_bar(self, args, df):
+        orientation = self._ensure_orientation(args, df)
         self.orientation = orientation
-        args["orientation"] = orientation
+        self.barnorm = self._user_barnorm
 
         if orientation == "v":
             self.source_column = args.get("y")
@@ -593,41 +623,14 @@ class AggregationPlan:
             self.source_column = args.get("x")
             self.value_role = "x"
 
-        self.barnorm = args.get("barnorm")
+        self._apply_pending_count()
 
-    def _infer_ecdf(self, args):
-        ecdfnorm = args.get("ecdfnorm", "probability")
-        if ecdfnorm not in [None, "percent", "probability"]:
-            raise ValueError(
-                "`ecdfnorm` must be one of None, 'percent' or 'probability'. "
-                + "'%s' was provided." % ecdfnorm
-            )
-        args["histnorm"] = ecdfnorm
-        self.histnorm = ecdfnorm
-        self.histfunc = "sum"
-
-        has_x = args.get("x") is not None
-        has_y = args.get("y") is not None
-        orientation = args.get("orientation")
-
-        if orientation is None:
-            if has_y and not has_x:
-                orientation = "h"
-
-        if orientation is None and has_x and has_y:
-            df = args["data_frame"]
-            x_is_continuous = _is_continuous(df, args["x"]) if has_x else False
-            y_is_continuous = _is_continuous(df, args["y"]) if has_y else False
-            if x_is_continuous and not y_is_continuous:
-                orientation = "h"
-            if y_is_continuous and not x_is_continuous:
-                orientation = "v"
-
-        if orientation is None:
-            orientation = "v"
-
+    def _resolve_ecdf(self, args, df):
+        orientation = self._ensure_orientation(args, df)
         self.orientation = orientation
-        args["orientation"] = orientation
+
+        self.histnorm = args.get("histnorm")
+        self.histfunc = args.get("histfunc")
 
         if orientation == "v":
             self.source_column = args.get("x")
@@ -636,38 +639,22 @@ class AggregationPlan:
             self.source_column = args.get("y")
             self.value_role = "x"
 
+        self._apply_pending_count()
+
+    def _apply_pending_count(self):
+        if self._pending_count is not None:
+            self.needs_count_column = True
+            self.count_column_name = self._pending_count["count_name"]
+            self.source_column = self.count_column_name
+            if self.chart_kind == AggregationChartKind.BAR:
+                self.histfunc = "count"
+            self._pending_count = None
+
     # ------------------------------------------------------------------
-    # 数据列层: count 列创建与值列获取
+    # Consumer: aggregation role check
     # ------------------------------------------------------------------
-    def ensure_count_column(self, args, df_output, count_name, value_role=None):
-        """如果需要 count 列，则在 df_output 中创建并更新 plan 状态。
-
-        返回更新后的 DataFrame。
-        """
-        if value_role is None:
-            value_role = self.value_role
-
-        self.needs_count_column = True
-        self.count_column_name = count_name
-        self.source_column = count_name
-        self.histfunc = "count"
-        self.value_role = value_role
-
-        args[value_role] = count_name
-        args["_count_column_created"] = count_name
-        args["_count_column_role"] = value_role
-
-        return df_output.with_columns(nw.lit(1).alias(count_name))
-
-    def get_value_column_name(self):
-        """返回聚合值对应的 DataFrame 列名。"""
-        if self.needs_count_column:
-            return self.count_column_name
-        return self.source_column
-
     def is_aggregation_role(self, role):
-        """判断某个 role 是否是聚合值角色。"""
-        if role is None:
+        if role is None or not self._resolved:
             return False
         if self.chart_kind == AggregationChartKind.HISTOGRAM_1D:
             return (role == "x" and self.orientation == "h") or (
@@ -684,10 +671,9 @@ class AggregationPlan:
         return False
 
     # ------------------------------------------------------------------
-    # trace 参数层
+    # Consumer: trace parameters
     # ------------------------------------------------------------------
     def apply_to_trace_patch(self, trace_patch, args):
-        """把聚合相关参数写入 trace_patch。"""
         if self.chart_kind == AggregationChartKind.HISTOGRAM_1D:
             self._apply_histogram_1d_trace(trace_patch, args)
         elif self.chart_kind == AggregationChartKind.HISTOGRAM_2D:
@@ -746,10 +732,9 @@ class AggregationPlan:
             trace_patch["texttemplate"] = "%{" + letter + ":" + str(self.text_auto) + "}"
 
     # ------------------------------------------------------------------
-    # layout 参数层
+    # Consumer: layout parameters
     # ------------------------------------------------------------------
     def apply_to_layout_patch(self, layout_patch, args):
-        """把聚合相关的 layout 参数写入 layout_patch。"""
         if self.chart_kind in [
             AggregationChartKind.HISTOGRAM_1D,
             AggregationChartKind.BAR,
@@ -760,14 +745,9 @@ class AggregationPlan:
                 layout_patch["barnorm"] = self.barnorm
 
     # ------------------------------------------------------------------
-    # 文案层: axis title / colorbar / hover / legend
+    # Consumer: labels
     # ------------------------------------------------------------------
     def get_label(self, args, role):
-        """获取指定 role 的显示标签。
-
-        聚合角色：返回 'sum of value' / 'count' / 'percent' 等聚合标签
-        非聚合角色：返回该角色对应列的普通标签
-        """
         if not self.is_aggregation_role(role):
             col = args.get(role) if (role in args and args.get(role) is not None) else None
             return get_label(args, col)
@@ -775,7 +755,6 @@ class AggregationPlan:
         return self._compute_aggregation_label(args)
 
     def _compute_aggregation_label(self, args):
-        """计算聚合值的显示标签。"""
         original_label = get_label(args, self.source_column) if self.source_column else ""
         histfunc = self.histfunc or "count"
 
@@ -814,7 +793,6 @@ class AggregationPlan:
         return label
 
     def get_hover_key(self, args, attr_name):
-        """获取 hover 映射的 (label, template) 对。"""
         if self.is_aggregation_role(attr_name):
             label_args = {"labels": args.get("labels", {}), "_col_map": args.get("_col_map", {})}
             plan = AggregationPlan(
@@ -832,10 +810,9 @@ class AggregationPlan:
         return None, None
 
     # ------------------------------------------------------------------
-    # 状态注册
+    # Registration
     # ------------------------------------------------------------------
     def register_in_args(self, args):
-        """把 plan 注册到 args 中供后续消费。"""
         args["_aggregation_plan"] = self
 
 
@@ -2832,20 +2809,14 @@ def build_dataframe(args, constructor):
     if hist1d_orientation and constructor == go.Scatter:
         if args["x"] is not None and args["y"] is not None:
             args["histfunc"] = "sum"
-            aggregation_plan = args.get("_aggregation_plan")
-            if aggregation_plan is not None:
-                aggregation_plan.histfunc = "sum"
         elif args["x"] is None:
             args["histfunc"] = None
             args["orientation"] = "h"
             aggregation_plan = args.get("_aggregation_plan")
             if aggregation_plan is not None:
-                aggregation_plan.orientation = "h"
-                aggregation_plan.histfunc = None
                 df_output = aggregation_plan.ensure_count_column(
                     args, df_output, count_name, value_role="x"
                 )
-                aggregation_plan.histfunc = None
             else:
                 args["x"] = count_name
                 df_output = df_output.with_columns(nw.lit(1).alias(count_name))
@@ -2856,12 +2827,9 @@ def build_dataframe(args, constructor):
             args["orientation"] = "v"
             aggregation_plan = args.get("_aggregation_plan")
             if aggregation_plan is not None:
-                aggregation_plan.orientation = "v"
-                aggregation_plan.histfunc = None
                 df_output = aggregation_plan.ensure_count_column(
                     args, df_output, count_name, value_role="y"
                 )
-                aggregation_plan.histfunc = None
             else:
                 args["y"] = count_name
                 df_output = df_output.with_columns(nw.lit(1).alias(count_name))
@@ -3500,25 +3468,15 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
 
     annotation_collector = AnnotationCollector()
 
-    aggregation_plan = None
-    if AggregationPlan._infer_chart_kind(constructor, args) is not None:
-        _original_df = args.get("data_frame")
-        if _original_df is not None and not isinstance(_original_df, nw.DataFrame):
-            try:
-                _tmp_df = nw.from_native(
-                    _original_df, eager_or_interchange_only=True, pass_through=True
-                )
-                if isinstance(_tmp_df, nw.DataFrame):
-                    args["data_frame"] = _tmp_df
-            except Exception:
-                pass
-        aggregation_plan = AggregationPlan.infer_from_args(args, constructor)
-        if aggregation_plan is not None:
-            aggregation_plan.register_in_args(args)
-        if _original_df is not None:
-            args["data_frame"] = _original_df
+    aggregation_plan = AggregationPlan.capture_intent(args, constructor)
+    if aggregation_plan is not None:
+        aggregation_plan.register_in_args(args)
 
     args = build_dataframe(args, constructor)
+
+    aggregation_plan = args.get("_aggregation_plan")
+    if aggregation_plan is not None:
+        aggregation_plan.resolve(args)
     if constructor in [go.Treemap, go.Sunburst, go.Icicle] and args["path"] is not None:
         args = process_dataframe_hierarchy(args)
     if constructor in [go.Pie]:
