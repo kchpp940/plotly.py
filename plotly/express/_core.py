@@ -455,6 +455,15 @@ class AggregationNorm(str, Enum):
 
 @dataclass
 class AggregationPlan:
+    """聚合图表的统一数据口径计划。
+
+    四层消费入口：
+    1. 数据列层: ensure_count_column / get_value_column_name
+    2. trace 参数层: apply_to_trace_patch
+    3. layout 参数层: apply_to_layout_patch
+    4. 文案层: get_label / get_hover_key
+    """
+
     chart_kind: AggregationChartKind
     constructor: Any = None
     source_column: Optional[str] = None
@@ -467,6 +476,9 @@ class AggregationPlan:
     count_column_name: Optional[str] = None
     text_auto: Any = False
 
+    # ------------------------------------------------------------------
+    # 工厂方法
+    # ------------------------------------------------------------------
     @classmethod
     def infer_from_args(cls, args, constructor):
         chart_kind = cls._infer_chart_kind(constructor, args)
@@ -484,11 +496,6 @@ class AggregationPlan:
             plan._infer_bar(args)
         elif chart_kind == AggregationChartKind.ECDF:
             plan._infer_ecdf(args)
-
-        if "_count_column_created" in args and args["_count_column_created"]:
-            plan.mark_count_column_needed(args["_count_column_created"])
-            if "_count_column_role" in args:
-                plan.value_role = args["_count_column_role"]
 
         return plan
 
@@ -629,24 +636,75 @@ class AggregationPlan:
             self.source_column = args.get("y")
             self.value_role = "x"
 
-    def update_args_and_patches(self, args, trace_patch, layout_patch):
+    # ------------------------------------------------------------------
+    # 数据列层: count 列创建与值列获取
+    # ------------------------------------------------------------------
+    def ensure_count_column(self, args, df_output, count_name, value_role=None):
+        """如果需要 count 列，则在 df_output 中创建并更新 plan 状态。
+
+        返回更新后的 DataFrame。
+        """
+        if value_role is None:
+            value_role = self.value_role
+
+        self.needs_count_column = True
+        self.count_column_name = count_name
+        self.source_column = count_name
+        self.histfunc = "count"
+        self.value_role = value_role
+
+        args[value_role] = count_name
+        args["_count_column_created"] = count_name
+        args["_count_column_role"] = value_role
+
+        return df_output.with_columns(nw.lit(1).alias(count_name))
+
+    def get_value_column_name(self):
+        """返回聚合值对应的 DataFrame 列名。"""
+        if self.needs_count_column:
+            return self.count_column_name
+        return self.source_column
+
+    def is_aggregation_role(self, role):
+        """判断某个 role 是否是聚合值角色。"""
+        if role is None:
+            return False
         if self.chart_kind == AggregationChartKind.HISTOGRAM_1D:
-            self._update_histogram_1d_args(args, trace_patch, layout_patch)
+            return (role == "x" and self.orientation == "h") or (
+                role == "y" and self.orientation == "v"
+            )
+        if self.chart_kind == AggregationChartKind.HISTOGRAM_2D:
+            return role == "z"
+        if self.chart_kind == AggregationChartKind.BAR:
+            return self.needs_count_column and role == self.value_role
+        if self.chart_kind == AggregationChartKind.ECDF:
+            return (role == "x" and self.orientation == "h") or (
+                role == "y" and self.orientation == "v"
+            )
+        return False
+
+    # ------------------------------------------------------------------
+    # trace 参数层
+    # ------------------------------------------------------------------
+    def apply_to_trace_patch(self, trace_patch, args):
+        """把聚合相关参数写入 trace_patch。"""
+        if self.chart_kind == AggregationChartKind.HISTOGRAM_1D:
+            self._apply_histogram_1d_trace(trace_patch, args)
         elif self.chart_kind == AggregationChartKind.HISTOGRAM_2D:
-            self._update_histogram_2d_args(args, trace_patch)
+            self._apply_histogram_2d_trace(trace_patch, args)
         elif self.chart_kind == AggregationChartKind.BAR:
-            self._update_bar_args(args, trace_patch, layout_patch)
+            self._apply_bar_trace(trace_patch, args)
 
-        args["_aggregation_plan"] = self
+        self._apply_texttemplate(trace_patch)
 
-    def _update_histogram_1d_args(self, args, trace_patch, layout_patch):
+    def _apply_histogram_1d_trace(self, trace_patch, args):
         orientation = self.orientation
         nbins = args.get("nbins")
 
-        if "histfunc" in args and args["histfunc"] is not None:
-            trace_patch["histfunc"] = args["histfunc"]
-        if "histnorm" in args and args["histnorm"] is not None:
-            trace_patch["histnorm"] = args["histnorm"]
+        if self.histfunc is not None:
+            trace_patch["histfunc"] = self.histfunc
+        if self.histnorm is not None:
+            trace_patch["histnorm"] = self.histnorm
         if "cumulative" in args:
             trace_patch["cumulative"] = dict(enabled=args["cumulative"])
 
@@ -655,18 +713,11 @@ class AggregationPlan:
         trace_patch["bingroup"] = "x" if orientation == "v" else "y"
         trace_patch["orientation"] = orientation
 
-        if "barmode" in args:
-            layout_patch["barmode"] = args["barmode"]
-        if "barnorm" in args and args["barnorm"] is not None:
-            layout_patch["barnorm"] = args["barnorm"]
-
-        self._update_texttemplate(trace_patch, args)
-
-    def _update_histogram_2d_args(self, args, trace_patch):
-        if "histfunc" in args and args["histfunc"] is not None:
-            trace_patch["histfunc"] = args["histfunc"]
-        if "histnorm" in args and args["histnorm"] is not None:
-            trace_patch["histnorm"] = args["histnorm"]
+    def _apply_histogram_2d_trace(self, trace_patch, args):
+        if self.histfunc is not None:
+            trace_patch["histfunc"] = self.histfunc
+        if self.histnorm is not None:
+            trace_patch["histnorm"] = self.histnorm
         if "nbinsx" in args:
             trace_patch["nbinsx"] = args["nbinsx"]
         if "nbinsy" in args:
@@ -674,17 +725,11 @@ class AggregationPlan:
         trace_patch["xbingroup"] = "x"
         trace_patch["ybingroup"] = "y"
 
-        self._update_texttemplate(trace_patch, args)
-
-    def _update_bar_args(self, args, trace_patch, layout_patch):
+    def _apply_bar_trace(self, trace_patch, args):
         trace_patch["orientation"] = self.orientation
         trace_patch["textposition"] = "auto"
-        if "barmode" in args:
-            layout_patch["barmode"] = args["barmode"]
 
-        self._update_texttemplate(trace_patch, args)
-
-    def _update_texttemplate(self, trace_patch, args):
+    def _apply_texttemplate(self, trace_patch):
         if self.text_auto is False or self.text_auto is None:
             return
 
@@ -700,11 +745,37 @@ class AggregationPlan:
         else:
             trace_patch["texttemplate"] = "%{" + letter + ":" + str(self.text_auto) + "}"
 
-    def compute_display_label(self, args, role):
-        if not self._is_aggregation_role(role):
+    # ------------------------------------------------------------------
+    # layout 参数层
+    # ------------------------------------------------------------------
+    def apply_to_layout_patch(self, layout_patch, args):
+        """把聚合相关的 layout 参数写入 layout_patch。"""
+        if self.chart_kind in [
+            AggregationChartKind.HISTOGRAM_1D,
+            AggregationChartKind.BAR,
+        ]:
+            if "barmode" in args:
+                layout_patch["barmode"] = args["barmode"]
+            if self.barnorm is not None:
+                layout_patch["barnorm"] = self.barnorm
+
+    # ------------------------------------------------------------------
+    # 文案层: axis title / colorbar / hover / legend
+    # ------------------------------------------------------------------
+    def get_label(self, args, role):
+        """获取指定 role 的显示标签。
+
+        聚合角色：返回 'sum of value' / 'count' / 'percent' 等聚合标签
+        非聚合角色：返回该角色对应列的普通标签
+        """
+        if not self.is_aggregation_role(role):
             col = args.get(role) if (role in args and args.get(role) is not None) else None
             return get_label(args, col)
 
+        return self._compute_aggregation_label(args)
+
+    def _compute_aggregation_label(self, args):
+        """计算聚合值的显示标签。"""
         original_label = get_label(args, self.source_column) if self.source_column else ""
         histfunc = self.histfunc or "count"
 
@@ -742,35 +813,30 @@ class AggregationPlan:
 
         return label
 
-    def _is_aggregation_role(self, role):
-        if self.chart_kind == AggregationChartKind.HISTOGRAM_1D:
-            return (role == "x" and self.orientation == "h") or (
-                role == "y" and self.orientation == "v"
+    def get_hover_key(self, args, attr_name):
+        """获取 hover 映射的 (label, template) 对。"""
+        if self.is_aggregation_role(attr_name):
+            label_args = {"labels": args.get("labels", {}), "_col_map": args.get("_col_map", {})}
+            plan = AggregationPlan(
+                chart_kind=self.chart_kind,
+                source_column=self.source_column,
+                histfunc=self.histfunc,
+                histnorm=self.histnorm,
+                barnorm=self.barnorm,
+                orientation=self.orientation,
+                value_role=self.value_role,
+                needs_count_column=self.needs_count_column,
+                count_column_name=self.count_column_name,
             )
-        if self.chart_kind == AggregationChartKind.HISTOGRAM_2D:
-            return role == "z"
-        if self.chart_kind == AggregationChartKind.BAR:
-            if self.needs_count_column:
-                return role == self.value_role
-            return False
-        if self.chart_kind == AggregationChartKind.ECDF:
-            return (role == "x" and self.orientation == "h") or (
-                role == "y" and self.orientation == "v"
-            )
-        return False
-
-    def get_hover_mapping_key(self, attr_name):
-        if self._is_aggregation_role(attr_name):
-            return self.compute_display_label(
-                {"labels": {}, "_col_map": {}}, attr_name
-            ), "%%{%s}" % attr_name
+            return plan._compute_aggregation_label(label_args), "%%{%s}" % attr_name
         return None, None
 
-    def mark_count_column_needed(self, count_column_name):
-        self.needs_count_column = True
-        self.count_column_name = count_column_name
-        self.source_column = count_column_name
-        self.histfunc = "count"
+    # ------------------------------------------------------------------
+    # 状态注册
+    # ------------------------------------------------------------------
+    def register_in_args(self, args):
+        """把 plan 注册到 args 中供后续消费。"""
+        args["_aggregation_plan"] = self
 
 
 class NamingContext:
@@ -895,17 +961,14 @@ def _resolve_col(args, attr_name_or_col):
     Accepts either an attribute name (like "x") or a direct column name.
     """
     try:
-        col_map = args.get("_col_map") or {}
+        col_map = args.get("_col_map", {})
         if attr_name_or_col in col_map:
             return col_map[attr_name_or_col]
         if attr_name_or_col in args:
             arg_val = args[attr_name_or_col]
-            if isinstance(arg_val, str):
-                if arg_val in col_map:
-                    return col_map[arg_val]
-                return arg_val
-            if arg_val is not None:
-                return arg_val
+            if isinstance(arg_val, str) and arg_val in col_map:
+                return col_map[arg_val]
+            return arg_val
         return attr_name_or_col
     except Exception:
         return attr_name_or_col
@@ -966,8 +1029,8 @@ def _generate_temporary_column_name(n_bytes, columns) -> str:
 
 def get_decorated_label(args, column, role):
     aggregation_plan = args.get("_aggregation_plan")
-    if aggregation_plan is not None and aggregation_plan._is_aggregation_role(role):
-        return aggregation_plan.compute_display_label(args, role)
+    if aggregation_plan is not None and aggregation_plan.is_aggregation_role(role):
+        return aggregation_plan.get_label(args, role)
 
     original_label = label = get_label(args, column)
     if "histfunc" in args and (
