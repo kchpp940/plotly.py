@@ -1,17 +1,12 @@
 import plotly.graph_objs as go
 import plotly.io as pio
-from collections import namedtuple, OrderedDict
-from typing import Any, Dict, List, Optional
+from collections import namedtuple, OrderedDict, defaultdict
+from enum import Enum
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional, Union
 
 from ._special_inputs import IdentityMap, Constant, Range
 from .trendline_functions import ols, lowess, rolling, expanding, ewm
-from ._annotations import (
-    AnnotationTarget,
-    AnnotationSpec,
-    AnnotationCollector,
-    AnnotationApplier,
-    extract_subplot_title_specs,
-)
 
 from _plotly_utils.basevalidators import ColorscaleValidator
 from plotly.colors import qualitative, sequential
@@ -31,6 +26,302 @@ import narwhals.stable.v1 as nw
 # forbidding users to install them all together due to dependency conflicts.
 
 NO_COLOR = "px_no_color_constant"
+
+
+class AnnotationTarget(Enum):
+    INITIAL_LAYOUT = "initial_layout"
+    FRAME_LAYOUT = "frame_layout"
+    BOTH = "both"
+
+
+@dataclass
+class AnnotationSpec:
+    text: str
+    x: Optional[float] = None
+    y: Optional[float] = None
+    xref: str = "paper"
+    yref: str = "paper"
+    target: AnnotationTarget = AnnotationTarget.INITIAL_LAYOUT
+    frame_name: Optional[str] = None
+    showarrow: bool = False
+    font: Optional[Dict[str, Any]] = None
+    align: str = "center"
+    xanchor: Optional[str] = None
+    yanchor: Optional[str] = None
+    xshift: Optional[float] = None
+    yshift: Optional[float] = None
+    opacity: Optional[float] = None
+    textangle: Optional[float] = None
+    extra: Dict[str, Any] = field(default_factory=dict)
+
+    def to_dict(self) -> Dict[str, Any]:
+        result = {
+            "text": self.text,
+            "showarrow": self.showarrow,
+            "align": self.align,
+        }
+        if self.x is not None:
+            result["x"] = self.x
+        if self.y is not None:
+            result["y"] = self.y
+        if self.xref != "paper":
+            result["xref"] = self.xref
+        if self.yref != "paper":
+            result["yref"] = self.yref
+        if self.font is not None:
+            result["font"] = self.font
+        if self.xanchor is not None:
+            result["xanchor"] = self.xanchor
+        if self.yanchor is not None:
+            result["yanchor"] = self.yanchor
+        if self.xshift is not None:
+            result["xshift"] = self.xshift
+        if self.yshift is not None:
+            result["yshift"] = self.yshift
+        if self.opacity is not None:
+            result["opacity"] = self.opacity
+        if self.textangle is not None:
+            result["textangle"] = self.textangle
+        result.update(self.extra)
+        return result
+
+
+class AnnotationCollector:
+    def __init__(self):
+        self._annotations: List[AnnotationSpec] = []
+
+    def add(self, annotation: AnnotationSpec) -> None:
+        self._annotations.append(annotation)
+
+    def add_many(self, annotations: List[AnnotationSpec]) -> None:
+        self._annotations.extend(annotations)
+
+    def get_all(self) -> List[AnnotationSpec]:
+        return list(self._annotations)
+
+    def get_by_target(self, target: AnnotationTarget) -> List[AnnotationSpec]:
+        return [a for a in self._annotations if a.target == target]
+
+    def get_by_frame(self, frame_name: str) -> List[AnnotationSpec]:
+        return [
+            a for a in self._annotations
+            if (a.target == AnnotationTarget.FRAME_LAYOUT and a.frame_name == frame_name)
+            or (a.target == AnnotationTarget.BOTH and (a.frame_name is None or a.frame_name == frame_name))
+        ]
+
+
+class AnnotationApplier:
+    @staticmethod
+    def _dicts_to_annotations(
+        dicts: List[Dict[str, Any]]
+    ) -> List[go.layout.Annotation]:
+        return [go.layout.Annotation(d) for d in dicts]
+
+    @staticmethod
+    def apply_initial_layout(
+        fig: go.Figure,
+        collector: AnnotationCollector,
+    ) -> None:
+        initial_anns = collector.get_by_target(AnnotationTarget.INITIAL_LAYOUT)
+        both_anns = collector.get_by_target(AnnotationTarget.BOTH)
+        all_anns = initial_anns + both_anns
+
+        if all_anns:
+            ann_dicts = [a.to_dict() for a in all_anns]
+            existing = fig.layout.annotations or ()
+            fig.layout.annotations = list(existing) + ann_dicts
+
+    @staticmethod
+    def apply_frame_layouts(
+        fig: go.Figure,
+        collector: AnnotationCollector,
+        frame_names: List[str],
+    ) -> None:
+        for frame_name in frame_names:
+            frame_anns = collector.get_by_frame(frame_name)
+            both_anns = [
+                a for a in collector.get_by_target(AnnotationTarget.BOTH)
+                if a.frame_name is None or a.frame_name == frame_name
+            ]
+            all_anns = frame_anns + both_anns
+
+            if all_anns:
+                ann_dicts = [a.to_dict() for a in all_anns]
+                for frame in fig.frames:
+                    if frame.name == frame_name:
+                        if not hasattr(frame, "layout") or frame.layout is None:
+                            frame.layout = {}
+                        if "annotations" not in frame.layout or frame.layout["annotations"] is None:
+                            existing = []
+                        else:
+                            existing = list(frame.layout["annotations"])
+                        existing.extend(ann_dicts)
+                        frame.layout["annotations"] = existing
+                        break
+
+    @staticmethod
+    def apply_all(
+        fig: go.Figure,
+        collector: AnnotationCollector,
+        frame_names: Optional[List[str]] = None,
+    ) -> None:
+        AnnotationApplier.apply_initial_layout(fig, collector)
+        if frame_names:
+            AnnotationApplier.apply_frame_layouts(fig, collector, frame_names)
+
+
+def create_facet_annotations(
+    args: Dict[str, Any],
+    col_labels: List[str],
+    row_labels: List[str],
+    subplot_labels: Optional[List[str]] = None,
+    nrows: int = 1,
+    ncols: int = 1,
+    facet_col_wrap: int = 0,
+) -> List[AnnotationSpec]:
+    annotations: List[AnnotationSpec] = []
+    prefix_col = get_label(args, args["facet_col"]) + "=" if args.get("facet_col") else ""
+    prefix_row = get_label(args, args["facet_row"]) + "=" if args.get("facet_row") else ""
+
+    if facet_col_wrap and subplot_labels:
+        for i, label in enumerate(subplot_labels):
+            if label is None:
+                continue
+            row_idx = i // ncols
+            col_idx = i % ncols
+            x = (col_idx + 0.5) / ncols
+            y = 1 - (row_idx / nrows)
+            annotations.append(
+                AnnotationSpec(
+                    text=label,
+                    x=x,
+                    y=y,
+                    xref="paper",
+                    yref="paper",
+                    yanchor="bottom",
+                    yshift=10,
+                    target=AnnotationTarget.INITIAL_LAYOUT,
+                )
+            )
+    else:
+        for j, label in enumerate(col_labels):
+            x = (j + 0.5) / ncols
+            annotations.append(
+                AnnotationSpec(
+                    text=prefix_col + str(label) if prefix_col else str(label),
+                    x=x,
+                    y=1.0,
+                    xref="paper",
+                    yref="paper",
+                    yanchor="bottom",
+                    yshift=10,
+                    target=AnnotationTarget.INITIAL_LAYOUT,
+                )
+            )
+        for i, label in enumerate(reversed(row_labels)):
+            y = (i + 0.5) / nrows
+            annotations.append(
+                AnnotationSpec(
+                    text=prefix_row + str(label) if prefix_row else str(label),
+                    x=1.0,
+                    y=y,
+                    xref="paper",
+                    yref="paper",
+                    xanchor="left",
+                    xshift=10,
+                    textangle=-90,
+                    target=AnnotationTarget.INITIAL_LAYOUT,
+                )
+            )
+
+    return annotations
+
+
+def create_trendline_annotation(
+    fit_results: Any,
+    x: float,
+    y: float,
+    xref: str = "x",
+    yref: str = "y",
+    frame_name: Optional[str] = None,
+    target: AnnotationTarget = AnnotationTarget.INITIAL_LAYOUT,
+) -> AnnotationSpec:
+    text = f"R² = {fit_results.rsquared:.4f}" if hasattr(fit_results, "rsquared") else "Trendline"
+    return AnnotationSpec(
+        text=text,
+        x=x,
+        y=y,
+        xref=xref,
+        yref=yref,
+        showarrow=True,
+        frame_name=frame_name,
+        target=target,
+        extra=dict(arrowhead=1, ax=20, ay=-30),
+    )
+
+
+def create_stat_annotation(
+    text: str,
+    x: float,
+    y: float,
+    xref: str = "paper",
+    yref: str = "paper",
+    frame_name: Optional[str] = None,
+    target: AnnotationTarget = AnnotationTarget.INITIAL_LAYOUT,
+) -> AnnotationSpec:
+    return AnnotationSpec(
+        text=text,
+        x=x,
+        y=y,
+        xref=xref,
+        yref=yref,
+        showarrow=False,
+        align="left",
+        xanchor="left",
+        yanchor="top",
+        frame_name=frame_name,
+        target=target,
+        font=dict(size=10),
+    )
+
+
+def create_marginal_annotation(
+    text: str,
+    x: float,
+    y: float,
+    xref: str = "paper",
+    yref: str = "paper",
+) -> AnnotationSpec:
+    return AnnotationSpec(
+        text=text,
+        x=x,
+        y=y,
+        xref=xref,
+        yref=yref,
+        showarrow=False,
+        font=dict(size=9),
+        target=AnnotationTarget.INITIAL_LAYOUT,
+    )
+
+
+def create_frame_annotation(
+    text: str,
+    x: float,
+    y: float,
+    frame_name: str,
+    xref: str = "paper",
+    yref: str = "paper",
+) -> AnnotationSpec:
+    return AnnotationSpec(
+        text=text,
+        x=x,
+        y=y,
+        xref=xref,
+        yref=yref,
+        frame_name=frame_name,
+        target=AnnotationTarget.FRAME_LAYOUT,
+    )
+
 
 trendline_functions = dict(
     lowess=lowess, rolling=rolling, ewm=ewm, expanding=expanding, ols=ols
@@ -145,6 +436,341 @@ Mapping = namedtuple(
     ],
 )
 TraceSpec = namedtuple("TraceSpec", ["constructor", "attrs", "trace_patch", "marginal"])
+
+
+class AggregationChartKind(str, Enum):
+    HISTOGRAM_1D = "histogram_1d"
+    HISTOGRAM_2D = "histogram_2d"
+    BAR = "bar"
+    ECDF = "ecdf"
+
+
+class AggregationNorm(str, Enum):
+    PERCENT = "percent"
+    PROBABILITY = "probability"
+    DENSITY = "density"
+    PROBABILITY_DENSITY = "probability density"
+    FRACTION = "fraction"
+
+
+@dataclass
+class AggregationPlan:
+    chart_kind: AggregationChartKind
+    constructor: Any = None
+    source_column: Optional[str] = None
+    histfunc: Optional[str] = None
+    histnorm: Optional[str] = None
+    barnorm: Optional[str] = None
+    orientation: Optional[str] = None
+    value_role: Optional[str] = None
+    needs_count_column: bool = False
+    count_column_name: Optional[str] = None
+    text_auto: Any = False
+
+    @classmethod
+    def infer_from_args(cls, args, constructor):
+        chart_kind = cls._infer_chart_kind(constructor, args)
+        if chart_kind is None:
+            return None
+
+        plan = cls(chart_kind=chart_kind, constructor=constructor)
+        plan.text_auto = args.get("text_auto", False)
+
+        if chart_kind == AggregationChartKind.HISTOGRAM_1D:
+            plan._infer_histogram_1d(args)
+        elif chart_kind == AggregationChartKind.HISTOGRAM_2D:
+            plan._infer_histogram_2d(args)
+        elif chart_kind == AggregationChartKind.BAR:
+            plan._infer_bar(args)
+        elif chart_kind == AggregationChartKind.ECDF:
+            plan._infer_ecdf(args)
+
+        if "_count_column_created" in args and args["_count_column_created"]:
+            plan.mark_count_column_needed(args["_count_column_created"])
+            if "_count_column_role" in args:
+                plan.value_role = args["_count_column_role"]
+
+        return plan
+
+    @staticmethod
+    def _infer_chart_kind(constructor, args):
+        if constructor == go.Histogram:
+            return AggregationChartKind.HISTOGRAM_1D
+        if constructor in [go.Histogram2d, go.Histogram2dContour]:
+            return AggregationChartKind.HISTOGRAM_2D
+        if constructor == go.Bar:
+            return AggregationChartKind.BAR
+        if "ecdfmode" in args:
+            return AggregationChartKind.ECDF
+        return None
+
+    def _infer_histogram_1d(self, args):
+        has_x = args.get("x") is not None
+        has_y = args.get("y") is not None
+        orientation = args.get("orientation")
+
+        if orientation is None:
+            if self.constructor in [go.Histogram, go.Scatter]:
+                if has_y and not has_x:
+                    orientation = "h"
+
+        if orientation is None and has_x and has_y:
+            df = args["data_frame"]
+            x_is_continuous = _is_continuous(df, args["x"]) if has_x else False
+            y_is_continuous = _is_continuous(df, args["y"]) if has_y else False
+            if x_is_continuous and not y_is_continuous:
+                orientation = "h"
+            if y_is_continuous and not x_is_continuous:
+                orientation = "v"
+
+        if orientation is None:
+            orientation = "v"
+
+        self.orientation = orientation
+        args["orientation"] = orientation
+
+        if has_x and has_y and args.get("histfunc") is None:
+            args["histfunc"] = "sum"
+
+        self.histfunc = args.get("histfunc")
+        self.histnorm = args.get("histnorm")
+        self.barnorm = args.get("barnorm")
+
+        if orientation == "v":
+            self.source_column = args.get("y")
+            self.value_role = "y"
+        else:
+            self.source_column = args.get("x")
+            self.value_role = "x"
+
+    def _infer_histogram_2d(self, args):
+        has_z = args.get("z") is not None
+
+        if has_z and args.get("histfunc") is None:
+            args["histfunc"] = "sum"
+
+        self.histfunc = args.get("histfunc")
+        self.histnorm = args.get("histnorm")
+        self.source_column = args.get("z")
+        self.value_role = "z"
+
+    def _infer_bar(self, args):
+        has_x = args.get("x") is not None
+        has_y = args.get("y") is not None
+        orientation = args.get("orientation")
+
+        if orientation is None:
+            if self.constructor in [go.Bar, go.Violin, go.Box, go.Funnel]:
+                if has_x and not has_y:
+                    orientation = "h"
+
+        if orientation is None and has_x and has_y:
+            df = args["data_frame"]
+            x_is_continuous = _is_continuous(df, args["x"]) if has_x else False
+            y_is_continuous = _is_continuous(df, args["y"]) if has_y else False
+            if x_is_continuous and not y_is_continuous:
+                orientation = "h"
+            if y_is_continuous and not x_is_continuous:
+                orientation = "v"
+
+        if orientation is None:
+            orientation = "v"
+
+        self.orientation = orientation
+        args["orientation"] = orientation
+
+        if orientation == "v":
+            self.source_column = args.get("y")
+            self.value_role = "y"
+        else:
+            self.source_column = args.get("x")
+            self.value_role = "x"
+
+        self.barnorm = args.get("barnorm")
+
+    def _infer_ecdf(self, args):
+        ecdfnorm = args.get("ecdfnorm", "probability")
+        if ecdfnorm not in [None, "percent", "probability"]:
+            raise ValueError(
+                "`ecdfnorm` must be one of None, 'percent' or 'probability'. "
+                + "'%s' was provided." % ecdfnorm
+            )
+        args["histnorm"] = ecdfnorm
+        self.histnorm = ecdfnorm
+        self.histfunc = "sum"
+
+        has_x = args.get("x") is not None
+        has_y = args.get("y") is not None
+        orientation = args.get("orientation")
+
+        if orientation is None:
+            if has_y and not has_x:
+                orientation = "h"
+
+        if orientation is None and has_x and has_y:
+            df = args["data_frame"]
+            x_is_continuous = _is_continuous(df, args["x"]) if has_x else False
+            y_is_continuous = _is_continuous(df, args["y"]) if has_y else False
+            if x_is_continuous and not y_is_continuous:
+                orientation = "h"
+            if y_is_continuous and not x_is_continuous:
+                orientation = "v"
+
+        if orientation is None:
+            orientation = "v"
+
+        self.orientation = orientation
+        args["orientation"] = orientation
+
+        if orientation == "v":
+            self.source_column = args.get("x")
+            self.value_role = "y"
+        else:
+            self.source_column = args.get("y")
+            self.value_role = "x"
+
+    def update_args_and_patches(self, args, trace_patch, layout_patch):
+        if self.chart_kind == AggregationChartKind.HISTOGRAM_1D:
+            self._update_histogram_1d_args(args, trace_patch, layout_patch)
+        elif self.chart_kind == AggregationChartKind.HISTOGRAM_2D:
+            self._update_histogram_2d_args(args, trace_patch)
+        elif self.chart_kind == AggregationChartKind.BAR:
+            self._update_bar_args(args, trace_patch, layout_patch)
+
+        args["_aggregation_plan"] = self
+
+    def _update_histogram_1d_args(self, args, trace_patch, layout_patch):
+        orientation = self.orientation
+        nbins = args.get("nbins")
+
+        if "histfunc" in args and args["histfunc"] is not None:
+            trace_patch["histfunc"] = args["histfunc"]
+        if "histnorm" in args and args["histnorm"] is not None:
+            trace_patch["histnorm"] = args["histnorm"]
+        if "cumulative" in args:
+            trace_patch["cumulative"] = dict(enabled=args["cumulative"])
+
+        trace_patch["nbinsx"] = nbins if orientation == "v" else None
+        trace_patch["nbinsy"] = None if orientation == "v" else nbins
+        trace_patch["bingroup"] = "x" if orientation == "v" else "y"
+        trace_patch["orientation"] = orientation
+
+        if "barmode" in args:
+            layout_patch["barmode"] = args["barmode"]
+        if "barnorm" in args and args["barnorm"] is not None:
+            layout_patch["barnorm"] = args["barnorm"]
+
+        self._update_texttemplate(trace_patch, args)
+
+    def _update_histogram_2d_args(self, args, trace_patch):
+        if "histfunc" in args and args["histfunc"] is not None:
+            trace_patch["histfunc"] = args["histfunc"]
+        if "histnorm" in args and args["histnorm"] is not None:
+            trace_patch["histnorm"] = args["histnorm"]
+        if "nbinsx" in args:
+            trace_patch["nbinsx"] = args["nbinsx"]
+        if "nbinsy" in args:
+            trace_patch["nbinsy"] = args["nbinsy"]
+        trace_patch["xbingroup"] = "x"
+        trace_patch["ybingroup"] = "y"
+
+        self._update_texttemplate(trace_patch, args)
+
+    def _update_bar_args(self, args, trace_patch, layout_patch):
+        trace_patch["orientation"] = self.orientation
+        trace_patch["textposition"] = "auto"
+        if "barmode" in args:
+            layout_patch["barmode"] = args["barmode"]
+
+        self._update_texttemplate(trace_patch, args)
+
+    def _update_texttemplate(self, trace_patch, args):
+        if self.text_auto is False or self.text_auto is None:
+            return
+
+        if self.chart_kind in [AggregationChartKind.HISTOGRAM_2D]:
+            letter = "z"
+        elif self.chart_kind == AggregationChartKind.BAR:
+            letter = "y" if self.orientation == "v" else "x"
+        else:
+            letter = "value"
+
+        if self.text_auto is True:
+            trace_patch["texttemplate"] = "%{" + letter + "}"
+        else:
+            trace_patch["texttemplate"] = "%{" + letter + ":" + str(self.text_auto) + "}"
+
+    def compute_display_label(self, args, role):
+        if not self._is_aggregation_role(role):
+            col = args.get(role) if (role in args and args.get(role) is not None) else None
+            return get_label(args, col)
+
+        original_label = get_label(args, self.source_column) if self.source_column else ""
+        histfunc = self.histfunc or "count"
+
+        if self.chart_kind == AggregationChartKind.BAR and not self.needs_count_column:
+            return original_label
+
+        if histfunc != "count":
+            label = "%s of %s" % (histfunc, original_label)
+        else:
+            label = "count"
+
+        if self.histnorm is not None:
+            if label == "count":
+                label = self.histnorm
+            else:
+                histnorm = self.histnorm
+                if histfunc == "sum":
+                    if histnorm == "probability":
+                        label = "%s of %s" % ("fraction", label)
+                    elif histnorm == "percent":
+                        label = "%s of %s" % (histnorm, label)
+                    else:
+                        label = "%s weighted by %s" % (histnorm, original_label)
+                elif histnorm == "probability":
+                    label = "%s of sum of %s" % ("fraction", label)
+                elif histnorm == "percent":
+                    label = "%s of sum of %s" % ("percent", label)
+                else:
+                    label = "%s of %s" % (histnorm, label)
+
+        if self.barnorm is not None and (
+            self.needs_count_column or self.chart_kind != AggregationChartKind.BAR
+        ):
+            label = "%s (normalized as %s)" % (label, self.barnorm)
+
+        return label
+
+    def _is_aggregation_role(self, role):
+        if self.chart_kind == AggregationChartKind.HISTOGRAM_1D:
+            return (role == "x" and self.orientation == "h") or (
+                role == "y" and self.orientation == "v"
+            )
+        if self.chart_kind == AggregationChartKind.HISTOGRAM_2D:
+            return role == "z"
+        if self.chart_kind == AggregationChartKind.BAR:
+            if self.needs_count_column:
+                return role == self.value_role
+            return False
+        if self.chart_kind == AggregationChartKind.ECDF:
+            return (role == "x" and self.orientation == "h") or (
+                role == "y" and self.orientation == "v"
+            )
+        return False
+
+    def get_hover_mapping_key(self, attr_name):
+        if self._is_aggregation_role(attr_name):
+            return self.compute_display_label(
+                {"labels": {}, "_col_map": {}}, attr_name
+            ), "%%{%s}" % attr_name
+        return None, None
+
+    def mark_count_column_needed(self, count_column_name):
+        self.needs_count_column = True
+        self.count_column_name = count_column_name
+        self.source_column = count_column_name
+        self.histfunc = "count"
 
 
 class NamingContext:
@@ -269,14 +895,17 @@ def _resolve_col(args, attr_name_or_col):
     Accepts either an attribute name (like "x") or a direct column name.
     """
     try:
-        col_map = args.get("_col_map", {})
+        col_map = args.get("_col_map") or {}
         if attr_name_or_col in col_map:
             return col_map[attr_name_or_col]
         if attr_name_or_col in args:
             arg_val = args[attr_name_or_col]
-            if isinstance(arg_val, str) and arg_val in col_map:
-                return col_map[arg_val]
-            return arg_val
+            if isinstance(arg_val, str):
+                if arg_val in col_map:
+                    return col_map[arg_val]
+                return arg_val
+            if arg_val is not None:
+                return arg_val
         return attr_name_or_col
     except Exception:
         return attr_name_or_col
@@ -336,6 +965,10 @@ def _generate_temporary_column_name(n_bytes, columns) -> str:
 
 
 def get_decorated_label(args, column, role):
+    aggregation_plan = args.get("_aggregation_plan")
+    if aggregation_plan is not None and aggregation_plan._is_aggregation_role(role):
+        return aggregation_plan.compute_display_label(args, role)
+
     original_label = label = get_label(args, column)
     if "histfunc" in args and (
         (role == "z")
@@ -2000,17 +2633,13 @@ def build_dataframe(args, constructor):
 
     count_name = _escape_col_name(df_output.columns, "count", [var_name, value_name])
     if not wide_mode and missing_bar_dim and constructor == go.Bar:
-        # now that we've populated df_output, we check to see if the non-missing
-        # dimension is categorical: if so, then setting the missing dimension to a
-        # constant 1 is a less-insane thing to do than setting it to the index by
-        # default and we let the normal auto-orientation-code do its thing later
         other_dim = "x" if missing_bar_dim == "y" else "y"
         if not _is_continuous(df_output, args[other_dim]):
             args[missing_bar_dim] = count_name
             df_output = df_output.with_columns(nw.lit(1).alias(count_name))
+            args["_count_column_created"] = count_name
+            args["_count_column_role"] = missing_bar_dim
         else:
-            # on the other hand, if the non-missing dimension is continuous, then we
-            # can use this information to override the normal auto-orientation code
             if args["orientation"] is None:
                 args["orientation"] = "v" if missing_bar_dim == "x" else "h"
 
@@ -2110,6 +2739,8 @@ def build_dataframe(args, constructor):
                 args["x" if orient_v else "y"] = _semantic_value_name
                 args["y" if orient_v else "x"] = count_name
                 df_output = df_output.with_columns(nw.lit(1).alias(count_name))
+                args["_count_column_created"] = count_name
+                args["_count_column_role"] = "y" if orient_v else "x"
                 if args["color"] is None and _semantic_var_name is not None:
                     args["color"] = _semantic_var_name
         elif constructor in [go.Violin, go.Box]:
@@ -2128,11 +2759,15 @@ def build_dataframe(args, constructor):
             args["orientation"] = "h"
             args["x"] = count_name
             df_output = df_output.with_columns(nw.lit(1).alias(count_name))
+            args["_count_column_created"] = count_name
+            args["_count_column_role"] = "x"
         else:
             args["histfunc"] = None
             args["orientation"] = "v"
             args["y"] = count_name
             df_output = df_output.with_columns(nw.lit(1).alias(count_name))
+            args["_count_column_created"] = count_name
+            args["_count_column_role"] = "y"
 
     if no_color:
         args["color"] = None
@@ -2544,38 +3179,32 @@ def infer_config(args, constructor, trace_patch, layout_patch):
         else:
             grouped_attrs.append("marker.pattern.shape")
 
-    if "orientation" in args:
-        has_x = args["x"] is not None
-        has_y = args["y"] is not None
-        if args["orientation"] is None:
-            if constructor in [go.Histogram, go.Scatter]:
-                if has_y and not has_x:
-                    args["orientation"] = "h"
-            elif constructor in [go.Violin, go.Box, go.Bar, go.Funnel]:
-                if has_x and not has_y:
-                    args["orientation"] = "h"
+    aggregation_plan = AggregationPlan.infer_from_args(args, constructor)
 
-        if args["orientation"] is None and has_x and has_y:
-            x_is_continuous = _is_continuous(df, args["x"])
-            y_is_continuous = _is_continuous(df, args["y"])
-            if x_is_continuous and not y_is_continuous:
-                args["orientation"] = "h"
-            if y_is_continuous and not x_is_continuous:
+    if "orientation" in args:
+        if aggregation_plan is None:
+            has_x = args["x"] is not None
+            has_y = args["y"] is not None
+            if args["orientation"] is None:
+                if constructor in [go.Histogram, go.Scatter]:
+                    if has_y and not has_x:
+                        args["orientation"] = "h"
+                elif constructor in [go.Violin, go.Box, go.Bar, go.Funnel]:
+                    if has_x and not has_y:
+                        args["orientation"] = "h"
+
+            if args["orientation"] is None and has_x and has_y:
+                x_is_continuous = _is_continuous(df, args["x"])
+                y_is_continuous = _is_continuous(df, args["y"])
+                if x_is_continuous and not y_is_continuous:
+                    args["orientation"] = "h"
+                if y_is_continuous and not x_is_continuous:
+                    args["orientation"] = "v"
+
+            if args["orientation"] is None:
                 args["orientation"] = "v"
 
-        if args["orientation"] is None:
-            args["orientation"] = "v"
-
-        if constructor == go.Histogram:
-            if has_x and has_y and args["histfunc"] is None:
-                args["histfunc"] = trace_patch["histfunc"] = "sum"
-
-            orientation = args["orientation"]
-            nbins = args["nbins"]
-            trace_patch["nbinsx"] = nbins if orientation == "v" else None
-            trace_patch["nbinsy"] = None if orientation == "v" else nbins
-            trace_patch["bingroup"] = "x" if orientation == "v" else "y"
-        trace_patch["orientation"] = args["orientation"]
+            trace_patch["orientation"] = args["orientation"]
 
         if constructor in [go.Violin, go.Box]:
             mode = "boxmode" if constructor == go.Box else "violinmode"
@@ -2587,24 +3216,8 @@ def infer_config(args, constructor, trace_patch, layout_patch):
             if layout_patch[mode] is None:
                 layout_patch[mode] = "group"
 
-    if (
-        constructor == go.Histogram2d
-        and args["z"] is not None
-        and args["histfunc"] is None
-    ):
-        args["histfunc"] = trace_patch["histfunc"] = "sum"
-
-    if args.get("text_auto", False) is not False:
-        if constructor in [go.Histogram2d, go.Histogram2dContour]:
-            letter = "z"
-        elif constructor == go.Bar:
-            letter = "y" if args["orientation"] == "v" else "x"
-        else:
-            letter = "value"
-        if args["text_auto"] is True:
-            trace_patch["texttemplate"] = "%{" + letter + "}"
-        else:
-            trace_patch["texttemplate"] = "%{" + letter + ":" + args["text_auto"] + "}"
+    if aggregation_plan is not None:
+        aggregation_plan.update_args_and_patches(args, trace_patch, layout_patch)
 
     if constructor in [go.Histogram2d, go.Densitymap, go.Densitymapbox]:
         show_colorbar = True
@@ -2692,14 +3305,6 @@ def infer_config(args, constructor, trace_patch, layout_patch):
 
     if "trendline_options" in args and args["trendline_options"] is None:
         args["trendline_options"] = dict()
-
-    if "ecdfnorm" in args:
-        if args.get("ecdfnorm", None) not in [None, "percent", "probability"]:
-            raise ValueError(
-                "`ecdfnorm` must be one of None, 'percent' or 'probability'. "
-                + "'%s' was provided." % args["ecdfnorm"]
-            )
-        args["histnorm"] = args["ecdfnorm"]
 
     # Compute applicable grouping attributes
     grouped_attrs.extend([k for k in group_attrables if k in args])
@@ -2823,12 +3428,10 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
         else:
             sorted_values = orders[m.grouper]
             if m.facet == "col":
-                prefix = get_label(args, args["facet_col"]) + "="
-                col_labels = [prefix + str(s) for s in sorted_values]
+                col_labels = [str(s) for s in sorted_values]
                 ncols = len(col_labels)
             if m.facet == "row":
-                prefix = get_label(args, args["facet_row"]) + "="
-                row_labels = [prefix + str(s) for s in sorted_values]
+                row_labels = [str(s) for s in sorted_values]
                 nrows = len(row_labels)
             for val in sorted_values:
                 if val not in m.val_map:  # always False if it's an IdentityMap
@@ -2973,6 +3576,24 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
             if fit_results is not None:
                 trendline_rows.append(mapping_labels.copy())
                 trendline_rows[-1]["px_fit_results"] = fit_results
+                if trace_spec != trace_specs[0]:
+                    target = (
+                        AnnotationTarget.FRAME_LAYOUT
+                        if frame_name
+                        else AnnotationTarget.INITIAL_LAYOUT
+                    )
+                    xaxis = trace.xaxis or "x"
+                    yaxis = trace.yaxis or "y"
+                    trendline_ann = create_trendline_annotation(
+                        fit_results,
+                        x=0.05,
+                        y=0.95,
+                        xref=f"{xaxis} domain",
+                        yref=f"{yaxis} domain",
+                        frame_name=frame_name,
+                        target=target,
+                    )
+                    annotation_collector.add(trendline_ann)
             if frame_name not in frames:
                 frames[frame_name] = dict(data=[], name=frame_name)
             frames[frame_name]["data"].append(trace)
@@ -3037,11 +3658,20 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
     if args.get("marginal_y") is not None:
         ncols += 1
 
-    fig, facet_title_specs = init_figure(
+    fig, subplot_labels = init_figure(
         args, subplot_type, frame_list, nrows, ncols, col_labels, row_labels
     )
 
-    annotation_collector.add_many(facet_title_specs)
+    facet_annotations = create_facet_annotations(
+        args,
+        col_labels,
+        row_labels,
+        subplot_labels,
+        nrows,
+        ncols,
+        facet_col_wrap,
+    )
+    annotation_collector.add_many(facet_annotations)
 
     # Position traces in subplots
     for frame in frame_list:
@@ -3090,6 +3720,15 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
         fig.update_traces(selector=-1, showlegend=True)
         if fit_results is not None:
             trendline_rows.append(dict(px_fit_results=fit_results))
+            trendline_ann = create_trendline_annotation(
+                fit_results,
+                x=0.05,
+                y=0.95,
+                xref="paper",
+                yref="paper",
+                target=AnnotationTarget.INITIAL_LAYOUT,
+            )
+            annotation_collector.add(trendline_ann)
 
     if trendline_rows:
         try:
@@ -3179,8 +3818,7 @@ Use the {facet_arg} argument to adjust this spacing.""".format(facet_arg=facet_a
             )
             raise e
 
-    # Create figure with subplots, passing titles through make_subplots
-    # to preserve its precise positioning algorithm.
+    # Create figure with subplots - no titles passed, they will be added via annotation builder
     try:
         fig = make_subplots(
             rows=nrows,
@@ -3188,9 +3826,9 @@ Use the {facet_arg} argument to adjust this spacing.""".format(facet_arg=facet_a
             specs=specs,
             shared_xaxes="all",
             shared_yaxes="all",
-            row_titles=[] if facet_col_wrap else list(reversed(row_labels)),
-            column_titles=[] if facet_col_wrap else col_labels,
-            subplot_titles=subplot_labels if facet_col_wrap else [],
+            row_titles=[],
+            column_titles=[],
+            subplot_titles=[],
             horizontal_spacing=horizontal_spacing,
             vertical_spacing=vertical_spacing,
             row_heights=row_heights,
@@ -3202,8 +3840,4 @@ Use the {facet_arg} argument to adjust this spacing.""".format(facet_arg=facet_a
         _spacing_error_translator(e, "Vertical", "facet_row_spacing")
         raise
 
-    # Convert make_subplots-generated title annotations into AnnotationSpec,
-    # clear the raw annotations so everything flows through the unified layer.
-    facet_title_specs = extract_subplot_title_specs(fig)
-
-    return fig, facet_title_specs
+    return fig, subplot_labels
