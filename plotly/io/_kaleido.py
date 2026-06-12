@@ -2,13 +2,12 @@ import os
 import json
 from pathlib import Path
 from typing import Union, List
-import importlib.metadata as importlib_metadata
-from packaging.version import Version
 import warnings
 
 import plotly
 from plotly.io._utils import validate_coerce_fig_to_dict, broadcast_args_to_dicts
 from plotly.io._defaults import defaults
+from plotly.optional_imports import deps
 
 ENGINE_SUPPORT_TIMELINE = "September 2025"
 ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS = True
@@ -37,9 +36,6 @@ Support for the 'engine' argument is deprecated and will be removed after {ENGIN
 Kaleido will be the only supported engine at that time.
 """
 
-_KALEIDO_AVAILABLE = None
-_KALEIDO_MAJOR = None
-
 
 def kaleido_scope_default_warning_func(x):
     return f"""
@@ -59,33 +55,27 @@ Please use plotly.io.defaults.* instead.
 def kaleido_available() -> bool:
     """
     Returns True if any version of Kaleido is installed, otherwise False.
-    """
-    global _KALEIDO_AVAILABLE
-    global _KALEIDO_MAJOR
-    if _KALEIDO_AVAILABLE is not None:
-        return _KALEIDO_AVAILABLE
-    try:
-        import kaleido  # noqa: F401
 
-        _KALEIDO_AVAILABLE = True
-    except ImportError:
-        _KALEIDO_AVAILABLE = False
-    return _KALEIDO_AVAILABLE
+    .. deprecated::
+        Prefer using ``plotly.optional_imports.deps.kaleido.installed`` or
+        ``plotly.optional_imports.deps.kaleido.available`` from the unified
+        dependency capability layer.
+    """
+    return deps.kaleido.installed
 
 
 def kaleido_major() -> int:
     """
     Returns the major version number of Kaleido if it is installed,
     otherwise raises a ValueError.
+
+    .. deprecated::
+        Prefer using ``plotly.optional_imports.deps.kaleido.version_obj_installed.major``
+        from the unified dependency capability layer.
     """
-    global _KALEIDO_MAJOR
-    if _KALEIDO_MAJOR is not None:
-        return _KALEIDO_MAJOR
-    if not kaleido_available():
+    if not deps.kaleido.installed:
         raise ValueError("Kaleido is not installed.")
-    else:
-        _KALEIDO_MAJOR = Version(importlib_metadata.version("kaleido")).major
-    return _KALEIDO_MAJOR
+    return deps.kaleido.version_obj_installed.major
 
 
 try:
@@ -649,25 +639,8 @@ def write_images(
     """
 
     # Raise informative error message if Kaleido v1 is not installed
-    if not kaleido_available():
-        raise ValueError(
-            """
-The `write_images()` function requires the Kaleido package,
-which can be installed using pip:
-
-    $ pip install --upgrade kaleido
-"""
-        )
-    elif kaleido_major() < 1:
-        raise ValueError(
-            f"""
-You have Kaleido version {Version(importlib_metadata.version("kaleido"))} installed.
-The `write_images()` function requires the Kaleido package version 1.0.0 or greater,
-which can be installed using pip:
-
-    $ pip install 'kaleido>=1.0.0'
-"""
-        )
+    if not deps.kaleido.available:
+        deps.kaleido.require("`write_images()`")
 
     # Broadcast arguments into correct format for passing to Kaleido
     arg_dicts = broadcast_args_to_dicts(

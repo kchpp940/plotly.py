@@ -1,15 +1,16 @@
 # ruff: noqa: E402
 
-from plotly import optional_imports
+from plotly.optional_imports import deps
 
 # Require that numpy exists for figure_factory
-np = optional_imports.get_module("numpy")
-if np is None:
-    raise ImportError(
-        """\
-The figure factory module requires the numpy package"""
-    )
+if not deps.numpy.available:
+    raise ImportError("""\
+The figure factory module requires the numpy package.
 
+$ pip install 'numpy>=1.22'
+
+Or install with: $ pip install 'plotly[express]'
+""")
 
 from plotly.figure_factory._2d_density import create_2d_density
 from plotly.figure_factory._annotated_heatmap import create_annotated_heatmap
@@ -27,7 +28,7 @@ from plotly.figure_factory._table import create_table
 from plotly.figure_factory._trisurf import create_trisurf
 from plotly.figure_factory._violin import create_violin
 
-if optional_imports.get_module("pandas") is not None:
+if deps.pandas.available:
     from plotly.figure_factory._county_choropleth import create_choropleth
     from plotly.figure_factory._hexbin_map import (
         create_hexbin_map,
@@ -36,21 +37,21 @@ if optional_imports.get_module("pandas") is not None:
 else:
 
     def create_choropleth(*args, **kwargs):
-        raise ImportError("Please install pandas to use `create_choropleth`")
+        deps.pandas.require("`create_choropleth`")
 
     def create_hexbin_map(*args, **kwargs):
-        raise ImportError("Please install pandas to use `create_hexbin_map`")
+        deps.pandas.require("`create_hexbin_map`")
 
     def create_hexbin_mapbox(*args, **kwargs):
-        raise ImportError("Please install pandas to use `create_hexbin_mapbox`")
+        deps.pandas.require("`create_hexbin_mapbox`")
 
 
-if optional_imports.get_module("skimage") is not None:
+if deps.skimage.available:
     from plotly.figure_factory._ternary_contour import create_ternary_contour
 else:
 
     def create_ternary_contour(*args, **kwargs):
-        raise ImportError("Please install scikit-image to use `create_ternary_contour`")
+        deps.skimage.require("`create_ternary_contour`")
 
 
 __all__ = [

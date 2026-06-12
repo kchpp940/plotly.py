@@ -7,8 +7,6 @@ from typing import Any, Dict, List, Optional, Union
 
 from ._special_inputs import IdentityMap, Constant, Range
 from .trendline_functions import ols, lowess, rolling, expanding, ewm
-from ._trace_builder import build_trace
-from ._trace_context import make_trace_context
 
 from _plotly_utils.basevalidators import ColorscaleValidator
 from plotly.colors import qualitative, sequential
@@ -110,7 +108,6 @@ class AnnotationCollector:
             if (a.target == AnnotationTarget.FRAME_LAYOUT and a.frame_name == frame_name)
             or (a.target == AnnotationTarget.BOTH and (a.frame_name is None or a.frame_name == frame_name))
         ]
-
 
 
 class AnnotationApplier:
@@ -896,12 +893,6 @@ def _resolve_col(args, attr_name_or_col):
     If the name is tracked in args["_col_map"], return the internal name.
     Otherwise return the name as-is (for backward compatibility).
     Accepts either an attribute name (like "x") or a direct column name.
-
-    IMPORTANT: We only treat the input as a parameter name when the
-    corresponding args value is *not None*. If args[name] is None but the
-    name itself could be a real column name, we fall through and return
-    the name as-is — because a None parameter value should never shadow
-    an actual data column.
     """
     try:
         col_map = args.get("_col_map", {})
@@ -909,11 +900,9 @@ def _resolve_col(args, attr_name_or_col):
             return col_map[attr_name_or_col]
         if attr_name_or_col in args:
             arg_val = args[attr_name_or_col]
-            if arg_val is not None:
-                if isinstance(arg_val, str) and arg_val in col_map:
-                    return col_map[arg_val]
-                return arg_val
-            # arg_val is None — don't return None, fall through to column-name path
+            if isinstance(arg_val, str) and arg_val in col_map:
+                return col_map[arg_val]
+            return arg_val
         return attr_name_or_col
     except Exception:
         return attr_name_or_col
@@ -1064,28 +1053,327 @@ def make_mapping(args, variable):
     )
 
 
-
 def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
-    """Build trace kwargs.
+    """Populates a dict with arguments to update trace
 
-    Delegates all work to:
-    1. ``make_trace_context`` from ``_trace_context.py`` – builds the
-       fully pre-resolved :class:`TraceBuildContext` from raw args
-    2. ``build_trace`` from ``_trace_builder.py`` – constructs the trace
+    Parameters
+    ----------
+    args : dict
+        args to be used for the trace
+    trace_spec : NamedTuple
+        which kind of trace to be used (has constructor, marginal etc.
+        attributes)
+    trace_data : pandas DataFrame
+        data
+    mapping_labels : dict
+        to be used for hovertemplate
+    sizeref : float
+        marker sizeref
 
-    Returns ``(trace_patch, fit_results)``.
+    Returns
+    -------
+    trace_patch : dict
+        dict to be used to update trace
+    fit_results : dict
+        fit information to be used for trendlines
     """
-    ctx = make_trace_context(
-        args,
-        trace_spec,
-        trace_data,
-        mapping_labels,
-        sizeref,
-        _resolve_col,
-        get_decorated_label,
-    )
-    result = build_trace(ctx)
-    return result.trace_patch, result.fit_results
+    trace_data: nw.DataFrame
+    df: nw.DataFrame = args["data_frame"]
+
+    def _rc(name):
+        return _resolve_col(args, name)
+
+    def _rc_list(lst):
+        if lst is None:
+            return lst
+        if isinstance(lst, str):
+            return _rc(lst)
+        return [_rc(c) for c in lst]
+
+    if "line_close" in args and args["line_close"]:
+        trace_data = nw.concat([trace_data, trace_data.head(1)], how="vertical")
+
+    trace_patch = trace_spec.trace_patch.copy() or {}
+    fit_results = None
+    hover_header = ""
+    for attr_name in trace_spec.attrs:
+        attr_value = args[attr_name]
+        attr_label = get_decorated_label(args, attr_value, attr_name)
+        if attr_name == "dimensions":
+            dims = [
+                (name, trace_data.get_column(name))
+                for name in trace_data.columns
+                if ((not attr_value) or (name in attr_value))
+                and (trace_spec.constructor != go.Parcoords or _is_continuous(df, name))
+                and (
+                    trace_spec.constructor != go.Parcats
+                    or (attr_value is not None and name in attr_value)
+                    or nw.to_py_scalar(df.get_column(name).n_unique())
+                    <= args["dimensions_max_cardinality"]
+                )
+            ]
+            trace_patch["dimensions"] = [
+                dict(label=get_label(args, name), values=column)
+                for (name, column) in dims
+            ]
+            if trace_spec.constructor == go.Splom:
+                for d in trace_patch["dimensions"]:
+                    d["axis"] = dict(matches=True)
+                mapping_labels["%{xaxis.title.text}"] = "%{x}"
+                mapping_labels["%{yaxis.title.text}"] = "%{y}"
+
+        elif attr_value is not None:
+            if attr_name == "size":
+                if "marker" not in trace_patch:
+                    trace_patch["marker"] = dict()
+                trace_patch["marker"]["size"] = trace_data.get_column(_rc(attr_value))
+                trace_patch["marker"]["sizemode"] = "area"
+                trace_patch["marker"]["sizeref"] = sizeref
+                mapping_labels[attr_label] = "%{marker.size}"
+            elif attr_name == "marginal_x":
+                if trace_spec.constructor == go.Histogram:
+                    mapping_labels["count"] = "%{y}"
+            elif attr_name == "marginal_y":
+                if trace_spec.constructor == go.Histogram:
+                    mapping_labels["count"] = "%{x}"
+            elif attr_name == "trendline":
+                if (
+                    args["x"]
+                    and args["y"]
+                    and len(
+                        trace_data.select(nw.col(_rc(args["x"]), _rc(args["y"]))).drop_nulls()
+                    )
+                    > 1
+                ):
+                    x_col = _rc(args["x"])
+                    y_col = _rc(args["y"])
+                    sorted_trace_data = trace_data.sort(by=x_col, nulls_last=True)
+                    y = sorted_trace_data.get_column(y_col)
+                    x = sorted_trace_data.get_column(x_col)
+
+                    if x.dtype == nw.Datetime or x.dtype == nw.Date:
+                        # convert to unix epoch seconds
+                        x = _to_unix_epoch_seconds(x)
+                    elif not x.dtype.is_numeric():
+                        try:
+                            x = x.cast(nw.Float64())
+                        except ValueError:
+                            raise ValueError(
+                                "Could not convert value of 'x' ('%s') into a numeric type. "
+                                "If 'x' contains stringified dates, please convert to a datetime column."
+                                % args["x"]
+                            )
+
+                    if not y.dtype.is_numeric():
+                        try:
+                            y = y.cast(nw.Float64())
+                        except ValueError:
+                            raise ValueError(
+                                "Could not convert value of 'y' into a numeric type."
+                            )
+
+                    # preserve original values of "x" in case they're dates
+                    # otherwise numpy/pandas can mess with the timezones
+                    # NB this means trendline functions must output one-to-one with the input series
+                    # i.e. we can't do resampling, because then the X values might not line up!
+                    non_missing = ~(x.is_null() | y.is_null())
+                    trace_patch["x"] = sorted_trace_data.filter(non_missing).get_column(
+                        x_col
+                    )
+                    if (
+                        trace_patch["x"].dtype == nw.Datetime
+                        and trace_patch["x"].dtype.time_zone is not None
+                    ):
+                        # Remove time zone so that local time is displayed
+                        trace_patch["x"] = (
+                            trace_patch["x"].dt.replace_time_zone(None).to_numpy()
+                        )
+                    else:
+                        trace_patch["x"] = trace_patch["x"].to_numpy()
+
+                    trendline_function = trendline_functions[attr_value]
+                    y_out, hover_header, fit_results = trendline_function(
+                        args["trendline_options"],
+                        sorted_trace_data.get_column(x_col),  # narwhals series
+                        x.to_numpy(),  # numpy array
+                        y.to_numpy(),  # numpy array
+                        args["x"],
+                        args["y"],
+                        non_missing.to_numpy(),  # numpy array
+                    )
+                    assert len(y_out) == len(trace_patch["x"]), (
+                        "missing-data-handling failure in trendline code"
+                    )
+                    trace_patch["y"] = y_out
+                    mapping_labels[get_label(args, args["x"])] = "%{x}"
+                    mapping_labels[get_label(args, args["y"])] = "%{y} <b>(trend)</b>"
+            elif attr_name.startswith("error"):
+                error_xy = attr_name[:7]
+                arr = "arrayminus" if attr_name.endswith("minus") else "array"
+                if error_xy not in trace_patch:
+                    trace_patch[error_xy] = {}
+                trace_patch[error_xy][arr] = trace_data.get_column(_rc(attr_value))
+            elif attr_name == "custom_data":
+                if len(attr_value) > 0:
+                    # here we store a data frame in customdata, and it's serialized
+                    # as a list of row lists, which is what we want
+                    trace_patch["customdata"] = trace_data.select(nw.col(_rc_list(attr_value)))
+            elif attr_name == "hover_name":
+                if trace_spec.constructor not in [
+                    go.Histogram,
+                    go.Histogram2d,
+                    go.Histogram2dContour,
+                ]:
+                    trace_patch["hovertext"] = trace_data.get_column(_rc(attr_value))
+                    if hover_header == "":
+                        hover_header = "<b>%{hovertext}</b><br><br>"
+            elif attr_name == "hover_data":
+                if trace_spec.constructor not in [
+                    go.Histogram,
+                    go.Histogram2d,
+                    go.Histogram2dContour,
+                ]:
+                    hover_is_dict = isinstance(attr_value, dict)
+                    customdata_cols = args.get("custom_data") or []
+                    for col in attr_value:
+                        if hover_is_dict and not attr_value[col]:
+                            continue
+                        if col in [
+                            args.get("x"),
+                            args.get("y"),
+                            args.get("z"),
+                            args.get("base"),
+                        ]:
+                            continue
+                        try:
+                            position = args["custom_data"].index(col)
+                        except (ValueError, AttributeError, KeyError):
+                            position = len(customdata_cols)
+                            customdata_cols.append(col)
+                        attr_label_col = get_decorated_label(args, col, None)
+                        mapping_labels[attr_label_col] = "%%{customdata[%d]}" % (
+                            position
+                        )
+
+                    if len(customdata_cols) > 0:
+                        # here we store a data frame in customdata, and it's serialized
+                        # as a list of row lists, which is what we want
+
+                        # dict.fromkeys(customdata_cols) allows to deduplicate column
+                        # names, yet maintaining the original order.
+                        trace_patch["customdata"] = trace_data.select(
+                            *[nw.col(_rc(c)) for c in dict.fromkeys(customdata_cols)]
+                        )
+            elif attr_name == "color":
+                if trace_spec.constructor in [
+                    go.Choropleth,
+                    go.Choroplethmap,
+                    go.Choroplethmapbox,
+                ]:
+                    trace_patch["z"] = trace_data.get_column(_rc(attr_value))
+                    trace_patch["coloraxis"] = "coloraxis1"
+                    mapping_labels[attr_label] = "%{z}"
+                elif trace_spec.constructor in [
+                    go.Sunburst,
+                    go.Treemap,
+                    go.Icicle,
+                    go.Pie,
+                    go.Funnelarea,
+                ]:
+                    if "marker" not in trace_patch:
+                        trace_patch["marker"] = dict()
+
+                    if args.get("color_is_continuous"):
+                        trace_patch["marker"]["colors"] = trace_data.get_column(
+                            _rc(attr_value)
+                        )
+                        trace_patch["marker"]["coloraxis"] = "coloraxis1"
+                        mapping_labels[attr_label] = "%{color}"
+                    else:
+                        trace_patch["marker"]["colors"] = []
+                        if args["color_discrete_map"] is not None:
+                            mapping = args["color_discrete_map"].copy()
+                        else:
+                            mapping = {}
+                        for cat in trace_data.get_column(_rc(attr_value)).to_list():
+                            # although trace_data.get_column(attr_value) is a Narwhals
+                            # Series, which is an iterable, explicitly calling a to_list()
+                            # makes sure that the elements we loop over are python objects
+                            # in all cases, since depending on the backend this may not be
+                            # the case (e.g. PyArrow)
+                            if mapping.get(cat) is None:
+                                mapping[cat] = args["color_discrete_sequence"][
+                                    len(mapping) % len(args["color_discrete_sequence"])
+                                ]
+                            trace_patch["marker"]["colors"].append(mapping[cat])
+                else:
+                    colorable = "marker"
+                    if trace_spec.constructor in [go.Parcats, go.Parcoords]:
+                        colorable = "line"
+                    if colorable not in trace_patch:
+                        trace_patch[colorable] = dict()
+                    trace_patch[colorable]["color"] = trace_data.get_column(_rc(attr_value))
+                    trace_patch[colorable]["coloraxis"] = "coloraxis1"
+                    mapping_labels[attr_label] = "%%{%s.color}" % colorable
+            elif attr_name == "animation_group":
+                trace_patch["ids"] = trace_data.get_column(_rc(attr_value))
+            elif attr_name == "locations":
+                trace_patch[attr_name] = trace_data.get_column(_rc(attr_value))
+                mapping_labels[attr_label] = "%{location}"
+            elif attr_name == "values":
+                trace_patch[attr_name] = trace_data.get_column(_rc(attr_value))
+                _label = "value" if attr_label == "values" else attr_label
+                mapping_labels[_label] = "%{value}"
+            elif attr_name == "parents":
+                trace_patch[attr_name] = trace_data.get_column(_rc(attr_value))
+                _label = "parent" if attr_label == "parents" else attr_label
+                mapping_labels[_label] = "%{parent}"
+            elif attr_name == "ids":
+                trace_patch[attr_name] = trace_data.get_column(_rc(attr_value))
+                _label = "id" if attr_label == "ids" else attr_label
+                mapping_labels[_label] = "%{id}"
+            elif attr_name == "names":
+                if trace_spec.constructor in [
+                    go.Sunburst,
+                    go.Treemap,
+                    go.Icicle,
+                    go.Pie,
+                    go.Funnelarea,
+                ]:
+                    trace_patch["labels"] = trace_data.get_column(_rc(attr_value))
+                    _label = "label" if attr_label == "names" else attr_label
+                    mapping_labels[_label] = "%{label}"
+                else:
+                    trace_patch[attr_name] = trace_data.get_column(_rc(attr_value))
+            else:
+                trace_patch[attr_name] = trace_data.get_column(_rc(attr_value))
+                mapping_labels[attr_label] = "%%{%s}" % attr_name
+        elif (trace_spec.constructor == go.Histogram and attr_name in ["x", "y"]) or (
+            trace_spec.constructor in [go.Histogram2d, go.Histogram2dContour]
+            and attr_name == "z"
+        ):
+            # ensure that stuff like "count" gets into the hoverlabel
+            if attr_label is not None:
+                mapping_labels[attr_label] = "%%{%s}" % attr_name
+    if trace_spec.constructor not in [go.Parcoords, go.Parcats]:
+        # Modify mapping_labels according to hover_data keys
+        # if hover_data is a dict
+        mapping_labels_copy = OrderedDict(mapping_labels)
+        if args["hover_data"] and isinstance(args["hover_data"], dict):
+            for k, v in mapping_labels.items():
+                # We need to invert the mapping here
+                k_args = invert_label(args, k)
+                if k_args in args["hover_data"]:
+                    formatter = args["hover_data"][k_args][0]
+                    if formatter:
+                        if isinstance(formatter, str):
+                            mapping_labels_copy[k] = v.replace("}", "%s}" % formatter)
+                    else:
+                        _ = mapping_labels_copy.pop(k)
+        hover_lines = [k + "=" + v for k, v in mapping_labels_copy.items()]
+        trace_patch["hovertemplate"] = hover_header + "<br>".join(hover_lines)
+        trace_patch["hovertemplate"] += "<extra></extra>"
+    return trace_patch, fit_results
 
 
 def configure_axes(args, constructor, fig, orders):
