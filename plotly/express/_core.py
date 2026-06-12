@@ -110,6 +110,43 @@ class AnnotationCollector:
         ]
 
 
+@dataclass
+class TraceDataBinding:
+    data: Dict[str, Any] = field(default_factory=dict)
+    customdata: Any = None
+    hovertext: Any = None
+    mapping_labels: "OrderedDict[str, str]" = field(default_factory=OrderedDict)
+
+@dataclass
+class TrendlineFitResult:
+    x_data: Any = None
+    y_data: Any = None
+    fit_results: Any = None
+    hover_header: str = ""
+    x_label: str = ""
+    y_label: str = ""
+
+@dataclass
+class TraceVisualConfig:
+    marker: Dict[str, Any] = field(default_factory=dict)
+    line: Dict[str, Any] = field(default_factory=dict)
+    error_x: Dict[str, Any] = field(default_factory=dict)
+    error_y: Dict[str, Any] = field(default_factory=dict)
+    error_z: Dict[str, Any] = field(default_factory=dict)
+    extra: Dict[str, Any] = field(default_factory=dict)
+
+@dataclass
+class TraceHoverConfig:
+    hover_header: str = ""
+    hovertemplate: str = ""
+    mapping_labels: "OrderedDict[str, str]" = field(default_factory=OrderedDict)
+
+@dataclass
+class TraceBuildResult:
+    trace_patch: Dict[str, Any] = field(default_factory=dict)
+    fit_results: Any = None
+
+
 class AnnotationApplier:
     @staticmethod
     def _dicts_to_annotations(
@@ -455,57 +492,40 @@ class AggregationNorm(str, Enum):
 
 @dataclass
 class AggregationPlan:
-    """聚合图表的统一数据口径计划（两阶段模型）。
-
-    Phase 1 (intent):  build_dataframe 前记录用户原始聚合意图，不访问 DataFrame
-    Phase 1.5 (mark):  build_dataframe 中记录 count 列创建意图
-    Phase 2 (resolve): build_dataframe 后用真实数据口径 resolve 最终字段
-
-    所有消费方（trace_patch / layout_patch / label / hover）只读 resolved 字段。
-    """
-
     chart_kind: AggregationChartKind
     constructor: Any = None
-
-    _user_histfunc: Optional[str] = None
-    _user_histnorm: Optional[str] = None
-    _user_barnorm: Optional[str] = None
-    text_auto: Any = False
-    _pending_count: Optional[dict] = None
-
-    _resolved: bool = False
-    orientation: Optional[str] = None
-    value_role: Optional[str] = None
     source_column: Optional[str] = None
     histfunc: Optional[str] = None
     histnorm: Optional[str] = None
     barnorm: Optional[str] = None
+    orientation: Optional[str] = None
+    value_role: Optional[str] = None
     needs_count_column: bool = False
     count_column_name: Optional[str] = None
+    text_auto: Any = False
 
-    # ------------------------------------------------------------------
-    # Phase 1: Capture intent (before build_dataframe, no DataFrame access)
-    # ------------------------------------------------------------------
     @classmethod
-    def capture_intent(cls, args, constructor):
+    def infer_from_args(cls, args, constructor):
         chart_kind = cls._infer_chart_kind(constructor, args)
         if chart_kind is None:
             return None
 
         plan = cls(chart_kind=chart_kind, constructor=constructor)
-        plan._user_histfunc = args.get("histfunc")
-        plan._user_histnorm = args.get("histnorm")
-        plan._user_barnorm = args.get("barnorm")
         plan.text_auto = args.get("text_auto", False)
 
-        if chart_kind == AggregationChartKind.ECDF:
-            ecdfnorm = args.get("ecdfnorm", "probability")
-            if ecdfnorm not in [None, "percent", "probability"]:
-                raise ValueError(
-                    "`ecdfnorm` must be one of None, 'percent' or 'probability'. "
-                    + "'%s' was provided." % ecdfnorm
-                )
-            args["histnorm"] = ecdfnorm
+        if chart_kind == AggregationChartKind.HISTOGRAM_1D:
+            plan._infer_histogram_1d(args)
+        elif chart_kind == AggregationChartKind.HISTOGRAM_2D:
+            plan._infer_histogram_2d(args)
+        elif chart_kind == AggregationChartKind.BAR:
+            plan._infer_bar(args)
+        elif chart_kind == AggregationChartKind.ECDF:
+            plan._infer_ecdf(args)
+
+        if "_count_column_created" in args and args["_count_column_created"]:
+            plan.mark_count_column_needed(args["_count_column_created"])
+            if "_count_column_role" in args:
+                plan.value_role = args["_count_column_role"]
 
         return plan
 
@@ -521,199 +541,37 @@ class AggregationPlan:
             return AggregationChartKind.ECDF
         return None
 
-    # ------------------------------------------------------------------
-    # Phase 1.5: build_dataframe count column handling (unified API)
-    # ------------------------------------------------------------------
-    def process_dataframe(
-        self,
-        args,
-        df_output,
-        count_name,
-        wide_mode,
-        hist1d_orientation,
-        missing_bar_dim,
-        constructor,
-        orient_v,
-        value_name,
-    ):
-        """build_dataframe 中聚合图表的统一入口。
-
-        处理内容：
-        - 判断是否需要创建 count 列
-        - 创建 count 列并更新 args
-        - 返回更新后的 df_output
-        """
-        if self.chart_kind == AggregationChartKind.BAR:
-            return self._process_bar_dataframe(
-                args,
-                df_output,
-                count_name,
-                wide_mode,
-                missing_bar_dim,
-                constructor,
-                orient_v,
-                value_name,
-            )
-        if self.chart_kind == AggregationChartKind.HISTOGRAM_2D:
-            return self._process_hist2d_dataframe(
-                args, df_output, count_name
-            )
-        if self.chart_kind == AggregationChartKind.ECDF:
-            return self._process_ecdf_dataframe(
-                args, df_output, count_name, hist1d_orientation, constructor
-            )
-        if self.chart_kind == AggregationChartKind.HISTOGRAM_1D:
-            return self._process_hist1d_dataframe(
-                args, df_output, count_name, hist1d_orientation, constructor
-            )
-        return df_output
-
-    def _process_bar_dataframe(
-        self,
-        args,
-        df_output,
-        count_name,
-        wide_mode,
-        missing_bar_dim,
-        constructor,
-        orient_v,
-        value_name,
-    ):
-        if not wide_mode and missing_bar_dim and constructor == go.Bar:
-            other_dim = "x" if missing_bar_dim == "y" else "y"
-            if not _is_continuous(df_output, args[other_dim]):
-                return self.create_count_column(args, df_output, count_name)
-            else:
-                if args["orientation"] is None:
-                    args["orientation"] = "v" if missing_bar_dim == "x" else "h"
-
-        if wide_mode and constructor == go.Bar and not _is_continuous(df_output, value_name):
-            return self.create_count_column(args, df_output, count_name)
-
-        return df_output
-
-    def _process_hist2d_dataframe(self, args, df_output, count_name):
-        if args.get("z") is None:
-            return self.create_count_column(args, df_output, count_name)
-        return df_output
-
-    def _process_ecdf_dataframe(
-        self, args, df_output, count_name, hist1d_orientation, constructor
-    ):
-        if hist1d_orientation and constructor == go.Scatter:
-            if args["x"] is not None and args["y"] is not None:
-                args["histfunc"] = "sum"
-            elif args["x"] is None:
-                args["histfunc"] = None
-                args["orientation"] = "h"
-                return self.create_count_column(args, df_output, count_name)
-            else:
-                args["histfunc"] = None
-                args["orientation"] = "v"
-                return self.create_count_column(args, df_output, count_name)
-        return df_output
-
-    def _process_hist1d_dataframe(
-        self, args, df_output, count_name, hist1d_orientation, constructor
-    ):
-        if hist1d_orientation and constructor == go.Scatter:
-            if args["x"] is not None and args["y"] is not None:
-                args["histfunc"] = "sum"
-            elif args["x"] is None:
-                args["histfunc"] = None
-                args["orientation"] = "h"
-                return self.create_count_column(args, df_output, count_name)
-            else:
-                args["histfunc"] = None
-                args["orientation"] = "v"
-                return self.create_count_column(args, df_output, count_name)
-        return df_output
-
-    def create_count_column(self, args, df_output, count_name):
-        """创建 count 列并记录意图，返回更新后的 DataFrame。
-
-        build_dataframe 调用此方法前必须先调用 process_dataframe。
-        """
-        value_role = self._get_count_column_value_role(args)
-        self._pending_count = {
-            "count_name": count_name,
-            "value_role": value_role,
-        }
-        args[value_role] = count_name
-        args["_count_column_created"] = count_name
-        args["_count_column_role"] = value_role
-        return df_output.with_columns(nw.lit(1).alias(count_name))
-
-    def _get_count_column_value_role(self, args):
-        """如果需要创建 count 列，返回它应该绑定的 value_role。"""
-        if self.chart_kind == AggregationChartKind.HISTOGRAM_2D:
-            return "z"
-        if self.chart_kind == AggregationChartKind.ECDF:
-            return "y"
-        orientation = args.get("orientation") or self._guess_orientation(args)
-        return "x" if orientation == "h" else "y"
-
-    def _guess_orientation(self, args):
-        if self.chart_kind == AggregationChartKind.HISTOGRAM_1D:
-            has_x = args.get("x") is not None
-            has_y = args.get("y") is not None
-            if has_y and not has_x:
-                return "h"
-        return "v"
-
-    # ------------------------------------------------------------------
-    # Phase 2: Resolve (after build_dataframe, using real data)
-    # ------------------------------------------------------------------
-    def resolve(self, args):
-        """基于 build_dataframe 后的真实 args，resolve 最终口径字段。"""
-        df = args["data_frame"]
-
-        if self.chart_kind == AggregationChartKind.HISTOGRAM_1D:
-            self._resolve_histogram_1d(args, df)
-        elif self.chart_kind == AggregationChartKind.HISTOGRAM_2D:
-            self._resolve_histogram_2d(args, df)
-        elif self.chart_kind == AggregationChartKind.BAR:
-            self._resolve_bar(args, df)
-        elif self.chart_kind == AggregationChartKind.ECDF:
-            self._resolve_ecdf(args, df)
-
-        self._resolved = True
-
-    def _ensure_orientation(self, args, df):
-        orientation = args.get("orientation")
-        if orientation is not None:
-            return orientation
-
+    def _infer_histogram_1d(self, args):
         has_x = args.get("x") is not None
         has_y = args.get("y") is not None
+        orientation = args.get("orientation")
 
-        if has_x and has_y:
-            x_is_continuous = _is_continuous(df, args["x"])
-            y_is_continuous = _is_continuous(df, args["y"])
+        if orientation is None:
+            if self.constructor in [go.Histogram, go.Scatter]:
+                if has_y and not has_x:
+                    orientation = "h"
+
+        if orientation is None and has_x and has_y:
+            df = args["data_frame"]
+            x_is_continuous = _is_continuous(df, args["x"]) if has_x else False
+            y_is_continuous = _is_continuous(df, args["y"]) if has_y else False
             if x_is_continuous and not y_is_continuous:
                 orientation = "h"
-            elif y_is_continuous and not x_is_continuous:
+            if y_is_continuous and not x_is_continuous:
                 orientation = "v"
 
         if orientation is None:
             orientation = "v"
 
-        args["orientation"] = orientation
-        return orientation
-
-    def _resolve_histogram_1d(self, args, df):
-        orientation = self._ensure_orientation(args, df)
         self.orientation = orientation
+        args["orientation"] = orientation
 
-        has_x = args.get("x") is not None
-        has_y = args.get("y") is not None
-
-        if has_x and has_y and self._user_histfunc is None:
+        if has_x and has_y and args.get("histfunc") is None:
             args["histfunc"] = "sum"
 
         self.histfunc = args.get("histfunc")
         self.histnorm = args.get("histnorm")
-        self.barnorm = self._user_barnorm
+        self.barnorm = args.get("barnorm")
 
         if orientation == "v":
             self.source_column = args.get("y")
@@ -722,12 +580,10 @@ class AggregationPlan:
             self.source_column = args.get("x")
             self.value_role = "x"
 
-        self._apply_pending_count()
-
-    def _resolve_histogram_2d(self, args, df):
+    def _infer_histogram_2d(self, args):
         has_z = args.get("z") is not None
 
-        if has_z and self._user_histfunc is None:
+        if has_z and args.get("histfunc") is None:
             args["histfunc"] = "sum"
 
         self.histfunc = args.get("histfunc")
@@ -735,12 +591,30 @@ class AggregationPlan:
         self.source_column = args.get("z")
         self.value_role = "z"
 
-        self._apply_pending_count()
+    def _infer_bar(self, args):
+        has_x = args.get("x") is not None
+        has_y = args.get("y") is not None
+        orientation = args.get("orientation")
 
-    def _resolve_bar(self, args, df):
-        orientation = self._ensure_orientation(args, df)
+        if orientation is None:
+            if self.constructor in [go.Bar, go.Violin, go.Box, go.Funnel]:
+                if has_x and not has_y:
+                    orientation = "h"
+
+        if orientation is None and has_x and has_y:
+            df = args["data_frame"]
+            x_is_continuous = _is_continuous(df, args["x"]) if has_x else False
+            y_is_continuous = _is_continuous(df, args["y"]) if has_y else False
+            if x_is_continuous and not y_is_continuous:
+                orientation = "h"
+            if y_is_continuous and not x_is_continuous:
+                orientation = "v"
+
+        if orientation is None:
+            orientation = "v"
+
         self.orientation = orientation
-        self.barnorm = self._user_barnorm
+        args["orientation"] = orientation
 
         if orientation == "v":
             self.source_column = args.get("y")
@@ -749,14 +623,41 @@ class AggregationPlan:
             self.source_column = args.get("x")
             self.value_role = "x"
 
-        self._apply_pending_count()
+        self.barnorm = args.get("barnorm")
 
-    def _resolve_ecdf(self, args, df):
-        orientation = self._ensure_orientation(args, df)
+    def _infer_ecdf(self, args):
+        ecdfnorm = args.get("ecdfnorm", "probability")
+        if ecdfnorm not in [None, "percent", "probability"]:
+            raise ValueError(
+                "`ecdfnorm` must be one of None, 'percent' or 'probability'. "
+                + "'%s' was provided." % ecdfnorm
+            )
+        args["histnorm"] = ecdfnorm
+        self.histnorm = ecdfnorm
+        self.histfunc = "sum"
+
+        has_x = args.get("x") is not None
+        has_y = args.get("y") is not None
+        orientation = args.get("orientation")
+
+        if orientation is None:
+            if has_y and not has_x:
+                orientation = "h"
+
+        if orientation is None and has_x and has_y:
+            df = args["data_frame"]
+            x_is_continuous = _is_continuous(df, args["x"]) if has_x else False
+            y_is_continuous = _is_continuous(df, args["y"]) if has_y else False
+            if x_is_continuous and not y_is_continuous:
+                orientation = "h"
+            if y_is_continuous and not x_is_continuous:
+                orientation = "v"
+
+        if orientation is None:
+            orientation = "v"
+
         self.orientation = orientation
-
-        self.histnorm = args.get("histnorm")
-        self.histfunc = args.get("histfunc")
+        args["orientation"] = orientation
 
         if orientation == "v":
             self.source_column = args.get("x")
@@ -765,58 +666,24 @@ class AggregationPlan:
             self.source_column = args.get("y")
             self.value_role = "x"
 
-        self._apply_pending_count()
-
-    def _apply_pending_count(self):
-        if self._pending_count is not None:
-            self.needs_count_column = True
-            self.count_column_name = self._pending_count["count_name"]
-            self.source_column = self.count_column_name
-            if self.chart_kind == AggregationChartKind.BAR:
-                self.histfunc = "count"
-            self._pending_count = None
-
-    # ------------------------------------------------------------------
-    # Consumer: aggregation role check
-    # ------------------------------------------------------------------
-    def is_aggregation_role(self, role):
-        if role is None or not self._resolved:
-            return False
+    def update_args_and_patches(self, args, trace_patch, layout_patch):
         if self.chart_kind == AggregationChartKind.HISTOGRAM_1D:
-            return (role == "x" and self.orientation == "h") or (
-                role == "y" and self.orientation == "v"
-            )
-        if self.chart_kind == AggregationChartKind.HISTOGRAM_2D:
-            return role == "z"
-        if self.chart_kind == AggregationChartKind.BAR:
-            return self.needs_count_column and role == self.value_role
-        if self.chart_kind == AggregationChartKind.ECDF:
-            return (role == "x" and self.orientation == "h") or (
-                role == "y" and self.orientation == "v"
-            )
-        return False
-
-    # ------------------------------------------------------------------
-    # Consumer: trace parameters
-    # ------------------------------------------------------------------
-    def apply_to_trace_patch(self, trace_patch, args):
-        if self.chart_kind == AggregationChartKind.HISTOGRAM_1D:
-            self._apply_histogram_1d_trace(trace_patch, args)
+            self._update_histogram_1d_args(args, trace_patch, layout_patch)
         elif self.chart_kind == AggregationChartKind.HISTOGRAM_2D:
-            self._apply_histogram_2d_trace(trace_patch, args)
+            self._update_histogram_2d_args(args, trace_patch)
         elif self.chart_kind == AggregationChartKind.BAR:
-            self._apply_bar_trace(trace_patch, args)
+            self._update_bar_args(args, trace_patch, layout_patch)
 
-        self._apply_texttemplate(trace_patch)
+        args["_aggregation_plan"] = self
 
-    def _apply_histogram_1d_trace(self, trace_patch, args):
+    def _update_histogram_1d_args(self, args, trace_patch, layout_patch):
         orientation = self.orientation
         nbins = args.get("nbins")
 
-        if self.histfunc is not None:
-            trace_patch["histfunc"] = self.histfunc
-        if self.histnorm is not None:
-            trace_patch["histnorm"] = self.histnorm
+        if "histfunc" in args and args["histfunc"] is not None:
+            trace_patch["histfunc"] = args["histfunc"]
+        if "histnorm" in args and args["histnorm"] is not None:
+            trace_patch["histnorm"] = args["histnorm"]
         if "cumulative" in args:
             trace_patch["cumulative"] = dict(enabled=args["cumulative"])
 
@@ -825,11 +692,18 @@ class AggregationPlan:
         trace_patch["bingroup"] = "x" if orientation == "v" else "y"
         trace_patch["orientation"] = orientation
 
-    def _apply_histogram_2d_trace(self, trace_patch, args):
-        if self.histfunc is not None:
-            trace_patch["histfunc"] = self.histfunc
-        if self.histnorm is not None:
-            trace_patch["histnorm"] = self.histnorm
+        if "barmode" in args:
+            layout_patch["barmode"] = args["barmode"]
+        if "barnorm" in args and args["barnorm"] is not None:
+            layout_patch["barnorm"] = args["barnorm"]
+
+        self._update_texttemplate(trace_patch, args)
+
+    def _update_histogram_2d_args(self, args, trace_patch):
+        if "histfunc" in args and args["histfunc"] is not None:
+            trace_patch["histfunc"] = args["histfunc"]
+        if "histnorm" in args and args["histnorm"] is not None:
+            trace_patch["histnorm"] = args["histnorm"]
         if "nbinsx" in args:
             trace_patch["nbinsx"] = args["nbinsx"]
         if "nbinsy" in args:
@@ -837,11 +711,17 @@ class AggregationPlan:
         trace_patch["xbingroup"] = "x"
         trace_patch["ybingroup"] = "y"
 
-    def _apply_bar_trace(self, trace_patch, args):
+        self._update_texttemplate(trace_patch, args)
+
+    def _update_bar_args(self, args, trace_patch, layout_patch):
         trace_patch["orientation"] = self.orientation
         trace_patch["textposition"] = "auto"
+        if "barmode" in args:
+            layout_patch["barmode"] = args["barmode"]
 
-    def _apply_texttemplate(self, trace_patch):
+        self._update_texttemplate(trace_patch, args)
+
+    def _update_texttemplate(self, trace_patch, args):
         if self.text_auto is False or self.text_auto is None:
             return
 
@@ -857,30 +737,11 @@ class AggregationPlan:
         else:
             trace_patch["texttemplate"] = "%{" + letter + ":" + str(self.text_auto) + "}"
 
-    # ------------------------------------------------------------------
-    # Consumer: layout parameters
-    # ------------------------------------------------------------------
-    def apply_to_layout_patch(self, layout_patch, args):
-        if self.chart_kind in [
-            AggregationChartKind.HISTOGRAM_1D,
-            AggregationChartKind.BAR,
-        ]:
-            if "barmode" in args:
-                layout_patch["barmode"] = args["barmode"]
-            if self.barnorm is not None:
-                layout_patch["barnorm"] = self.barnorm
-
-    # ------------------------------------------------------------------
-    # Consumer: labels
-    # ------------------------------------------------------------------
-    def get_label(self, args, role):
-        if not self.is_aggregation_role(role):
+    def compute_display_label(self, args, role):
+        if not self._is_aggregation_role(role):
             col = args.get(role) if (role in args and args.get(role) is not None) else None
             return get_label(args, col)
 
-        return self._compute_aggregation_label(args)
-
-    def _compute_aggregation_label(self, args):
         original_label = get_label(args, self.source_column) if self.source_column else ""
         histfunc = self.histfunc or "count"
 
@@ -918,28 +779,35 @@ class AggregationPlan:
 
         return label
 
-    def get_hover_key(self, args, attr_name):
-        if self.is_aggregation_role(attr_name):
-            label_args = {"labels": args.get("labels", {}), "_col_map": args.get("_col_map", {})}
-            plan = AggregationPlan(
-                chart_kind=self.chart_kind,
-                source_column=self.source_column,
-                histfunc=self.histfunc,
-                histnorm=self.histnorm,
-                barnorm=self.barnorm,
-                orientation=self.orientation,
-                value_role=self.value_role,
-                needs_count_column=self.needs_count_column,
-                count_column_name=self.count_column_name,
+    def _is_aggregation_role(self, role):
+        if self.chart_kind == AggregationChartKind.HISTOGRAM_1D:
+            return (role == "x" and self.orientation == "h") or (
+                role == "y" and self.orientation == "v"
             )
-            return plan._compute_aggregation_label(label_args), "%%{%s}" % attr_name
+        if self.chart_kind == AggregationChartKind.HISTOGRAM_2D:
+            return role == "z"
+        if self.chart_kind == AggregationChartKind.BAR:
+            if self.needs_count_column:
+                return role == self.value_role
+            return False
+        if self.chart_kind == AggregationChartKind.ECDF:
+            return (role == "x" and self.orientation == "h") or (
+                role == "y" and self.orientation == "v"
+            )
+        return False
+
+    def get_hover_mapping_key(self, attr_name):
+        if self._is_aggregation_role(attr_name):
+            return self.compute_display_label(
+                {"labels": {}, "_col_map": {}}, attr_name
+            ), "%%{%s}" % attr_name
         return None, None
 
-    # ------------------------------------------------------------------
-    # Registration
-    # ------------------------------------------------------------------
-    def register_in_args(self, args):
-        args["_aggregation_plan"] = self
+    def mark_count_column_needed(self, count_column_name):
+        self.needs_count_column = True
+        self.count_column_name = count_column_name
+        self.source_column = count_column_name
+        self.histfunc = "sum"
 
 
 class NamingContext:
@@ -1132,8 +1000,8 @@ def _generate_temporary_column_name(n_bytes, columns) -> str:
 
 def get_decorated_label(args, column, role):
     aggregation_plan = args.get("_aggregation_plan")
-    if aggregation_plan is not None and aggregation_plan.is_aggregation_role(role):
-        return aggregation_plan.get_label(args, role)
+    if aggregation_plan is not None:
+        return aggregation_plan.compute_display_label(args, role)
 
     original_label = label = get_label(args, column)
     if "histfunc" in args and (
@@ -1222,35 +1090,25 @@ def make_mapping(args, variable):
     )
 
 
-def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
-    """Populates a dict with arguments to update trace
+def _bind_trace_data(args, trace_spec, trace_data):
+    """Phase 1: Data Binding
 
-    Parameters
-    ----------
-    args : dict
-        args to be used for the trace
-    trace_spec : NamedTuple
-        which kind of trace to be used (has constructor, marginal etc.
-        attributes)
-    trace_data : pandas DataFrame
-        data
-    mapping_labels : dict
-        to be used for hovertemplate
-    sizeref : float
-        marker sizeref
-
-    Returns
-    -------
-    trace_patch : dict
-        dict to be used to update trace
-    fit_results : dict
-        fit information to be used for trendlines
+    Extracts relevant data columns from trace_data and populates mapping_labels
+    for hover template generation. Handles all direct data attributes like x, y, z,
+    custom_data, hover_name, hover_data, dimensions, etc.
+    Does NOT process 'size', 'color', or 'trendline' attributes - those are handled
+    in other phases.
     """
     trace_data: nw.DataFrame
     df: nw.DataFrame = args["data_frame"]
 
     def _rc(name):
-        return _resolve_col(args, name)
+        if name is None:
+            return name
+        resolved = _resolve_col(args, name)
+        if resolved is None and isinstance(name, str):
+            return name
+        return resolved
 
     def _rc_list(lst):
         if lst is None:
@@ -1259,15 +1117,16 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
             return _rc(lst)
         return [_rc(c) for c in lst]
 
-    if "line_close" in args and args["line_close"]:
-        trace_data = nw.concat([trace_data, trace_data.head(1)], how="vertical")
+    binding = TraceDataBinding(mapping_labels=OrderedDict())
+    skip_attrs = {"size", "color", "trendline"}
 
-    trace_patch = trace_spec.trace_patch.copy() or {}
-    fit_results = None
-    hover_header = ""
     for attr_name in trace_spec.attrs:
+        if attr_name in skip_attrs:
+            continue
+
         attr_value = args[attr_name]
         attr_label = get_decorated_label(args, attr_value, attr_name)
+
         if attr_name == "dimensions":
             dims = [
                 (name, trace_data.get_column(name))
@@ -1281,121 +1140,38 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
                     <= args["dimensions_max_cardinality"]
                 )
             ]
-            trace_patch["dimensions"] = [
+            binding.data["dimensions"] = [
                 dict(label=get_label(args, name), values=column)
                 for (name, column) in dims
             ]
             if trace_spec.constructor == go.Splom:
-                for d in trace_patch["dimensions"]:
+                for d in binding.data["dimensions"]:
                     d["axis"] = dict(matches=True)
-                mapping_labels["%{xaxis.title.text}"] = "%{x}"
-                mapping_labels["%{yaxis.title.text}"] = "%{y}"
-
+                binding.mapping_labels["%{xaxis.title.text}"] = "%{x}"
+                binding.mapping_labels["%{yaxis.title.text}"] = "%{y}"
         elif attr_value is not None:
-            if attr_name == "size":
-                if "marker" not in trace_patch:
-                    trace_patch["marker"] = dict()
-                trace_patch["marker"]["size"] = trace_data.get_column(_rc(attr_value))
-                trace_patch["marker"]["sizemode"] = "area"
-                trace_patch["marker"]["sizeref"] = sizeref
-                mapping_labels[attr_label] = "%{marker.size}"
-            elif attr_name == "marginal_x":
+            if attr_name == "marginal_x":
                 if trace_spec.constructor == go.Histogram:
-                    mapping_labels["count"] = "%{y}"
+                    binding.mapping_labels["count"] = "%{y}"
             elif attr_name == "marginal_y":
                 if trace_spec.constructor == go.Histogram:
-                    mapping_labels["count"] = "%{x}"
-            elif attr_name == "trendline":
-                if (
-                    args["x"]
-                    and args["y"]
-                    and len(
-                        trace_data.select(nw.col(_rc(args["x"]), _rc(args["y"]))).drop_nulls()
-                    )
-                    > 1
-                ):
-                    x_col = _rc(args["x"])
-                    y_col = _rc(args["y"])
-                    sorted_trace_data = trace_data.sort(by=x_col, nulls_last=True)
-                    y = sorted_trace_data.get_column(y_col)
-                    x = sorted_trace_data.get_column(x_col)
-
-                    if x.dtype == nw.Datetime or x.dtype == nw.Date:
-                        # convert to unix epoch seconds
-                        x = _to_unix_epoch_seconds(x)
-                    elif not x.dtype.is_numeric():
-                        try:
-                            x = x.cast(nw.Float64())
-                        except ValueError:
-                            raise ValueError(
-                                "Could not convert value of 'x' ('%s') into a numeric type. "
-                                "If 'x' contains stringified dates, please convert to a datetime column."
-                                % args["x"]
-                            )
-
-                    if not y.dtype.is_numeric():
-                        try:
-                            y = y.cast(nw.Float64())
-                        except ValueError:
-                            raise ValueError(
-                                "Could not convert value of 'y' into a numeric type."
-                            )
-
-                    # preserve original values of "x" in case they're dates
-                    # otherwise numpy/pandas can mess with the timezones
-                    # NB this means trendline functions must output one-to-one with the input series
-                    # i.e. we can't do resampling, because then the X values might not line up!
-                    non_missing = ~(x.is_null() | y.is_null())
-                    trace_patch["x"] = sorted_trace_data.filter(non_missing).get_column(
-                        x_col
-                    )
-                    if (
-                        trace_patch["x"].dtype == nw.Datetime
-                        and trace_patch["x"].dtype.time_zone is not None
-                    ):
-                        # Remove time zone so that local time is displayed
-                        trace_patch["x"] = (
-                            trace_patch["x"].dt.replace_time_zone(None).to_numpy()
-                        )
-                    else:
-                        trace_patch["x"] = trace_patch["x"].to_numpy()
-
-                    trendline_function = trendline_functions[attr_value]
-                    y_out, hover_header, fit_results = trendline_function(
-                        args["trendline_options"],
-                        sorted_trace_data.get_column(x_col),  # narwhals series
-                        x.to_numpy(),  # numpy array
-                        y.to_numpy(),  # numpy array
-                        args["x"],
-                        args["y"],
-                        non_missing.to_numpy(),  # numpy array
-                    )
-                    assert len(y_out) == len(trace_patch["x"]), (
-                        "missing-data-handling failure in trendline code"
-                    )
-                    trace_patch["y"] = y_out
-                    mapping_labels[get_label(args, args["x"])] = "%{x}"
-                    mapping_labels[get_label(args, args["y"])] = "%{y} <b>(trend)</b>"
+                    binding.mapping_labels["count"] = "%{x}"
             elif attr_name.startswith("error"):
                 error_xy = attr_name[:7]
                 arr = "arrayminus" if attr_name.endswith("minus") else "array"
-                if error_xy not in trace_patch:
-                    trace_patch[error_xy] = {}
-                trace_patch[error_xy][arr] = trace_data.get_column(_rc(attr_value))
+                if error_xy not in binding.data:
+                    binding.data[error_xy] = {}
+                binding.data[error_xy][arr] = trace_data.get_column(_rc(attr_value))
             elif attr_name == "custom_data":
                 if len(attr_value) > 0:
-                    # here we store a data frame in customdata, and it's serialized
-                    # as a list of row lists, which is what we want
-                    trace_patch["customdata"] = trace_data.select(nw.col(_rc_list(attr_value)))
+                    binding.customdata = trace_data.select(nw.col(_rc_list(attr_value)))
             elif attr_name == "hover_name":
                 if trace_spec.constructor not in [
                     go.Histogram,
                     go.Histogram2d,
                     go.Histogram2dContour,
                 ]:
-                    trace_patch["hovertext"] = trace_data.get_column(_rc(attr_value))
-                    if hover_header == "":
-                        hover_header = "<b>%{hovertext}</b><br><br>"
+                    binding.hovertext = trace_data.get_column(_rc(attr_value))
             elif attr_name == "hover_data":
                 if trace_spec.constructor not in [
                     go.Histogram,
@@ -1420,87 +1196,30 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
                             position = len(customdata_cols)
                             customdata_cols.append(col)
                         attr_label_col = get_decorated_label(args, col, None)
-                        mapping_labels[attr_label_col] = "%%{customdata[%d]}" % (
+                        binding.mapping_labels[attr_label_col] = "%%{customdata[%d]}" % (
                             position
                         )
-
                     if len(customdata_cols) > 0:
-                        # here we store a data frame in customdata, and it's serialized
-                        # as a list of row lists, which is what we want
-
-                        # dict.fromkeys(customdata_cols) allows to deduplicate column
-                        # names, yet maintaining the original order.
-                        trace_patch["customdata"] = trace_data.select(
+                        binding.customdata = trace_data.select(
                             *[nw.col(_rc(c)) for c in dict.fromkeys(customdata_cols)]
                         )
-            elif attr_name == "color":
-                if trace_spec.constructor in [
-                    go.Choropleth,
-                    go.Choroplethmap,
-                    go.Choroplethmapbox,
-                ]:
-                    trace_patch["z"] = trace_data.get_column(_rc(attr_value))
-                    trace_patch["coloraxis"] = "coloraxis1"
-                    mapping_labels[attr_label] = "%{z}"
-                elif trace_spec.constructor in [
-                    go.Sunburst,
-                    go.Treemap,
-                    go.Icicle,
-                    go.Pie,
-                    go.Funnelarea,
-                ]:
-                    if "marker" not in trace_patch:
-                        trace_patch["marker"] = dict()
-
-                    if args.get("color_is_continuous"):
-                        trace_patch["marker"]["colors"] = trace_data.get_column(
-                            _rc(attr_value)
-                        )
-                        trace_patch["marker"]["coloraxis"] = "coloraxis1"
-                        mapping_labels[attr_label] = "%{color}"
-                    else:
-                        trace_patch["marker"]["colors"] = []
-                        if args["color_discrete_map"] is not None:
-                            mapping = args["color_discrete_map"].copy()
-                        else:
-                            mapping = {}
-                        for cat in trace_data.get_column(_rc(attr_value)).to_list():
-                            # although trace_data.get_column(attr_value) is a Narwhals
-                            # Series, which is an iterable, explicitly calling a to_list()
-                            # makes sure that the elements we loop over are python objects
-                            # in all cases, since depending on the backend this may not be
-                            # the case (e.g. PyArrow)
-                            if mapping.get(cat) is None:
-                                mapping[cat] = args["color_discrete_sequence"][
-                                    len(mapping) % len(args["color_discrete_sequence"])
-                                ]
-                            trace_patch["marker"]["colors"].append(mapping[cat])
-                else:
-                    colorable = "marker"
-                    if trace_spec.constructor in [go.Parcats, go.Parcoords]:
-                        colorable = "line"
-                    if colorable not in trace_patch:
-                        trace_patch[colorable] = dict()
-                    trace_patch[colorable]["color"] = trace_data.get_column(_rc(attr_value))
-                    trace_patch[colorable]["coloraxis"] = "coloraxis1"
-                    mapping_labels[attr_label] = "%%{%s.color}" % colorable
             elif attr_name == "animation_group":
-                trace_patch["ids"] = trace_data.get_column(_rc(attr_value))
+                binding.data["ids"] = trace_data.get_column(_rc(attr_value))
             elif attr_name == "locations":
-                trace_patch[attr_name] = trace_data.get_column(_rc(attr_value))
-                mapping_labels[attr_label] = "%{location}"
+                binding.data[attr_name] = trace_data.get_column(_rc(attr_value))
+                binding.mapping_labels[attr_label] = "%{location}"
             elif attr_name == "values":
-                trace_patch[attr_name] = trace_data.get_column(_rc(attr_value))
+                binding.data[attr_name] = trace_data.get_column(_rc(attr_value))
                 _label = "value" if attr_label == "values" else attr_label
-                mapping_labels[_label] = "%{value}"
+                binding.mapping_labels[_label] = "%{value}"
             elif attr_name == "parents":
-                trace_patch[attr_name] = trace_data.get_column(_rc(attr_value))
+                binding.data[attr_name] = trace_data.get_column(_rc(attr_value))
                 _label = "parent" if attr_label == "parents" else attr_label
-                mapping_labels[_label] = "%{parent}"
+                binding.mapping_labels[_label] = "%{parent}"
             elif attr_name == "ids":
-                trace_patch[attr_name] = trace_data.get_column(_rc(attr_value))
+                binding.data[attr_name] = trace_data.get_column(_rc(attr_value))
                 _label = "id" if attr_label == "ids" else attr_label
-                mapping_labels[_label] = "%{id}"
+                binding.mapping_labels[_label] = "%{id}"
             elif attr_name == "names":
                 if trace_spec.constructor in [
                     go.Sunburst,
@@ -1509,39 +1228,328 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
                     go.Pie,
                     go.Funnelarea,
                 ]:
-                    trace_patch["labels"] = trace_data.get_column(_rc(attr_value))
+                    binding.data["labels"] = trace_data.get_column(_rc(attr_value))
                     _label = "label" if attr_label == "names" else attr_label
-                    mapping_labels[_label] = "%{label}"
+                    binding.mapping_labels[_label] = "%{label}"
                 else:
-                    trace_patch[attr_name] = trace_data.get_column(_rc(attr_value))
+                    binding.data[attr_name] = trace_data.get_column(_rc(attr_value))
             else:
-                trace_patch[attr_name] = trace_data.get_column(_rc(attr_value))
-                mapping_labels[attr_label] = "%%{%s}" % attr_name
+                binding.data[attr_name] = trace_data.get_column(_rc(attr_value))
+                binding.mapping_labels[attr_label] = "%%{%s}" % attr_name
         elif (trace_spec.constructor == go.Histogram and attr_name in ["x", "y"]) or (
             trace_spec.constructor in [go.Histogram2d, go.Histogram2dContour]
             and attr_name == "z"
         ):
-            # ensure that stuff like "count" gets into the hoverlabel
             if attr_label is not None:
-                mapping_labels[attr_label] = "%%{%s}" % attr_name
-    if trace_spec.constructor not in [go.Parcoords, go.Parcats]:
-        # Modify mapping_labels according to hover_data keys
-        # if hover_data is a dict
-        mapping_labels_copy = OrderedDict(mapping_labels)
-        if args["hover_data"] and isinstance(args["hover_data"], dict):
-            for k, v in mapping_labels.items():
-                # We need to invert the mapping here
-                k_args = invert_label(args, k)
-                if k_args in args["hover_data"]:
-                    formatter = args["hover_data"][k_args][0]
-                    if formatter:
-                        if isinstance(formatter, str):
-                            mapping_labels_copy[k] = v.replace("}", "%s}" % formatter)
+                binding.mapping_labels[attr_label] = "%%{%s}" % attr_name
+
+    return binding
+
+
+def _compute_trendline_fit(args, trace_data):
+    """Phase 2: Trendline Fit Computation
+
+    Computes trendline fit for trendline traces. Handles data type conversions,
+    sorting, missing value filtering, and calls the appropriate trendline function.
+    """
+    trace_data: nw.DataFrame
+
+    def _rc(name):
+        if name is None:
+            return name
+        resolved = _resolve_col(args, name)
+        if resolved is None and isinstance(name, str):
+            return name
+        return resolved
+
+    if not (args["x"] and args["y"]):
+        return None
+
+    if len(
+        trace_data.select(nw.col(_rc(args["x"]), _rc(args["y"]))).drop_nulls()
+    ) <= 1:
+        return None
+
+    x_col = _rc(args["x"])
+    y_col = _rc(args["y"])
+    sorted_trace_data = trace_data.sort(by=x_col, nulls_last=True)
+    y = sorted_trace_data.get_column(y_col)
+    x = sorted_trace_data.get_column(x_col)
+
+    if x.dtype == nw.Datetime or x.dtype == nw.Date:
+        x = _to_unix_epoch_seconds(x)
+    elif not x.dtype.is_numeric():
+        try:
+            x = x.cast(nw.Float64())
+        except ValueError:
+            raise ValueError(
+                "Could not convert value of 'x' ('%s') into a numeric type. "
+                "If 'x' contains stringified dates, please convert to a datetime column."
+                % args["x"]
+            )
+
+    if not y.dtype.is_numeric():
+        try:
+            y = y.cast(nw.Float64())
+        except ValueError:
+            raise ValueError(
+                "Could not convert value of 'y' into a numeric type."
+            )
+
+    non_missing = ~(x.is_null() | y.is_null())
+    x_data = sorted_trace_data.filter(non_missing).get_column(x_col)
+
+    if (
+        x_data.dtype == nw.Datetime
+        and x_data.dtype.time_zone is not None
+    ):
+        x_data = x_data.dt.replace_time_zone(None).to_numpy()
+    else:
+        x_data = x_data.to_numpy()
+
+    trendline_function = trendline_functions[args["trendline"]]
+    y_out, hover_header, fit_results = trendline_function(
+        args["trendline_options"],
+        sorted_trace_data.get_column(x_col),
+        x.to_numpy(),
+        y.to_numpy(),
+        args["x"],
+        args["y"],
+        non_missing.to_numpy(),
+    )
+    assert len(y_out) == len(x_data), (
+        "missing-data-handling failure in trendline code"
+    )
+
+    return TrendlineFitResult(
+        x_data=x_data,
+        y_data=y_out,
+        fit_results=fit_results,
+        hover_header=hover_header,
+        x_label=get_label(args, args["x"]),
+        y_label=get_label(args, args["y"]),
+    )
+
+
+def _apply_visual_patches(args, trace_spec, trace_data, sizeref):
+    """Phase 3: Visual Attribute Patching
+
+    Applies visual configuration patches including marker size/color,
+    line dash/pattern, color mapping, and other visual attributes.
+    Only processes 'size' and 'color' attributes.
+    """
+    trace_data: nw.DataFrame
+
+    def _rc(name):
+        if name is None:
+            return name
+        resolved = _resolve_col(args, name)
+        if resolved is None and isinstance(name, str):
+            return name
+        return resolved
+
+    visual_config = TraceVisualConfig()
+    visual_attrs = {"size", "color"}
+
+    for attr_name in trace_spec.attrs:
+        if attr_name not in visual_attrs:
+            continue
+
+        attr_value = args[attr_name]
+        if attr_value is None:
+            continue
+
+        attr_label = get_decorated_label(args, attr_value, attr_name)
+
+        if attr_name == "size":
+            visual_config.marker["size"] = trace_data.get_column(_rc(attr_value))
+            visual_config.marker["sizemode"] = "area"
+            visual_config.marker["sizeref"] = sizeref
+            visual_config.extra["_size_mapping_label"] = (attr_label, "%{marker.size}")
+        elif attr_name == "color":
+            if trace_spec.constructor in [
+                go.Choropleth,
+                go.Choroplethmap,
+                go.Choroplethmapbox,
+            ]:
+                visual_config.extra["z"] = trace_data.get_column(_rc(attr_value))
+                visual_config.extra["coloraxis"] = "coloraxis1"
+                visual_config.extra["_color_mapping_label"] = (attr_label, "%{z}")
+            elif trace_spec.constructor in [
+                go.Sunburst,
+                go.Treemap,
+                go.Icicle,
+                go.Pie,
+                go.Funnelarea,
+            ]:
+                if args.get("color_is_continuous"):
+                    visual_config.marker["colors"] = trace_data.get_column(
+                        _rc(attr_value)
+                    )
+                    visual_config.marker["coloraxis"] = "coloraxis1"
+                    visual_config.extra["_color_mapping_label"] = (attr_label, "%{color}")
+                else:
+                    visual_config.marker["colors"] = []
+                    if args["color_discrete_map"] is not None:
+                        mapping = args["color_discrete_map"].copy()
                     else:
-                        _ = mapping_labels_copy.pop(k)
-        hover_lines = [k + "=" + v for k, v in mapping_labels_copy.items()]
-        trace_patch["hovertemplate"] = hover_header + "<br>".join(hover_lines)
-        trace_patch["hovertemplate"] += "<extra></extra>"
+                        mapping = {}
+                    for cat in trace_data.get_column(_rc(attr_value)).to_list():
+                        if mapping.get(cat) is None:
+                            mapping[cat] = args["color_discrete_sequence"][
+                                len(mapping) % len(args["color_discrete_sequence"])
+                            ]
+                        visual_config.marker["colors"].append(mapping[cat])
+            else:
+                colorable = "marker"
+                if trace_spec.constructor in [go.Parcats, go.Parcoords]:
+                    colorable = "line"
+                if colorable == "marker":
+                    visual_config.marker["color"] = trace_data.get_column(_rc(attr_value))
+                    visual_config.marker["coloraxis"] = "coloraxis1"
+                else:
+                    visual_config.line["color"] = trace_data.get_column(_rc(attr_value))
+                    visual_config.line["coloraxis"] = "coloraxis1"
+                visual_config.extra["_color_mapping_label"] = (
+                    attr_label,
+                    "%%{%s.color}" % colorable,
+                )
+
+    return visual_config
+
+
+def _build_hover_config(args, trace_spec, mapping_labels, hover_header):
+    """Phase 4: Hover/Text Generation
+
+    Builds the hovertemplate from mapping_labels, applies hover_data formatters,
+    and constructs the final hover configuration.
+    """
+    if trace_spec.constructor in [go.Parcoords, go.Parcats]:
+        return TraceHoverConfig(
+            hover_header=hover_header,
+            mapping_labels=mapping_labels,
+        )
+
+    mapping_labels_copy = OrderedDict(mapping_labels)
+    if args["hover_data"] and isinstance(args["hover_data"], dict):
+        for k, v in mapping_labels.items():
+            k_args = invert_label(args, k)
+            if k_args in args["hover_data"]:
+                formatter = args["hover_data"][k_args][0]
+                if formatter:
+                    if isinstance(formatter, str):
+                        mapping_labels_copy[k] = v.replace("}", "%s}" % formatter)
+                else:
+                    _ = mapping_labels_copy.pop(k)
+
+    hover_lines = [k + "=" + v for k, v in mapping_labels_copy.items()]
+    hovertemplate = hover_header + "<br>".join(hover_lines) + "<extra></extra>"
+
+    return TraceHoverConfig(
+        hover_header=hover_header,
+        hovertemplate=hovertemplate,
+        mapping_labels=mapping_labels_copy,
+    )
+
+
+def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
+    """Orchestrates the trace build process through 4 phases:
+    1. Data Binding: Extract data columns from trace_data
+    2. Trendline Fit: Compute trendline fit if needed
+    3. Visual Patches: Apply marker/line color, size, etc.
+    4. Hover Config: Build hovertemplate and text configuration
+
+    Parameters
+    ----------
+    args : dict
+        args to be used for the trace
+    trace_spec : NamedTuple
+        which kind of trace to be used (has constructor, marginal etc.
+        attributes)
+    trace_data : pandas DataFrame
+        data
+    mapping_labels : dict
+        to be used for hovertemplate
+    sizeref : float
+        marker sizeref
+
+    Returns
+    -------
+    trace_patch : dict
+        dict to be used to update trace
+    fit_results : dict
+        fit information to be used for trendlines
+    """
+    trace_data: nw.DataFrame
+
+    if "line_close" in args and args["line_close"]:
+        trace_data = nw.concat([trace_data, trace_data.head(1)], how="vertical")
+
+    trace_patch = trace_spec.trace_patch.copy() or {}
+    fit_results = None
+    hover_header = ""
+    combined_mapping_labels = OrderedDict(mapping_labels)
+
+    # Phase 1: Data Binding
+    binding = _bind_trace_data(args, trace_spec, trace_data)
+    trace_patch.update(binding.data)
+    if binding.customdata is not None:
+        trace_patch["customdata"] = binding.customdata
+    if binding.hovertext is not None:
+        trace_patch["hovertext"] = binding.hovertext
+        hover_header = "<b>%{hovertext}</b><br><br>"
+    combined_mapping_labels.update(binding.mapping_labels)
+
+    # Phase 2: Trendline Fit Computation
+    if "trendline" in trace_spec.attrs and args["trendline"] is not None:
+        trendline_result = _compute_trendline_fit(args, trace_data)
+        if trendline_result is not None:
+            trace_patch["x"] = trendline_result.x_data
+            trace_patch["y"] = trendline_result.y_data
+            fit_results = trendline_result.fit_results
+            hover_header = trendline_result.hover_header
+            combined_mapping_labels[trendline_result.x_label] = "%{x}"
+            combined_mapping_labels[trendline_result.y_label] = "%{y} <b>(trend)</b>"
+
+    # Phase 3: Visual Attribute Patching
+    visual_config = _apply_visual_patches(args, trace_spec, trace_data, sizeref)
+
+    if visual_config.marker:
+        if "marker" not in trace_patch:
+            trace_patch["marker"] = {}
+        trace_patch["marker"].update(visual_config.marker)
+    if visual_config.line:
+        if "line" not in trace_patch:
+            trace_patch["line"] = {}
+        trace_patch["line"].update(visual_config.line)
+    for error_key in ["error_x", "error_y", "error_z"]:
+        error_dict = getattr(visual_config, error_key)
+        if error_dict:
+            if error_key not in trace_patch:
+                trace_patch[error_key] = {}
+            trace_patch[error_key].update(error_dict)
+
+    for key, value in visual_config.extra.items():
+        if key == "_size_mapping_label":
+            combined_mapping_labels[value[0]] = value[1]
+        elif key == "_color_mapping_label":
+            combined_mapping_labels[value[0]] = value[1]
+        else:
+            trace_patch[key] = value
+
+    if "marker" in trace_patch and not trace_patch["marker"]:
+        del trace_patch["marker"]
+    if "line" in trace_patch and not trace_patch["line"]:
+        del trace_patch["line"]
+    for error_key in ["error_x", "error_y", "error_z"]:
+        if error_key in trace_patch and not trace_patch[error_key]:
+            del trace_patch[error_key]
+
+    # Phase 4: Hover/Text Generation
+    hover_config = _build_hover_config(args, trace_spec, combined_mapping_labels, hover_header)
+    if hover_config.hovertemplate:
+        trace_patch["hovertemplate"] = hover_config.hovertemplate
+
     return trace_patch, fit_results
 
 
@@ -2798,62 +2806,16 @@ def build_dataframe(args, constructor):
             _col_map[_semantic_value_name] = value_name
 
     count_name = _escape_col_name(df_output.columns, "count", [var_name, value_name])
-
-    aggregation_plan = args.get("_aggregation_plan")
-    if aggregation_plan is not None:
-        df_output = aggregation_plan.process_dataframe(
-            args,
-            df_output,
-            count_name,
-            wide_mode,
-            hist1d_orientation,
-            missing_bar_dim,
-            constructor,
-            orient_v if wide_mode else None,
-            value_name if wide_mode else None,
-        )
-    else:
-        if not wide_mode and missing_bar_dim and constructor == go.Bar:
-            other_dim = "x" if missing_bar_dim == "y" else "y"
-            if not _is_continuous(df_output, args[other_dim]):
-                args[missing_bar_dim] = count_name
-                df_output = df_output.with_columns(nw.lit(1).alias(count_name))
-                args["_count_column_created"] = count_name
-                args["_count_column_role"] = missing_bar_dim
-            else:
-                if args["orientation"] is None:
-                    args["orientation"] = "v" if missing_bar_dim == "x" else "h"
-
-        if wide_mode and constructor == go.Bar and not _is_continuous(df_output, value_name):
-            args["y" if orient_v else "x"] = count_name
+    if not wide_mode and missing_bar_dim and constructor == go.Bar:
+        other_dim = "x" if missing_bar_dim == "y" else "y"
+        if not _is_continuous(df_output, args[other_dim]):
+            args[missing_bar_dim] = count_name
             df_output = df_output.with_columns(nw.lit(1).alias(count_name))
             args["_count_column_created"] = count_name
-            args["_count_column_role"] = "y" if orient_v else "x"
-
-        if hist1d_orientation and constructor == go.Scatter:
-            if args["x"] is not None and args["y"] is not None:
-                args["histfunc"] = "sum"
-            elif args["x"] is None:
-                args["histfunc"] = None
-                args["orientation"] = "h"
-                args["x"] = count_name
-                df_output = df_output.with_columns(nw.lit(1).alias(count_name))
-                args["_count_column_created"] = count_name
-                args["_count_column_role"] = "x"
-            else:
-                args["histfunc"] = None
-                args["orientation"] = "v"
-                args["y"] = count_name
-                df_output = df_output.with_columns(nw.lit(1).alias(count_name))
-                args["_count_column_created"] = count_name
-                args["_count_column_role"] = "y"
-
-    if constructor in hist2d_types and aggregation_plan is None:
-        if args.get("z") is None:
-            args["z"] = count_name
-            df_output = df_output.with_columns(nw.lit(1).alias(count_name))
-            args["_count_column_created"] = count_name
-            args["_count_column_role"] = "z"
+            args["_count_column_role"] = missing_bar_dim
+        else:
+            if args["orientation"] is None:
+                args["orientation"] = "v" if missing_bar_dim == "x" else "h"
 
     if constructor in hist2d_types:
         del args["orientation"]
@@ -2949,6 +2911,10 @@ def build_dataframe(args, constructor):
                     args["color"] = _semantic_var_name
             else:
                 args["x" if orient_v else "y"] = _semantic_value_name
+                args["y" if orient_v else "x"] = count_name
+                df_output = df_output.with_columns(nw.lit(1).alias(count_name))
+                args["_count_column_created"] = count_name
+                args["_count_column_role"] = "y" if orient_v else "x"
                 if args["color"] is None and _semantic_var_name is not None:
                     args["color"] = _semantic_var_name
         elif constructor in [go.Violin, go.Box]:
@@ -2959,7 +2925,7 @@ def build_dataframe(args, constructor):
             )
             args["y" if orient_v else "x"] = _semantic_value_name
 
-    if aggregation_plan is None and hist1d_orientation and constructor == go.Scatter:
+    if hist1d_orientation and constructor == go.Scatter:
         if args["x"] is not None and args["y"] is not None:
             args["histfunc"] = "sum"
         elif args["x"] is None:
@@ -3387,34 +3353,32 @@ def infer_config(args, constructor, trace_patch, layout_patch):
         else:
             grouped_attrs.append("marker.pattern.shape")
 
-    aggregation_plan = args.get("_aggregation_plan")
+    aggregation_plan = AggregationPlan.infer_from_args(args, constructor)
 
-    if aggregation_plan is not None:
-        aggregation_plan.apply_to_trace_patch(trace_patch, args)
-        aggregation_plan.apply_to_layout_patch(layout_patch, args)
-    elif "orientation" in args:
-        has_x = args["x"] is not None
-        has_y = args["y"] is not None
-        if args["orientation"] is None:
-            if constructor in [go.Histogram, go.Scatter]:
-                if has_y and not has_x:
-                    args["orientation"] = "h"
-            elif constructor in [go.Violin, go.Box, go.Bar, go.Funnel]:
-                if has_x and not has_y:
-                    args["orientation"] = "h"
+    if "orientation" in args:
+        if aggregation_plan is None:
+            has_x = args["x"] is not None
+            has_y = args["y"] is not None
+            if args["orientation"] is None:
+                if constructor in [go.Histogram, go.Scatter]:
+                    if has_y and not has_x:
+                        args["orientation"] = "h"
+                elif constructor in [go.Violin, go.Box, go.Bar, go.Funnel]:
+                    if has_x and not has_y:
+                        args["orientation"] = "h"
 
-        if args["orientation"] is None and has_x and has_y:
-            x_is_continuous = _is_continuous(df, args["x"])
-            y_is_continuous = _is_continuous(df, args["y"])
-            if x_is_continuous and not y_is_continuous:
-                args["orientation"] = "h"
-            if y_is_continuous and not x_is_continuous:
+            if args["orientation"] is None and has_x and has_y:
+                x_is_continuous = _is_continuous(df, args["x"])
+                y_is_continuous = _is_continuous(df, args["y"])
+                if x_is_continuous and not y_is_continuous:
+                    args["orientation"] = "h"
+                if y_is_continuous and not x_is_continuous:
+                    args["orientation"] = "v"
+
+            if args["orientation"] is None:
                 args["orientation"] = "v"
 
-        if args["orientation"] is None:
-            args["orientation"] = "v"
-
-        trace_patch["orientation"] = args["orientation"]
+            trace_patch["orientation"] = args["orientation"]
 
         if constructor in [go.Violin, go.Box]:
             mode = "boxmode" if constructor == go.Box else "violinmode"
@@ -3426,14 +3390,10 @@ def infer_config(args, constructor, trace_patch, layout_patch):
             if layout_patch[mode] is None:
                 layout_patch[mode] = "group"
 
-    if aggregation_plan is not None and constructor in [
-        go.Histogram2d,
-        go.Densitymap,
-        go.Densitymapbox,
-    ]:
-        show_colorbar = True
-        trace_patch["coloraxis"] = "coloraxis1"
-    elif constructor in [go.Histogram2d, go.Densitymap, go.Densitymapbox]:
+    if aggregation_plan is not None:
+        aggregation_plan.update_args_and_patches(args, trace_patch, layout_patch)
+
+    if constructor in [go.Histogram2d, go.Densitymap, go.Densitymapbox]:
         show_colorbar = True
         trace_patch["coloraxis"] = "coloraxis1"
 
@@ -3614,15 +3574,7 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
 
     annotation_collector = AnnotationCollector()
 
-    aggregation_plan = AggregationPlan.capture_intent(args, constructor)
-    if aggregation_plan is not None:
-        aggregation_plan.register_in_args(args)
-
     args = build_dataframe(args, constructor)
-
-    aggregation_plan = args.get("_aggregation_plan")
-    if aggregation_plan is not None:
-        aggregation_plan.resolve(args)
     if constructor in [go.Treemap, go.Sunburst, go.Icicle] and args["path"] is not None:
         args = process_dataframe_hierarchy(args)
     if constructor in [go.Pie]:
