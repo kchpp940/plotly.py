@@ -2698,10 +2698,16 @@ def build_dataframe(args, constructor):
     if not wide_mode and missing_bar_dim and constructor == go.Bar:
         other_dim = "x" if missing_bar_dim == "y" else "y"
         if not _is_continuous(df_output, args[other_dim]):
-            args[missing_bar_dim] = count_name
-            df_output = df_output.with_columns(nw.lit(1).alias(count_name))
-            args["_count_column_created"] = count_name
-            args["_count_column_role"] = missing_bar_dim
+            aggregation_plan = args.get("_aggregation_plan")
+            if aggregation_plan is not None:
+                df_output = aggregation_plan.ensure_count_column(
+                    args, df_output, count_name, value_role=missing_bar_dim
+                )
+            else:
+                args[missing_bar_dim] = count_name
+                df_output = df_output.with_columns(nw.lit(1).alias(count_name))
+                args["_count_column_created"] = count_name
+                args["_count_column_role"] = missing_bar_dim
         else:
             if args["orientation"] is None:
                 args["orientation"] = "v" if missing_bar_dim == "x" else "h"
@@ -2800,10 +2806,19 @@ def build_dataframe(args, constructor):
                     args["color"] = _semantic_var_name
             else:
                 args["x" if orient_v else "y"] = _semantic_value_name
-                args["y" if orient_v else "x"] = count_name
-                df_output = df_output.with_columns(nw.lit(1).alias(count_name))
-                args["_count_column_created"] = count_name
-                args["_count_column_role"] = "y" if orient_v else "x"
+                aggregation_plan = args.get("_aggregation_plan")
+                if aggregation_plan is not None:
+                    df_output = aggregation_plan.ensure_count_column(
+                        args,
+                        df_output,
+                        count_name,
+                        value_role=("y" if orient_v else "x"),
+                    )
+                else:
+                    args["y" if orient_v else "x"] = count_name
+                    df_output = df_output.with_columns(nw.lit(1).alias(count_name))
+                    args["_count_column_created"] = count_name
+                    args["_count_column_role"] = "y" if orient_v else "x"
                 if args["color"] is None and _semantic_var_name is not None:
                     args["color"] = _semantic_var_name
         elif constructor in [go.Violin, go.Box]:
@@ -2817,20 +2832,41 @@ def build_dataframe(args, constructor):
     if hist1d_orientation and constructor == go.Scatter:
         if args["x"] is not None and args["y"] is not None:
             args["histfunc"] = "sum"
+            aggregation_plan = args.get("_aggregation_plan")
+            if aggregation_plan is not None:
+                aggregation_plan.histfunc = "sum"
         elif args["x"] is None:
             args["histfunc"] = None
             args["orientation"] = "h"
-            args["x"] = count_name
-            df_output = df_output.with_columns(nw.lit(1).alias(count_name))
-            args["_count_column_created"] = count_name
-            args["_count_column_role"] = "x"
+            aggregation_plan = args.get("_aggregation_plan")
+            if aggregation_plan is not None:
+                aggregation_plan.orientation = "h"
+                aggregation_plan.histfunc = None
+                df_output = aggregation_plan.ensure_count_column(
+                    args, df_output, count_name, value_role="x"
+                )
+                aggregation_plan.histfunc = None
+            else:
+                args["x"] = count_name
+                df_output = df_output.with_columns(nw.lit(1).alias(count_name))
+                args["_count_column_created"] = count_name
+                args["_count_column_role"] = "x"
         else:
             args["histfunc"] = None
             args["orientation"] = "v"
-            args["y"] = count_name
-            df_output = df_output.with_columns(nw.lit(1).alias(count_name))
-            args["_count_column_created"] = count_name
-            args["_count_column_role"] = "y"
+            aggregation_plan = args.get("_aggregation_plan")
+            if aggregation_plan is not None:
+                aggregation_plan.orientation = "v"
+                aggregation_plan.histfunc = None
+                df_output = aggregation_plan.ensure_count_column(
+                    args, df_output, count_name, value_role="y"
+                )
+                aggregation_plan.histfunc = None
+            else:
+                args["y"] = count_name
+                df_output = df_output.with_columns(nw.lit(1).alias(count_name))
+                args["_count_column_created"] = count_name
+                args["_count_column_role"] = "y"
 
     if no_color:
         args["color"] = None
@@ -3242,7 +3278,7 @@ def infer_config(args, constructor, trace_patch, layout_patch):
         else:
             grouped_attrs.append("marker.pattern.shape")
 
-    aggregation_plan = AggregationPlan.infer_from_args(args, constructor)
+    aggregation_plan = args.get("_aggregation_plan")
 
     if "orientation" in args:
         if aggregation_plan is None:
@@ -3280,7 +3316,8 @@ def infer_config(args, constructor, trace_patch, layout_patch):
                 layout_patch[mode] = "group"
 
     if aggregation_plan is not None:
-        aggregation_plan.update_args_and_patches(args, trace_patch, layout_patch)
+        aggregation_plan.apply_to_trace_patch(trace_patch, args)
+        aggregation_plan.apply_to_layout_patch(layout_patch, args)
 
     if constructor in [go.Histogram2d, go.Densitymap, go.Densitymapbox]:
         show_colorbar = True
@@ -3462,6 +3499,24 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
     apply_default_cascade(args, constructor=constructor)
 
     annotation_collector = AnnotationCollector()
+
+    aggregation_plan = None
+    if AggregationPlan._infer_chart_kind(constructor, args) is not None:
+        _original_df = args.get("data_frame")
+        if _original_df is not None and not isinstance(_original_df, nw.DataFrame):
+            try:
+                _tmp_df = nw.from_native(
+                    _original_df, eager_or_interchange_only=True, pass_through=True
+                )
+                if isinstance(_tmp_df, nw.DataFrame):
+                    args["data_frame"] = _tmp_df
+            except Exception:
+                pass
+        aggregation_plan = AggregationPlan.infer_from_args(args, constructor)
+        if aggregation_plan is not None:
+            aggregation_plan.register_in_args(args)
+        if _original_df is not None:
+            args["data_frame"] = _original_df
 
     args = build_dataframe(args, constructor)
     if constructor in [go.Treemap, go.Sunburst, go.Icicle] and args["path"] is not None:
