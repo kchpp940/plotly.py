@@ -7,7 +7,11 @@ from typing import Any, Dict, List, Optional, Union
 
 from ._special_inputs import IdentityMap, Constant, Range
 from .trendline_functions import ols, lowess, rolling, expanding, ewm
-from ._trace_builder import build_trace_spec
+from ._trace_builder import (
+    build_trace,
+    TraceBuildContext,
+    ResolvedAttr,
+)
 
 from _plotly_utils.basevalidators import ColorscaleValidator
 from plotly.colors import qualitative, sequential
@@ -1055,19 +1059,85 @@ def make_mapping(args, variable):
     )
 
 
-def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
-    """Thin wrapper: delegates all trace-building work to ``build_trace_spec``.
+def make_trace_build_context(args, trace_spec, trace_data, mapping_labels, sizeref):
+    """Build a fully pre-resolved TraceBuildContext from raw args.
 
-    Parameters mirror :func:`build_trace_spec`. Returns ``(trace_patch, fit_results)``.
+    This function lives in ``_core.py`` because it has full knowledge of:
+    - Column name resolution (``_resolve_col`` with shadowing fix)
+    - Decorated label computation (``get_decorated_label`` with aggregation)
+    - All the configuration keys in the args dict
+
+    The returned :class:`TraceBuildContext` is a *self-contained* input to
+    the trace builder – it never needs to look at ``args`` again and never
+    calls back into ``_core.py``.
     """
-    return build_trace_spec(
-        args,
-        trace_spec,
-        trace_data,
-        mapping_labels,
-        sizeref,
-        get_decorated_label,
+
+    # --- Step 1: resolve all attributes -------------------------------
+    extra_attrs = ["x", "y", "z", "base"]
+    all_attr_names = list(trace_spec.attrs) + [
+        a for a in extra_attrs if a not in trace_spec.attrs
+    ]
+
+    resolved_attrs: Dict[str, ResolvedAttr] = {}
+    for attr_name in all_attr_names:
+        raw_value = args.get(attr_name)
+
+        # Resolve column name (with the shadowing safeguard)
+        if isinstance(raw_value, list):
+            col_name = [
+                _resolve_col(args, c) if isinstance(c, str) else c
+                for c in raw_value
+            ]
+        elif raw_value is not None:
+            col_name = _resolve_col(args, raw_value)
+        else:
+            col_name = None
+
+        # Compute decorated display label
+        display_label = get_decorated_label(args, raw_value, attr_name)
+
+        resolved_attrs[attr_name] = ResolvedAttr(
+            attr_name=attr_name,
+            raw_value=raw_value,
+            col_name=col_name,
+            display_label=display_label,
+        )
+
+    # --- Step 2: extract config values that the builder needs --------
+    ctx = TraceBuildContext(
+        trace_data=trace_data,
+        trace_spec=trace_spec,
+        initial_mapping_labels=OrderedDict(mapping_labels),
+        sizeref=sizeref,
+        resolved_attrs=resolved_attrs,
+        labels=dict(args.get("labels") or {}),
+        dimensions_max_cardinality=args.get("dimensions_max_cardinality", 20),
+        trendline=args.get("trendline"),
+        trendline_options=args.get("trendline_options") or {},
+        color_is_continuous=bool(args.get("color_is_continuous")),
+        color_discrete_map=args.get("color_discrete_map"),
+        color_discrete_sequence=list(args.get("color_discrete_sequence") or []),
+        hover_data=args.get("hover_data"),
+        custom_data=args.get("custom_data"),
+        line_close=bool(args.get("line_close")),
     )
+    return ctx
+
+
+def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
+    """Build trace kwargs.
+
+    Constructs a fully pre-resolved :class:`TraceBuildContext` from the raw
+    args, then delegates all trace construction work to :func:`build_trace`
+    from ``_trace_builder.py``.
+
+    Returns ``(trace_patch, fit_results)``.
+    """
+    ctx = make_trace_build_context(
+        args, trace_spec, trace_data, mapping_labels, sizeref
+    )
+    result = build_trace(ctx)
+    return result.trace_patch, result.fit_results
 
 
 def configure_axes(args, constructor, fig, orders):

@@ -2,7 +2,12 @@
 
 Splits the Express -> graph_objects trace construction pipeline into clean phases
 with well-defined, structured intermediate objects. The only public entry point
-is ``build_trace_spec``.
+is ``build_trace``.
+
+This module is *purely computational*: it never touches the raw ``args`` dict
+and never calls back into ``_core.py``. All column names, display labels, and
+configuration values are pre-resolved by the caller and handed in via the
+:class:`TraceBuildContext` object.
 
 Pipeline:
     TraceBuildContext (pre-resolved input)
@@ -27,51 +32,12 @@ from .trendline_functions import ols, lowess, rolling, expanding, ewm
 
 
 # ---------------------------------------------------------------------------
-# Public helpers used by the Context (also re-used by _core.py historically)
+# Internal helpers (pure – no dependency on args dict or _core.py)
 # ---------------------------------------------------------------------------
 
 trendline_functions = dict(
     lowess=lowess, rolling=rolling, ewm=ewm, expanding=expanding, ols=ols
 )
-
-
-def _resolve_col(args, attr_name_or_col):
-    """Resolve a semantic column name to the actual DataFrame column name.
-
-    Wraps _resolve_col from the caller with the well-known "column name shadows
-    a parameter name" safeguard: if ``_resolve_col`` returns ``None`` but the
-    input was a plain string, we fall back to using that string directly as a
-    column name (the string IS the column name).
-    """
-    try:
-        col_map = args.get("_col_map", {})
-        if attr_name_or_col in col_map:
-            return col_map[attr_name_or_col]
-        if attr_name_or_col in args:
-            arg_val = args[attr_name_or_col]
-            if isinstance(arg_val, str) and arg_val in col_map:
-                return col_map[arg_val]
-            if arg_val is None and isinstance(attr_name_or_col, str):
-                return attr_name_or_col
-            return arg_val
-        return attr_name_or_col
-    except Exception:
-        return attr_name_or_col
-
-
-def _get_label(args, column):
-    try:
-        return args["labels"][column]
-    except Exception:
-        return column
-
-
-def _invert_label(args, column):
-    reversed_labels = {value: key for (key, value) in args["labels"].items()}
-    try:
-        return reversed_labels[column]
-    except Exception:
-        return column
 
 
 def _is_continuous(df: nw.DataFrame, col_name: str) -> bool:
@@ -96,99 +62,97 @@ def _to_unix_epoch_seconds(s: nw.Series) -> nw.Series:
     raise TypeError(f"Expected Date or Datetime, got {dtype}")
 
 
+def _invert_label(labels: Dict[str, str], column: str) -> str:
+    reversed_labels = {value: key for (key, value) in labels.items()}
+    try:
+        return reversed_labels[column]
+    except Exception:
+        return column
+
+
 # ---------------------------------------------------------------------------
 # Intermediate data structures
 # ---------------------------------------------------------------------------
 
 @dataclass
 class ResolvedAttr:
-    """A single attribute fully resolved before any phase runs.
+    """A single trace attribute fully pre-resolved before any phase runs.
 
-    ``attr_name``  – semantic name ("x", "y", "color", "size", ...)
-    ``raw_value``  – original ``args[attr_name]`` (column name or None)
-    ``col_name``   – actual DataFrame column name (None means "not a column")
-    ``label``      – display label, decorated with aggregation info etc.
+    The caller (``_core.py``) is responsible for resolving column names
+    (with the shadowing fix) and computing display labels (with aggregation
+    decoration, etc.). The trace builder only consumes these values.
     """
 
-    attr_name: str
-    raw_value: Any
-    col_name: Optional[str]
-    label: Any
+    attr_name: str          # "x", "y", "color", "size", ...
+    raw_value: Any          # original value from user args (column name or None)
+    col_name: Optional[str] # actual DataFrame column name (None = not a column)
+    display_label: Any      # display label for hover / legend / axes
 
 
 @dataclass
 class TraceBuildContext:
     """Pre-resolved build context – the single input to every phase.
 
-    Constructing this object up-front means individual phases never have to
-    repeat ``_resolve_col`` / ``get_decorated_label`` work. Phases only need
-    to look up attributes via ``self.lookup(name)``.
+    Everything the trace builder needs lives here. There is intentionally no
+    reference to the raw ``args`` dict and no callback into ``_core.py``.
     """
 
-    args: Dict[str, Any]
-    trace_spec: Any
+    # Core inputs
     trace_data: nw.DataFrame
+    trace_spec: Any
     initial_mapping_labels: "OrderedDict[str, str]"
     sizeref: float
 
     # Pre-resolved attributes: { attr_name -> ResolvedAttr }
-    _attr_index: Dict[str, ResolvedAttr] = field(default_factory=dict)
+    # Always includes "x", "y", "z" even if not in trace_spec.attrs,
+    # because trendline fitting etc. needs them.
+    resolved_attrs: Dict[str, ResolvedAttr] = field(default_factory=dict)
 
-    @classmethod
-    def build(cls, args, trace_spec, trace_data, initial_mapping_labels, sizeref,
-              decorated_label_fn):
-        ctx = cls(
-            args=args,
-            trace_spec=trace_spec,
-            trace_data=trace_data,
-            initial_mapping_labels=OrderedDict(initial_mapping_labels),
-            sizeref=sizeref,
-        )
+    # ---- Config values extracted from args ----
 
-        extra_attrs = ["x", "y", "z"]
-        all_attrs = list(trace_spec.attrs) + [
-            a for a in extra_attrs if a not in trace_spec.attrs
-        ]
+    labels: Dict[str, str] = field(default_factory=dict)  # original labels dict
 
-        for attr_name in all_attrs:
-            raw = args.get(attr_name)
-            if isinstance(raw, list):
-                col = [_resolve_col(args, c) if isinstance(c, str) else c for c in raw]
-            else:
-                col = _resolve_col(args, raw) if raw is not None else None
-            label = decorated_label_fn(args, raw, attr_name)
-            ctx._attr_index[attr_name] = ResolvedAttr(
-                attr_name=attr_name, raw_value=raw, col_name=col, label=label
-            )
-        return ctx
+    # Dimensions
+    dimensions_max_cardinality: int = 20
 
-    # --- Attribute lookup helpers -------------------------------------------
+    # Trendline
+    trendline: Optional[str] = None
+    trendline_options: Dict[str, Any] = field(default_factory=dict)
+
+    # Color
+    color_is_continuous: bool = False
+    color_discrete_map: Optional[Dict[str, str]] = None
+    color_discrete_sequence: List[str] = field(default_factory=list)
+
+    # Hover / custom data
+    hover_data: Any = None          # list or dict or None
+    custom_data: Any = None         # list or None
+
+    # Line behaviour
+    line_close: bool = False
+
+    # --- Convenience lookups ------------------------------------------------
 
     def lookup(self, attr_name: str) -> ResolvedAttr:
-        return self._attr_index[attr_name]
+        return self.resolved_attrs[attr_name]
 
-    def has(self, attr_name: str) -> bool:
-        return attr_name in self._attr_index
+    def has_attr(self, attr_name: str) -> bool:
+        return attr_name in self.resolved_attrs and self.resolved_attrs[attr_name].col_name is not None
 
     def col(self, attr_name: str) -> Optional[str]:
-        """Return the resolved column name (or None if not set / not a col)."""
-        a = self._attr_index.get(attr_name)
+        a = self.resolved_attrs.get(attr_name)
         return a.col_name if a is not None else None
 
-    def label_for(self, attr_name: str):
-        a = self._attr_index.get(attr_name)
-        return a.label if a is not None else None
+    def label(self, attr_name: str):
+        a = self.resolved_attrs.get(attr_name)
+        return a.display_label if a is not None else None
 
-    def get_column(self, attr_name_or_direct_col: str) -> nw.Series:
-        """Fetch a column from trace_data by resolved attr name OR raw col."""
-        col_name = self.col(attr_name_or_direct_col) or _resolve_col(
-            self.args, attr_name_or_direct_col
-        )
+    def get_column(self, attr_name: str) -> nw.Series:
+        """Fetch a column from trace_data by attribute name."""
+        col_name = self.col(attr_name)
+        if col_name is None:
+            raise KeyError(f"Attribute '{attr_name}' has no resolved column")
         return self.trace_data.get_column(col_name)
-
-    def rc(self, name):
-        """Shortcut for list/string column resolving."""
-        return _resolve_col(self.args, name)
 
 
 @dataclass
@@ -216,9 +180,7 @@ class TraceVisualConfig:
     error_x: Dict[str, Any] = field(default_factory=dict)
     error_y: Dict[str, Any] = field(default_factory=dict)
     error_z: Dict[str, Any] = field(default_factory=dict)
-    # Mapping labels that should be merged in after visual processing
     extra_labels: List[Tuple[str, str]] = field(default_factory=list)
-    # Other trace-level keys (z, coloraxis, ...)
     extra: Dict[str, Any] = field(default_factory=dict)
 
 
@@ -244,30 +206,29 @@ _SKIP_BIND_ATTRS = {"size", "color", "trendline"}
 
 def _bind_trace_data(ctx: TraceBuildContext) -> TraceDataBinding:
     binding = TraceDataBinding(mapping_labels=OrderedDict())
-    df: nw.DataFrame = ctx.args["data_frame"]
 
     for attr_name in ctx.trace_spec.attrs:
         if attr_name in _SKIP_BIND_ATTRS:
             continue
         attr = ctx.lookup(attr_name)
         attr_value = attr.raw_value
-        attr_label = attr.label
+        attr_label = attr.display_label
 
         if attr_name == "dimensions":
             dims = [
                 (name, ctx.trace_data.get_column(name))
                 for name in ctx.trace_data.columns
                 if ((not attr_value) or (name in attr_value))
-                and (ctx.trace_spec.constructor != go.Parcoords or _is_continuous(df, name))
+                and (ctx.trace_spec.constructor != go.Parcoords or _is_continuous(ctx.trace_data, name))
                 and (
                     ctx.trace_spec.constructor != go.Parcats
                     or (attr_value is not None and name in attr_value)
-                    or nw.to_py_scalar(df.get_column(name).n_unique())
-                    <= ctx.args["dimensions_max_cardinality"]
+                    or nw.to_py_scalar(ctx.trace_data.get_column(name).n_unique())
+                    <= ctx.dimensions_max_cardinality
                 )
             ]
             binding.data["dimensions"] = [
-                dict(label=_get_label(ctx.args, name), values=column)
+                dict(label=ctx.labels.get(name, name), values=column)
                 for (name, column) in dims
             ]
             if ctx.trace_spec.constructor == go.Splom:
@@ -290,8 +251,10 @@ def _bind_trace_data(ctx: TraceBuildContext) -> TraceDataBinding:
                 binding.data[error_xy][arr] = ctx.get_column(attr_name)
             elif attr_name == "custom_data":
                 if len(attr_value) > 0:
-                    cols = [ctx.rc(c) for c in attr_value]
-                    binding.customdata = ctx.trace_data.select(nw.col(cols))
+                    cols = [ctx.col(c) if isinstance(c, str) and ctx.has_attr(c) else c for c in attr_value]
+                    cols = [c for c in cols if c is not None]
+                    if cols:
+                        binding.customdata = ctx.trace_data.select(nw.col(cols))
             elif attr_name == "hover_name":
                 if ctx.trace_spec.constructor not in [
                     go.Histogram,
@@ -306,34 +269,31 @@ def _bind_trace_data(ctx: TraceBuildContext) -> TraceDataBinding:
                     go.Histogram2dContour,
                 ]:
                     hover_is_dict = isinstance(attr_value, dict)
-                    customdata_cols = ctx.args.get("custom_data") or []
+                    customdata_cols = list(ctx.custom_data or [])
                     for col in attr_value:
                         if hover_is_dict and not attr_value[col]:
                             continue
-                        if col in [
-                            ctx.args.get("x"),
-                            ctx.args.get("y"),
-                            ctx.args.get("z"),
-                            ctx.args.get("base"),
-                        ]:
+                        # Skip axes / base (already in hover)
+                        skip_cols = {ctx.col("x"), ctx.col("y"), ctx.col("z"), ctx.col("base")}
+                        if col in skip_cols:
                             continue
                         try:
-                            position = ctx.args["custom_data"].index(col)
+                            position = (ctx.custom_data or []).index(col)
                         except (ValueError, AttributeError, KeyError):
                             position = len(customdata_cols)
                             customdata_cols.append(col)
-                        col_label = ctx.args.get("_aggregation_plan")
-                        if col_label is None:
-                            col_label = _get_label(ctx.args, col)
-                        else:
-                            # reuse the "role=None" path from get_decorated_label
-                            col_label = _get_label(ctx.args, col)
+                        col_label = ctx.labels.get(col, col)
                         binding.mapping_labels[col_label] = "%%{customdata[%d]}" % (
                             position
                         )
                     if len(customdata_cols) > 0:
-                        cols = [ctx.rc(c) for c in dict.fromkeys(customdata_cols)]
-                        binding.customdata = ctx.trace_data.select(nw.col(cols))
+                        cols = []
+                        for c in dict.fromkeys(customdata_cols):
+                            rc = ctx.col(c) if isinstance(c, str) and ctx.has_attr(c) else c
+                            if rc is not None:
+                                cols.append(rc)
+                        if cols:
+                            binding.customdata = ctx.trace_data.select(nw.col(cols))
             elif attr_name == "animation_group":
                 binding.data["ids"] = ctx.get_column(attr_name)
             elif attr_name == "locations":
@@ -404,7 +364,7 @@ def _compute_trendline_fit(ctx: TraceBuildContext) -> Optional[TrendlineFitResul
             raise ValueError(
                 "Could not convert value of 'x' ('%s') into a numeric type. "
                 "If 'x' contains stringified dates, please convert to a datetime column."
-                % ctx.args["x"]
+                % ctx.lookup("x").raw_value
             )
 
     if not y.dtype.is_numeric():
@@ -420,14 +380,14 @@ def _compute_trendline_fit(ctx: TraceBuildContext) -> Optional[TrendlineFitResul
     else:
         x_data = x_series.to_numpy()
 
-    trendline_function = trendline_functions[ctx.args["trendline"]]
+    trendline_function = trendline_functions[ctx.trendline]
     y_out, hover_header, fit_results = trendline_function(
-        ctx.args["trendline_options"],
+        ctx.trendline_options,
         sorted_df.get_column(x_col),
         x.to_numpy(),
         y.to_numpy(),
-        ctx.args["x"],
-        ctx.args["y"],
+        ctx.lookup("x").raw_value,
+        ctx.lookup("y").raw_value,
         non_missing.to_numpy(),
     )
     assert len(y_out) == len(x_data), "missing-data-handling failure in trendline code"
@@ -437,8 +397,8 @@ def _compute_trendline_fit(ctx: TraceBuildContext) -> Optional[TrendlineFitResul
         y_data=y_out,
         fit_results=fit_results,
         hover_header=hover_header,
-        x_label=_get_label(ctx.args, ctx.args["x"]),
-        y_label=_get_label(ctx.args, ctx.args["y"]),
+        x_label=ctx.labels.get(ctx.lookup("x").raw_value, ctx.lookup("x").raw_value) if ctx.lookup("x").raw_value else "",
+        y_label=ctx.labels.get(ctx.lookup("y").raw_value, ctx.lookup("y").raw_value) if ctx.lookup("y").raw_value else "",
     )
 
 
@@ -456,9 +416,9 @@ def _apply_visual_patches(ctx: TraceBuildContext) -> TraceVisualConfig:
         if attr_name not in _VISUAL_ATTRS:
             continue
         attr = ctx.lookup(attr_name)
-        if attr.raw_value is None:
+        if attr.raw_value is None or attr.col_name is None:
             continue
-        attr_label = attr.label
+        attr_label = attr.display_label
         col_name = attr.col_name
 
         if attr_name == "size":
@@ -482,20 +442,20 @@ def _apply_visual_patches(ctx: TraceBuildContext) -> TraceVisualConfig:
                 go.Pie,
                 go.Funnelarea,
             ]:
-                if ctx.args.get("color_is_continuous"):
+                if ctx.color_is_continuous:
                     vc.marker["colors"] = ctx.trace_data.get_column(col_name)
                     vc.marker["coloraxis"] = "coloraxis1"
                     vc.extra_labels.append((attr_label, "%{color}"))
                 else:
                     vc.marker["colors"] = []
-                    if ctx.args["color_discrete_map"] is not None:
-                        mapping = ctx.args["color_discrete_map"].copy()
+                    if ctx.color_discrete_map is not None:
+                        mapping = ctx.color_discrete_map.copy()
                     else:
                         mapping = {}
                     for cat in ctx.trace_data.get_column(col_name).to_list():
                         if mapping.get(cat) is None:
-                            mapping[cat] = ctx.args["color_discrete_sequence"][
-                                len(mapping) % len(ctx.args["color_discrete_sequence"])
+                            mapping[cat] = ctx.color_discrete_sequence[
+                                len(mapping) % len(ctx.color_discrete_sequence)
                             ]
                         vc.marker["colors"].append(mapping[cat])
             else:
@@ -531,11 +491,11 @@ def _build_hover_config(
         )
 
     labels_copy = OrderedDict(mapping_labels)
-    if ctx.args["hover_data"] and isinstance(ctx.args["hover_data"], dict):
+    if ctx.hover_data and isinstance(ctx.hover_data, dict):
         for k, v in mapping_labels.items():
-            k_args = _invert_label(ctx.args, k)
-            if k_args in ctx.args["hover_data"]:
-                formatter = ctx.args["hover_data"][k_args][0]
+            k_args = _invert_label(ctx.labels, k)
+            if k_args in ctx.hover_data:
+                formatter = ctx.hover_data[k_args][0]
                 if formatter:
                     if isinstance(formatter, str):
                         labels_copy[k] = v.replace("}", "%s}" % formatter)
@@ -561,7 +521,6 @@ def _merge_phases(
     binding: TraceDataBinding,
     trendline: Optional[TrendlineFitResult],
     visual: TraceVisualConfig,
-    hover: TraceHoverConfig,
 ) -> TraceBuildResult:
     patch: Dict[str, Any] = ctx.trace_spec.trace_patch.copy() or {}
 
@@ -607,8 +566,7 @@ def _merge_phases(
         if key in patch and not patch[key]:
             del patch[key]
 
-    # ---- hover template (re-uses combined_labels) ----
-    # Note: we call _build_hover_config here so it sees ALL merged labels
+    # ---- hover template (sees ALL merged labels) ----
     hover_config = _build_hover_config(ctx, combined_labels, hover_header)
     if hover_config.hovertemplate:
         patch["hovertemplate"] = hover_config.hovertemplate
@@ -620,54 +578,42 @@ def _merge_phases(
 # Public entry point
 # ---------------------------------------------------------------------------
 
-def build_trace_spec(
-    args,
-    trace_spec,
-    trace_data,
-    mapping_labels,
-    sizeref,
-    decorated_label_fn,
-):
+def build_trace(ctx: TraceBuildContext) -> TraceBuildResult:
     """Build a single trace's patch dict and optional trendline fit results.
 
     Parameters
     ----------
-    args : dict
-        The fully populated Express args dict.
-    trace_spec : TraceSpec
-        Describes which trace type to build.
-    trace_data : nw.DataFrame
-        Per-trace curated data.
-    mapping_labels : Mapping
-        Pre-existing labels from ``make_splom_trace_names`` or similar.
-    sizeref : float
-        Marker sizeref value.
-    decorated_label_fn : callable
-        ``(args, column, role) -> display_label`` (typically ``get_decorated_label``).
+    ctx : TraceBuildContext
+        Pre-resolved build context containing all data, labels, and config.
 
     Returns
     -------
-    (trace_patch : dict, fit_results : dict or None)
+    TraceBuildResult
+        Contains ``trace_patch`` dict and ``fit_results`` (or None).
     """
-    trace_data: nw.DataFrame
-
-    if "line_close" in args and args["line_close"]:
+    trace_data = ctx.trace_data
+    if ctx.line_close:
         trace_data = nw.concat([trace_data, trace_data.head(1)], how="vertical")
-
-    # Build the single pre-resolved context that every phase consumes
-    ctx = TraceBuildContext.build(
-        args, trace_spec, trace_data, mapping_labels, sizeref, decorated_label_fn
-    )
+        # Build a temporary context with the modified trace_data
+        ctx = _ctx_with_trace_data(ctx, trace_data)
 
     # Run the first three phases independently – each takes only the Context
     binding = _bind_trace_data(ctx)
+
     trendline = None
-    if "trendline" in trace_spec.attrs and args["trendline"] is not None:
+    if "trendline" in ctx.trace_spec.attrs and ctx.trendline is not None:
         trendline = _compute_trendline_fit(ctx)
+
     visual = _apply_visual_patches(ctx)
 
     # The final merge step also triggers the hover-template phase (which needs
     # to see the merged label set, so it is intentionally run inside merge).
-    result = _merge_phases(ctx, binding, trendline, visual, None)
+    return _merge_phases(ctx, binding, trendline, visual)
 
-    return result.trace_patch, result.fit_results
+
+def _ctx_with_trace_data(ctx: TraceBuildContext, new_trace_data: nw.DataFrame) -> TraceBuildContext:
+    """Return a copy of ctx with trace_data replaced."""
+    import copy
+    new_ctx = copy.copy(ctx)
+    new_ctx.trace_data = new_trace_data
+    return new_ctx
