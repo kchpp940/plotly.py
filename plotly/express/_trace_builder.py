@@ -29,6 +29,10 @@ import narwhals.stable.v1 as nw
 import plotly.graph_objs as go
 
 from .trendline_functions import ols, lowess, rolling, expanding, ewm
+from ._trace_context import (
+    TraceBuildContext,
+    ResolvedAttr,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -71,106 +75,8 @@ def _invert_label(labels: Dict[str, str], column: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Intermediate data structures
+# Intermediate data structures (phase outputs)
 # ---------------------------------------------------------------------------
-
-@dataclass
-class ResolvedAttr:
-    """A single trace attribute fully pre-resolved before any phase runs.
-
-    The caller (``_core.py``) is responsible for resolving column names
-    (with the shadowing fix) and computing display labels (with aggregation
-    decoration, etc.). The trace builder only consumes these values.
-    """
-
-    attr_name: str          # "x", "y", "color", "size", ...
-    raw_value: Any          # original value from user args (column name or None)
-    col_name: Optional[str] # actual DataFrame column name (None = not a column)
-    display_label: Any      # display label for hover / legend / axes
-
-
-@dataclass
-class TraceBuildContext:
-    """Pre-resolved build context – the single input to every phase.
-
-    Everything the trace builder needs lives here. There is intentionally no
-    reference to the raw ``args`` dict and no callback into ``_core.py``.
-    """
-
-    # Core inputs
-    trace_data: nw.DataFrame
-    trace_spec: Any
-    initial_mapping_labels: "OrderedDict[str, str]"
-    sizeref: float
-
-    # Pre-resolved attributes: { attr_name -> ResolvedAttr }
-    # Always includes "x", "y", "z" even if not in trace_spec.attrs,
-    # because trendline fitting etc. needs them.
-    resolved_attrs: Dict[str, ResolvedAttr] = field(default_factory=dict)
-
-    # Pre-resolved column name mapping: { raw_column_name -> actual_column_name }
-    # Covers every column name that might be referenced inside hover_data,
-    # custom_data, etc. Populated by the caller (_core.py) – this module
-    # never does its own column-name resolution.
-    resolved_columns: Dict[str, str] = field(default_factory=dict)
-
-    # ---- Config values extracted from args ----
-
-    labels: Dict[str, str] = field(default_factory=dict)  # original labels dict
-
-    # Dimensions
-    dimensions_max_cardinality: int = 20
-
-    # Trendline
-    trendline: Optional[str] = None
-    trendline_options: Dict[str, Any] = field(default_factory=dict)
-
-    # Color
-    color_is_continuous: bool = False
-    color_discrete_map: Optional[Dict[str, str]] = None
-    color_discrete_sequence: List[str] = field(default_factory=list)
-
-    # Hover / custom data
-    hover_data: Any = None          # list or dict or None
-    custom_data: Any = None         # list or None
-
-    # Line behaviour
-    line_close: bool = False
-
-    # --- Convenience lookups ------------------------------------------------
-
-    def lookup(self, attr_name: str) -> ResolvedAttr:
-        return self.resolved_attrs[attr_name]
-
-    def has_attr(self, attr_name: str) -> bool:
-        return attr_name in self.resolved_attrs and self.resolved_attrs[attr_name].col_name is not None
-
-    def col(self, attr_name: str) -> Optional[str]:
-        a = self.resolved_attrs.get(attr_name)
-        return a.col_name if a is not None else None
-
-    def label(self, attr_name: str):
-        a = self.resolved_attrs.get(attr_name)
-        return a.display_label if a is not None else None
-
-    def get_column(self, attr_name: str) -> nw.Series:
-        """Fetch a column from trace_data by attribute name."""
-        col_name = self.col(attr_name)
-        if col_name is None:
-            raise KeyError(f"Attribute '{attr_name}' has no resolved column")
-        return self.trace_data.get_column(col_name)
-
-    def resolve_column(self, name: str) -> str:
-        """Look up a pre-resolved column name.
-
-        The caller guarantees that ``name`` was registered in
-        ``resolved_columns`` during context construction. No fallback –
-        if the name isn't there, that's a bug in the caller.
-        """
-        if name in self.resolved_columns:
-            return self.resolved_columns[name]
-        return name
-
 
 @dataclass
 class TraceDataBinding:
