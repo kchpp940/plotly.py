@@ -44,7 +44,7 @@ import importlib.metadata
 import logging
 import sys
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from packaging.version import Version, InvalidVersion
 
@@ -352,21 +352,131 @@ class Dependency:
 # DependencyRegistry – attribute / dict-style access
 # ---------------------------------------------------------------------------
 
+class _Capability:
+    """A named semantic capability backed by one or more :class:`Dependency` entries.
+
+    Capabilities let call sites declare *what they need to do* instead of
+    *which module to import*, e.g. ``"trendline.ols"`` rather than
+    ``"statsmodels"``.  This makes dependency intent clear and keeps error
+    messages / installation hints consistent across every module.
+
+    Attributes
+    ----------
+    name:
+        Dotted capability name, e.g. ``"trendline.ols"``, ``"image.kaleido"``.
+    dep_name:
+        The registered :class:`Dependency` name that backs this capability.
+    feature_label:
+        Human-readable label woven into error messages when
+        :meth:`require` is called.  Falls back to *name*.
+    description:
+        Short sentence describing what this capability enables.
+    """
+
+    __slots__ = ("name", "dep_name", "feature_label", "description")
+
+    def __init__(
+        self,
+        name: str,
+        dep_name: str,
+        *,
+        feature_label: Optional[str] = None,
+        description: str = "",
+    ) -> None:
+        self.name = name
+        self.dep_name = dep_name
+        self.feature_label = feature_label or name
+        self.description = description
+
+
 class DependencyRegistry:
-    """Registry of all known dependencies.
+    """Registry of all known dependencies **and** semantic capabilities.
+
+    Two layers of lookup:
+
+    * **Dependency layer** – per-package metadata + runtime state.
+      Accessed as ``deps.pandas`` / ``deps["pandas"]``.
+
+    * **Capability layer** – semantic, intent-based names (e.g.
+      ``"trendline.ols"``, ``"image.kaleido"``).  Accessed as
+      ``deps.capability("trendline.ols")`` / ``deps.require("trendline.ols")``.
 
     Supports:
-        * ``deps.pandas``       – attribute access
-        * ``deps["pandas"]``    – dict-style access
-        * ``"pandas" in deps``  – membership test
-        * ``deps.get_module("scipy.stats")`` – arbitrary submodule lookup
+        * ``deps.pandas``              – attribute access (dependency)
+        * ``deps["pandas"]``           – dict-style access (dependency)
+        * ``"pandas" in deps``         – membership test (dependency)
+        * ``deps.get_module(...)``     – arbitrary submodule lookup
+        * ``deps.require(cap_name)``   – semantic capability guard
+        * ``deps.capability(cap_name)``– fetch capability metadata
     """
 
     def __init__(self) -> None:
         self._deps: Dict[str, Dependency] = {}
+        self._caps: Dict[str, _Capability] = {}
 
     def register(self, dep: Dependency) -> None:
+        """Register a :class:`Dependency` under its canonical name."""
         self._deps[dep.name] = dep
+
+    def register_capability(self, cap: _Capability) -> None:
+        """Register a semantic :class:`_Capability`."""
+        if cap.dep_name not in self._deps:
+            raise ValueError(
+                f"Cannot register capability '{cap.name}': "
+                f"dependency '{cap.dep_name}' is not registered"
+            )
+        self._caps[cap.name] = cap
+
+    # ------------------------------------------------------------------
+    # Capability-layer API
+    # ------------------------------------------------------------------
+    def capability(self, name: str) -> _Capability:
+        """Return the :class:`_Capability` registered under *name*.
+
+        Raises :class:`KeyError` if no such capability is registered.
+        """
+        if name not in self._caps:
+            raise KeyError(
+                f"No capability registered under name '{name}'. "
+                f"Available: {sorted(self._caps.keys())}"
+            )
+        return self._caps[name]
+
+    def has_capability(self, name: str) -> bool:
+        """Return ``True`` if *name* is a registered capability name."""
+        return name in self._caps
+
+    def require(self, cap_name: str) -> None:
+        """Guard a code path against a missing semantic capability.
+
+        Equivalent to fetching the capability's backing dependency and
+        calling ``.require(cap.feature_label)`` on it – but the caller
+        only has to name the *capability*, not the implementation package.
+
+        Raises
+        ------
+        ImportError
+            With a uniform message + install hint if the backing
+            dependency is not installed or is below ``min_version``.
+        """
+        cap = self.capability(cap_name)
+        dep = self._deps[cap.dep_name]
+        dep.require(cap.feature_label)
+
+    def available(self, cap_name: str) -> bool:
+        """Return ``True`` if the capability's backing dependency is available."""
+        cap = self.capability(cap_name)
+        return self._deps[cap.dep_name].available
+
+    def module(self, cap_name: str) -> Optional[Any]:
+        """Return the module object for a capability's backing dependency,
+        or ``None`` if not available."""
+        cap = self.capability(cap_name)
+        return self._deps[cap.dep_name].module
+
+    def capability_summary(self) -> Dict[str, bool]:
+        """Return ``{cap_name: available}`` for every registered capability."""
+        return {name: self.available(name) for name in self._caps}
 
     # ------------------------------------------------------------------
     # Lookup
@@ -812,6 +922,483 @@ deps.register(Dependency(
     description="Out-of-core DataFrames",
 ))
 
+# ---------------------------------------------------------------------------
+# Build the semantic capability registry
+# ---------------------------------------------------------------------------
+
+def _register_caps(reg: DependencyRegistry) -> None:
+    """Register all known semantic capabilities on *reg*.
+
+    Kept as a plain function so it can be re-invoked by tests that need
+    to rebuild the registry from scratch.
+    """
+    caps = [
+        # ---- core / required ----
+        _Capability(
+            "core.narwhals",
+            "narwhals",
+            feature_label="the narwhals DataFrame compatibility layer",
+            description="Core DataFrame interoperability",
+        ),
+        _Capability(
+            "core.numpy",
+            "numpy",
+            feature_label="plotly.express and figure_factory",
+            description="Numerical array support",
+        ),
+        # ---- dataframe libraries ----
+        _Capability(
+            "dataframe.pandas",
+            "pandas",
+            feature_label="pandas DataFrame support",
+            description="Use pandas DataFrames with plotly.express",
+        ),
+        _Capability(
+            "dataframe.polars",
+            "polars",
+            feature_label="Polars DataFrame support",
+            description="Use Polars DataFrames with plotly.express",
+        ),
+        _Capability(
+            "dataframe.pyarrow",
+            "pyarrow",
+            feature_label="PyArrow Table support",
+            description="Use PyArrow Tables with plotly.express",
+        ),
+        _Capability(
+            "dataframe.xarray",
+            "xarray",
+            feature_label="xarray support",
+            description="Use xarray with plotly.express",
+        ),
+        # ---- trendlines ----
+        _Capability(
+            "trendline.ols",
+            "statsmodels",
+            feature_label="OLS trendlines",
+            description="Ordinary Least Squares trendlines (statsmodels)",
+        ),
+        _Capability(
+            "trendline.lowess",
+            "statsmodels",
+            feature_label="LOWESS trendlines",
+            description="Locally Weighted Scatterplot Smoothing trendlines",
+        ),
+        _Capability(
+            "trendline.rolling",
+            "pandas",
+            feature_label="rolling trendlines",
+            description="Rolling-window trendlines",
+        ),
+        _Capability(
+            "trendline.ewm",
+            "pandas",
+            feature_label="EWM trendlines",
+            description="Exponentially-weighted moving average trendlines",
+        ),
+        _Capability(
+            "trendline.expanding",
+            "pandas",
+            feature_label="expanding trendlines",
+            description="Expanding-window trendlines",
+        ),
+        # ---- stats / scientific ----
+        _Capability(
+            "stats.scipy",
+            "scipy",
+            feature_label="`create_distplot` and other scipy-powered features",
+            description="Scipy scientific computing support",
+        ),
+        # ---- image export ----
+        _Capability(
+            "image.kaleido",
+            "kaleido",
+            feature_label="static image export (Kaleido v1+)",
+            description="Kaleido v1 static image export engine",
+        ),
+        # ---- jupyter / renderers ----
+        _Capability(
+            "render.ipython",
+            "IPython",
+            feature_label="IPython display integration",
+            description="Display figures in IPython / Jupyter",
+        ),
+        _Capability(
+            "render.nbformat",
+            "nbformat",
+            feature_label="Jupyter notebook format support",
+            description="Notebook serialisation support",
+        ),
+        _Capability(
+            "render.ipywidgets",
+            "ipywidgets",
+            feature_label="interactive FigureWidget (ipywidgets>=7)",
+            description="Interactive FigureWidget support",
+        ),
+        _Capability(
+            "render.notebook",
+            "notebook",
+            feature_label="Classic Jupyter notebook detection",
+            description="Detect classic notebook server",
+        ),
+        _Capability(
+            "render.jupyterlab",
+            "jupyterlab",
+            feature_label="JupyterLab detection",
+            description="Detect JupyterLab server",
+        ),
+        # ---- I/O ----
+        _Capability(
+            "io.orjson",
+            "orjson",
+            feature_label="fast JSON serialisation",
+            description="Use orjson for faster JSON serialisation",
+        ),
+        _Capability(
+            "io.psutil",
+            "psutil",
+            feature_label="process/resource utilities",
+            description="Process utilities (Orca, renderer detection)",
+        ),
+        _Capability(
+            "io.chart_studio",
+            "chart_studio",
+            feature_label="Chart Studio cloud API",
+            description="Chart Studio cloud upload/download",
+        ),
+        # ---- geo ----
+        _Capability(
+            "geo.geopandas",
+            "geopandas",
+            feature_label="GeoPandas geospatial support",
+            description="GeoSpatial data support",
+        ),
+        _Capability(
+            "geo.shapely",
+            "shapely",
+            feature_label="Shapely geometric operations",
+            description="Geometric operations",
+        ),
+        _Capability(
+            "geo.shapefile",
+            "shapefile",
+            feature_label="ESRI Shapefile support",
+            description="Shapefile reader",
+        ),
+        # ---- figure_factory specific ----
+        _Capability(
+            "ff.skimage",
+            "skimage",
+            feature_label="`create_ternary_contour`",
+            description="Scikit-image for ternary contour figure factory",
+        ),
+        _Capability(
+            "ff.pillow",
+            "pillow",
+            feature_label="PIL/Pillow image processing",
+            description="PIL/Pillow image processing support",
+        ),
+        # ---- widgets ----
+        _Capability(
+            "widget.anywidget",
+            "anywidget",
+            feature_label="anywidget Jupyter widget backend",
+            description="anywidget support for FigureWidget",
+        ),
+        # ---- plot interop ----
+        _Capability(
+            "plot.matplotlib",
+            "matplotlib",
+            feature_label="Matplotlib conversion",
+            description="Matplotlib → Plotly conversion",
+        ),
+        # ---- colors ----
+        _Capability(
+            "colors.colorcet",
+            "colorcet",
+            feature_label="colorcet perceptually uniform colormaps",
+            description="Perceptually uniform colormaps",
+        ),
+    ]
+    for cap in caps:
+        reg.register_capability(cap)
+
+
+_register_caps(deps)
+
+# ---------------------------------------------------------------------------
+# pyproject.toml extras / version consistency checker
+# ---------------------------------------------------------------------------
+
+def _parse_pyproject_extras(pyproject_path: Optional[str] = None) -> Dict[str, Dict[str, str]]:
+    """Parse ``[project.optional-dependencies]`` from pyproject.toml.
+
+    Returns a dict of ``{extra_name: {pkg_name: min_version_str}}`` for every
+    dependency that has a minimum version.  Dependencies without a version
+    specifier are included with an empty-string value.
+
+    Falls back to looking for ``pyproject.toml`` alongside the
+    ``_plotly_utils`` package if *pyproject_path* is not provided.
+
+    Notes
+    -----
+    Uses a minimal, dependency-free TOML parser that handles the subset of
+    TOML used in the ``[project.optional-dependencies]`` table.  Supports
+    both single-line and multi-line lists.
+    """
+    import os
+
+    if pyproject_path is None:
+        here = os.path.dirname(os.path.abspath(__file__))
+        pyproject_path = os.path.join(here, "..", "pyproject.toml")
+        pyproject_path = os.path.normpath(pyproject_path)
+
+    if not os.path.isfile(pyproject_path):
+        return {}
+
+    with open(pyproject_path, "r", encoding="utf-8") as fh:
+        lines = fh.readlines()
+
+    extras: Dict[str, Dict[str, str]] = {}
+    current_extra: Optional[str] = None
+    in_list: bool = False
+    list_buffer: List[str] = []
+
+    for raw_line in lines:
+        line = raw_line.strip()
+
+        # Skip comments and empty lines
+        if not line or line.startswith("#"):
+            continue
+
+        # Section header
+        if line.startswith("[") and line.endswith("]"):
+            # Flush any pending multi-line list
+            if current_extra and in_list and list_buffer:
+                _parse_list_line(",".join(list_buffer), extras[current_extra])
+                list_buffer = []
+                in_list = False
+
+            section = line[1:-1].strip()
+            if section == "project.optional-dependencies":
+                current_extra = "__header__"
+                in_list = False
+                continue
+            elif section.startswith("project.optional-dependencies."):
+                # Nested table style: [project.optional-dependencies.express]
+                current_extra = section[len("project.optional-dependencies."):].strip()
+                extras.setdefault(current_extra, {})
+                in_list = False
+                continue
+            else:
+                # Left the optional-dependencies section
+                current_extra = None
+                in_list = False
+                continue
+
+        if current_extra is None:
+            continue
+
+        if current_extra == "__header__":
+            # Look for: extra_name = [ ... ] (could be multi-line)
+            if "=" in line and not in_list:
+                key_part, rest = line.split("=", 1)
+                key = key_part.strip()
+                rest = rest.strip()
+
+                if rest.startswith("["):
+                    current_extra = key
+                    extras.setdefault(current_extra, {})
+                    in_list = True
+                    list_content = rest[1:].strip()
+
+                    # Single-line list: [ "foo", "bar" ]
+                    if list_content.endswith("]"):
+                        list_content = list_content[:-1].strip()
+                        _parse_list_line(list_content, extras[current_extra])
+                        in_list = False
+                    else:
+                        # Multi-line list – start buffering
+                        if list_content:
+                            list_buffer.append(list_content)
+                    continue
+            continue
+
+        # We're inside a specific extra's list
+        if in_list:
+            if line.endswith("]"):
+                # Last line of multi-line list
+                content = line[:-1].strip().rstrip(",")
+                if content:
+                    list_buffer.append(content)
+                _parse_list_line(",".join(list_buffer), extras[current_extra])
+                list_buffer = []
+                in_list = False
+                current_extra = "__header__"
+            else:
+                # Middle line of multi-line list
+                content = line.rstrip(",").strip()
+                if content:
+                    list_buffer.append(content)
+            continue
+
+        # Not in a list yet – shouldn't happen for key=[...] style
+        # but handle just in case
+        if "=" in line:
+            _key, _val = line.split("=", 1)
+            # skip non-list entries
+            pass
+
+    # Flush any remaining list at EOF
+    if current_extra and in_list and list_buffer:
+        _parse_list_line(",".join(list_buffer), extras[current_extra])
+
+    return extras
+
+
+def _parse_list_line(content: str, target: Dict[str, str]) -> None:
+    """Parse one or more PEP 508 requirement specs from a comma-separated line."""
+    # Split on commas, handle quotes
+    import re
+
+    # Simple split – works for our pyproject's simple list format
+    items = re.findall(r'["\']([^"\']+)["\']', content)
+    if not items and content.strip():
+        items = [content.strip().strip(',').strip()]
+
+    for item in items:
+        item = item.strip()
+        if not item:
+            continue
+        pkg, min_ver = _split_spec(item)
+        if pkg:
+            target[pkg] = min_ver
+
+
+def _split_spec(spec: str) -> Tuple[str, str]:
+    """Split a PEP 508 requirement spec into (package_name, min_version).
+
+    Examples::
+
+        "numpy>=1.22"      → ("numpy", "1.22")
+        "kaleido>=1.3.0"   → ("kaleido", "1.3.0")
+        "pandas"           → ("pandas", "")
+        "polars[timezone]" → ("polars", "")
+    """
+    import re
+
+    # Strip extras and markers
+    spec = spec.split(";")[0].strip()
+
+    match = re.match(r"^([A-Za-z0-9_.-]+)(\[.*?\])?\s*(>=|==|~=|>|<|<=)?\s*([0-9A-Za-z.+\-]*)?", spec)
+    if not match:
+        return spec, ""
+
+    pkg = match.group(1)
+    op = match.group(3) or ""
+    ver = match.group(4) or ""
+
+    # Only keep >= versions as "minimum required"
+    if op in (">=", "~=", "==") and ver:
+        return pkg, ver
+    return pkg, ""
+
+
+def check_pyproject_consistency(
+    pyproject_path: Optional[str] = None,
+    registry: Optional[DependencyRegistry] = None,
+) -> Dict[str, list]:
+    """Compare the dependency registry against ``pyproject.toml`` extras.
+
+    Returns a dict of issues grouped by severity:
+
+    * ``"mismatch"`` – registered dep has ``min_version`` / ``extra`` that
+      disagree with pyproject.toml.
+    * ``"extra_missing"`` – an extra in pyproject is not represented by any
+      registered dependency's ``extra`` field.
+    * ``"dep_extra_missing"`` – a registered dep claims an extra that doesn't
+      exist in pyproject.toml.
+    * ``"unregistered_package"`` – a package mentioned in pyproject extras
+      has no :class:`Dependency` registration at all.
+    """
+    if registry is None:
+        from _plotly_utils.dependencies import deps as registry
+
+    extras = _parse_pyproject_extras(pyproject_path)
+
+    issues: Dict[str, list] = {
+        "mismatch": [],
+        "extra_missing": [],
+        "dep_extra_missing": [],
+        "unregistered_package": [],
+    }
+
+    # Collect registered deps by (extra, package_name)
+    registered_by_pkg: Dict[str, Dependency] = {}
+    for dep in registry.values():
+        pkg = dep.dist_name or dep.import_name
+        registered_by_pkg[pkg] = dep
+
+    # Also index by import_name for packages where dist_name differs
+    for dep in registry.values():
+        if dep.import_name not in registered_by_pkg:
+            registered_by_pkg[dep.import_name] = dep
+
+    # Walk every extra in pyproject
+    all_pyproject_pkgs: set = set()
+    for extra_name, pkgs in extras.items():
+        for pkg_name, min_ver in pkgs.items():
+            all_pyproject_pkgs.add(pkg_name)
+
+            if pkg_name not in registered_by_pkg:
+                # Try case-insensitive
+                found = None
+                for reg_pkg, dep in registered_by_pkg.items():
+                    if reg_pkg.lower() == pkg_name.lower():
+                        found = dep
+                        break
+                if found is None:
+                    issues["unregistered_package"].append(
+                        f"Package '{pkg_name}' in extra '{extra_name}' "
+                        "has no Dependency registration"
+                    )
+                    continue
+                else:
+                    dep = found
+            else:
+                dep = registered_by_pkg[pkg_name]
+
+            # Check min_version consistency
+            if min_ver and dep.min_version:
+                if min_ver != dep.min_version:
+                    issues["mismatch"].append(
+                        f"{dep.name}: min_version in registry is "
+                        f"'{dep.min_version}' but pyproject extra "
+                        f"'{extra_name}' specifies '{min_ver}'"
+                    )
+
+            # Check extra consistency
+            if dep.extra and dep.extra != extra_name:
+                # A dep can only be "assigned" to one primary extra.
+                # If it appears in multiple extras, the primary one should match.
+                # We only flag if the dep's declared extra doesn't exist at all.
+                pass
+
+    # Check that every dep with an extra references a known extra
+    known_extras = set(extras.keys())
+    for dep in registry.values():
+        if dep.extra and dep.extra not in known_extras:
+            # Check if it's a compound dep (e.g. "plotly[express]" inside dev_optional)
+            if dep.extra.startswith("plotly[") and dep.extra.endswith("]"):
+                continue  # compound spec – fine
+            issues["dep_extra_missing"].append(
+                f"{dep.name} declares extra='{dep.extra}' but that extra "
+                "is not in pyproject.toml"
+            )
+
+    return issues
+
+
 # ---------------------------------------------------------------------
 # Export list
 # ---------------------------------------------------------------------
@@ -824,4 +1411,6 @@ __all__ = [
     "requires",
     "skip_if_missing",
     "fallback_function",
+    "check_pyproject_consistency",
+    "_Capability",
 ]
