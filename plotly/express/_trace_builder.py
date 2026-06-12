@@ -108,6 +108,12 @@ class TraceBuildContext:
     # because trendline fitting etc. needs them.
     resolved_attrs: Dict[str, ResolvedAttr] = field(default_factory=dict)
 
+    # Pre-resolved column name mapping: { raw_column_name -> actual_column_name }
+    # Covers every column name that might be referenced inside hover_data,
+    # custom_data, etc. Populated by the caller (_core.py) – this module
+    # never does its own column-name resolution.
+    resolved_columns: Dict[str, str] = field(default_factory=dict)
+
     # ---- Config values extracted from args ----
 
     labels: Dict[str, str] = field(default_factory=dict)  # original labels dict
@@ -153,6 +159,17 @@ class TraceBuildContext:
         if col_name is None:
             raise KeyError(f"Attribute '{attr_name}' has no resolved column")
         return self.trace_data.get_column(col_name)
+
+    def resolve_column(self, name: str) -> str:
+        """Look up a pre-resolved column name.
+
+        The caller guarantees that ``name`` was registered in
+        ``resolved_columns`` during context construction. No fallback –
+        if the name isn't there, that's a bug in the caller.
+        """
+        if name in self.resolved_columns:
+            return self.resolved_columns[name]
+        return name
 
 
 @dataclass
@@ -251,10 +268,8 @@ def _bind_trace_data(ctx: TraceBuildContext) -> TraceDataBinding:
                 binding.data[error_xy][arr] = ctx.get_column(attr_name)
             elif attr_name == "custom_data":
                 if len(attr_value) > 0:
-                    cols = [ctx.col(c) if isinstance(c, str) and ctx.has_attr(c) else c for c in attr_value]
-                    cols = [c for c in cols if c is not None]
-                    if cols:
-                        binding.customdata = ctx.trace_data.select(nw.col(cols))
+                    cols = [ctx.resolve_column(c) for c in attr_value]
+                    binding.customdata = ctx.trace_data.select(nw.col(cols))
             elif attr_name == "hover_name":
                 if ctx.trace_spec.constructor not in [
                     go.Histogram,
@@ -287,13 +302,11 @@ def _bind_trace_data(ctx: TraceBuildContext) -> TraceDataBinding:
                             position
                         )
                     if len(customdata_cols) > 0:
-                        cols = []
-                        for c in dict.fromkeys(customdata_cols):
-                            rc = ctx.col(c) if isinstance(c, str) and ctx.has_attr(c) else c
-                            if rc is not None:
-                                cols.append(rc)
-                        if cols:
-                            binding.customdata = ctx.trace_data.select(nw.col(cols))
+                        cols = [
+                            ctx.resolve_column(c)
+                            for c in dict.fromkeys(customdata_cols)
+                        ]
+                        binding.customdata = ctx.trace_data.select(nw.col(cols))
             elif attr_name == "animation_group":
                 binding.data["ids"] = ctx.get_column(attr_name)
             elif attr_name == "locations":

@@ -899,6 +899,12 @@ def _resolve_col(args, attr_name_or_col):
     If the name is tracked in args["_col_map"], return the internal name.
     Otherwise return the name as-is (for backward compatibility).
     Accepts either an attribute name (like "x") or a direct column name.
+
+    IMPORTANT: We only treat the input as a parameter name when the
+    corresponding args value is *not None*. If args[name] is None but the
+    name itself could be a real column name, we fall through and return
+    the name as-is — because a None parameter value should never shadow
+    an actual data column.
     """
     try:
         col_map = args.get("_col_map", {})
@@ -906,9 +912,11 @@ def _resolve_col(args, attr_name_or_col):
             return col_map[attr_name_or_col]
         if attr_name_or_col in args:
             arg_val = args[attr_name_or_col]
-            if isinstance(arg_val, str) and arg_val in col_map:
-                return col_map[arg_val]
-            return arg_val
+            if arg_val is not None:
+                if isinstance(arg_val, str) and arg_val in col_map:
+                    return col_map[arg_val]
+                return arg_val
+            # arg_val is None — don't return None, fall through to column-name path
         return attr_name_or_col
     except Exception:
         return attr_name_or_col
@@ -1062,38 +1070,86 @@ def make_mapping(args, variable):
 def make_trace_build_context(args, trace_spec, trace_data, mapping_labels, sizeref):
     """Build a fully pre-resolved TraceBuildContext from raw args.
 
-    This function lives in ``_core.py`` because it has full knowledge of:
+    This function is the *single* place where column-name resolution and
+    label decoration happen. It lives in ``_core.py`` because it has full
+    knowledge of:
     - Column name resolution (``_resolve_col`` with shadowing fix)
     - Decorated label computation (``get_decorated_label`` with aggregation)
     - All the configuration keys in the args dict
 
-    The returned :class:`TraceBuildContext` is a *self-contained* input to
-    the trace builder – it never needs to look at ``args`` again and never
-    calls back into ``_core.py``.
+    The returned :class:`TraceBuildContext` is *self-contained* – the trace
+    builder never needs to look at ``args`` again and never calls back into
+    ``_core.py``.
     """
 
-    # --- Step 1: resolve all attributes -------------------------------
+    # --- Step 1: collect every column name we might need ---------------
+    # These all need to be resolved through _resolve_col (which handles the
+    # parameter-name-vs-column-name shadowing fix).
+
+    col_names_to_resolve: set = set()
+
+    # Attributes whose raw_value IS a column name (or list of column names)
+    attr_names_to_resolve_col = set()
+
     extra_attrs = ["x", "y", "z", "base"]
     all_attr_names = list(trace_spec.attrs) + [
         a for a in extra_attrs if a not in trace_spec.attrs
     ]
 
+    for attr_name in all_attr_names:
+        raw = args.get(attr_name)
+        if raw is None:
+            continue
+        if isinstance(raw, str):
+            col_names_to_resolve.add(raw)
+            attr_names_to_resolve_col.add(attr_name)
+        elif isinstance(raw, list) and all(isinstance(c, str) for c in raw):
+            for c in raw:
+                col_names_to_resolve.add(c)
+            attr_names_to_resolve_col.add(attr_name)
+
+    # hover_data columns
+    hover_data = args.get("hover_data")
+    if hover_data:
+        if isinstance(hover_data, dict):
+            for col in hover_data.keys():
+                if isinstance(col, str):
+                    col_names_to_resolve.add(col)
+        elif isinstance(hover_data, (list, tuple)):
+            for col in hover_data:
+                if isinstance(col, str):
+                    col_names_to_resolve.add(col)
+
+    # custom_data columns
+    custom_data = args.get("custom_data")
+    if custom_data:
+        for col in custom_data:
+            if isinstance(col, str):
+                col_names_to_resolve.add(col)
+
+    # --- Step 2: resolve all column names in one go -------------------
+    resolved_columns: Dict[str, str] = {}
+    for name in col_names_to_resolve:
+        resolved_columns[name] = _resolve_col(args, name)
+
+    # --- Step 3: build resolved attrs (with decorated labels) ---------
     resolved_attrs: Dict[str, ResolvedAttr] = {}
     for attr_name in all_attr_names:
         raw_value = args.get(attr_name)
 
-        # Resolve column name (with the shadowing safeguard)
-        if isinstance(raw_value, list):
+        # Look up the resolved column name
+        if raw_value is None:
+            col_name = None
+        elif isinstance(raw_value, str):
+            col_name = resolved_columns.get(raw_value, raw_value)
+        elif isinstance(raw_value, list):
             col_name = [
-                _resolve_col(args, c) if isinstance(c, str) else c
+                resolved_columns.get(c, c) if isinstance(c, str) else c
                 for c in raw_value
             ]
-        elif raw_value is not None:
-            col_name = _resolve_col(args, raw_value)
         else:
-            col_name = None
+            col_name = raw_value
 
-        # Compute decorated display label
         display_label = get_decorated_label(args, raw_value, attr_name)
 
         resolved_attrs[attr_name] = ResolvedAttr(
@@ -1103,13 +1159,14 @@ def make_trace_build_context(args, trace_spec, trace_data, mapping_labels, sizer
             display_label=display_label,
         )
 
-    # --- Step 2: extract config values that the builder needs --------
+    # --- Step 4: assemble the context ---------------------------------
     ctx = TraceBuildContext(
         trace_data=trace_data,
         trace_spec=trace_spec,
         initial_mapping_labels=OrderedDict(mapping_labels),
         sizeref=sizeref,
         resolved_attrs=resolved_attrs,
+        resolved_columns=resolved_columns,
         labels=dict(args.get("labels") or {}),
         dimensions_max_cardinality=args.get("dimensions_max_cardinality", 20),
         trendline=args.get("trendline"),
@@ -1117,8 +1174,8 @@ def make_trace_build_context(args, trace_spec, trace_data, mapping_labels, sizer
         color_is_continuous=bool(args.get("color_is_continuous")),
         color_discrete_map=args.get("color_discrete_map"),
         color_discrete_sequence=list(args.get("color_discrete_sequence") or []),
-        hover_data=args.get("hover_data"),
-        custom_data=args.get("custom_data"),
+        hover_data=hover_data,
+        custom_data=custom_data,
         line_close=bool(args.get("line_close")),
     )
     return ctx
