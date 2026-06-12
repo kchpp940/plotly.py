@@ -1,6 +1,6 @@
 import numpy as np
 
-from plotly.optional_imports import deps
+from plotly.optional_imports import deps, require_capability, available_capability
 from ..utils import is_num_list
 from plotly.utils import get_by_path, node_generator
 
@@ -9,7 +9,7 @@ import copy
 matplotlylib = deps.get_module("plotly.matplotlylib")
 
 if matplotlylib:
-    deps.matplotlib.require("matplotlylib conversion tests")
+    require_capability("plot.matplotlib")
     import matplotlib
 
     # Force matplotlib to not use any Xwindows backend.

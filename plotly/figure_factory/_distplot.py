@@ -1,13 +1,13 @@
 from plotly import exceptions
-from plotly.optional_imports import deps
+from plotly.optional_imports import require_capability, capability_module, available_capability
 from plotly.figure_factory import utils
 from plotly.graph_objs import graph_objs
 
 # Optional imports, may be None for users that only use our core functionality.
-np = deps.numpy.module
-pd = deps.pandas.module
-scipy = deps.scipy.module
-scipy_stats = deps.scipy.module.stats if deps.scipy.available else None
+np = capability_module("core.numpy")
+pd = capability_module("dataframe.pandas")
+scipy = capability_module("stats.scipy")
+scipy_stats = scipy.stats if scipy is not None else None
 
 
 DEFAULT_HISTNORM = "probability density"
@@ -42,7 +42,7 @@ def validate_distplot(hist_data, curve_type):
     if curve_type not in curve_opts:
         raise exceptions.PlotlyError("curve_type must be defined as 'kde' or 'normal'")
 
-    deps.scipy.require("`create_distplot`")
+    require_capability("stats.scipy")
 
 
 def create_distplot(

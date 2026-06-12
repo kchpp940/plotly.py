@@ -10,7 +10,7 @@ from .trendline_functions import ols, lowess, rolling, expanding, ewm
 
 from _plotly_utils.basevalidators import ColorscaleValidator
 from plotly.colors import qualitative, sequential
-from plotly.optional_imports import deps
+from plotly.optional_imports import require_capability, available_capability
 import math
 
 from plotly._subplots import (
@@ -1994,7 +1994,7 @@ def to_named_series(x, name=None, native_namespace=None):
     elif native_namespace is not None:
         return nw.new_series(name=name, values=x, native_namespace=native_namespace)
     else:
-        deps.pandas.require("building a Series without an explicit native_namespace")
+        require_capability("dataframe.pandas")
         import pandas as pd
 
         return nw.new_series(name=name, values=x, native_namespace=pd)
@@ -2240,7 +2240,7 @@ def process_args_into_dataframe(
     length = len(df_output[next(iter(df_output))]) if len(df_output) else 0
 
     if native_namespace is None:
-        deps.pandas.require("constructing a DataFrame without an explicit native_namespace")
+        require_capability("dataframe.pandas")
         import pandas as pd
 
         native_namespace = pd
@@ -2272,7 +2272,7 @@ def process_args_into_dataframe(
     if df_output:
         df_output = nw.from_dict(df_output)
     else:
-        deps.pandas.require("plotly.express")
+        require_capability("dataframe.pandas")
         import pandas as pd
 
         df_output = nw.from_native(pd.DataFrame({}), eager_only=True)
@@ -2398,7 +2398,7 @@ def build_dataframe(args, constructor):
         # We try to import pandas, and then try to instantiate a pandas dataframe from
         # this such object
         else:
-            deps.pandas.require("converting arbitrary input to a DataFrame")
+            require_capability("dataframe.pandas")
             import pandas as pd
 
             try:
@@ -3714,7 +3714,7 @@ def make_figure(args, constructor, trace_patch=None, layout_patch=None):
             annotation_collector.add(trendline_ann)
 
     if trendline_rows:
-        deps.pandas.require("trendline result reporting")
+        require_capability("dataframe.pandas")
         import pandas as pd
 
         fig._px_trendlines = pd.DataFrame(trendline_rows)

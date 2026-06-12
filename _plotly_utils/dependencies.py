@@ -773,7 +773,7 @@ deps.register(Dependency(
 deps.register(Dependency(
     name="kaleido",
     import_name="kaleido",
-    min_version="1.0.0",
+    min_version="1.3.0",
     extra="kaleido",
     description="Static image export engine",
 ))
@@ -1130,21 +1130,17 @@ _register_caps(deps)
 # pyproject.toml extras / version consistency checker
 # ---------------------------------------------------------------------------
 
-def _parse_pyproject_extras(pyproject_path: Optional[str] = None) -> Dict[str, Dict[str, str]]:
+def _parse_pyproject_extras(pyproject_path: Optional[str] = None) -> Dict[str, Dict[str, "Requirement"]]:
     """Parse ``[project.optional-dependencies]`` from pyproject.toml.
 
-    Returns a dict of ``{extra_name: {pkg_name: min_version_str}}`` for every
-    dependency that has a minimum version.  Dependencies without a version
-    specifier are included with an empty-string value.
+    Uses the standard library ``tomllib`` (or the ``tomli`` backport on
+    Python < 3.11) and :class:`packaging.requirements.Requirement` so every
+    specifier is normalised consistently with what PyPI/pip understand.
 
-    Falls back to looking for ``pyproject.toml`` alongside the
-    ``_plotly_utils`` package if *pyproject_path* is not provided.
-
-    Notes
-    -----
-    Uses a minimal, dependency-free TOML parser that handles the subset of
-    TOML used in the ``[project.optional-dependencies]`` table.  Supports
-    both single-line and multi-line lists.
+    Returns
+    -------
+    dict
+        ``{extra_name: {canonical_pkg_name: packaging.requirements.Requirement}}``
     """
     import os
 
@@ -1156,152 +1152,42 @@ def _parse_pyproject_extras(pyproject_path: Optional[str] = None) -> Dict[str, D
     if not os.path.isfile(pyproject_path):
         return {}
 
-    with open(pyproject_path, "r", encoding="utf-8") as fh:
-        lines = fh.readlines()
+    # Load TOML – stdlib tomllib on 3.11+, tomli on older Pythons
+    try:
+        import tomllib as _toml  # type: ignore[attr-defined]
+    except ModuleNotFoundError:  # pragma: no cover - only on Py<3.11
+        try:
+            import tomli as _toml  # type: ignore[no-redef]
+        except ModuleNotFoundError:
+            logger.warning(
+                "Cannot parse pyproject.toml – neither tomllib (py>=3.11) nor "
+                "tomli is installed. pyproject consistency checks will be skipped."
+            )
+            return {}
 
-    extras: Dict[str, Dict[str, str]] = {}
-    current_extra: Optional[str] = None
-    in_list: bool = False
-    list_buffer: List[str] = []
+    from packaging.requirements import Requirement
 
-    for raw_line in lines:
-        line = raw_line.strip()
+    with open(pyproject_path, "rb") as fh:
+        data = _toml.load(fh)
 
-        # Skip comments and empty lines
-        if not line or line.startswith("#"):
-            continue
+    table = data.get("project", {}).get("optional-dependencies", {})
+    result: Dict[str, Dict[str, Requirement]] = {}
 
-        # Section header
-        if line.startswith("[") and line.endswith("]"):
-            # Flush any pending multi-line list
-            if current_extra and in_list and list_buffer:
-                _parse_list_line(",".join(list_buffer), extras[current_extra])
-                list_buffer = []
-                in_list = False
+    for extra_name, raw_specs in table.items():
+        parsed: Dict[str, Requirement] = {}
+        for raw in raw_specs:
+            req = Requirement(raw)
+            # Normalise package name (case-insensitive, underscore → dash)
+            canonical = req.name.lower().replace("_", "-")
+            parsed[canonical] = req
+        result[extra_name] = parsed
 
-            section = line[1:-1].strip()
-            if section == "project.optional-dependencies":
-                current_extra = "__header__"
-                in_list = False
-                continue
-            elif section.startswith("project.optional-dependencies."):
-                # Nested table style: [project.optional-dependencies.express]
-                current_extra = section[len("project.optional-dependencies."):].strip()
-                extras.setdefault(current_extra, {})
-                in_list = False
-                continue
-            else:
-                # Left the optional-dependencies section
-                current_extra = None
-                in_list = False
-                continue
-
-        if current_extra is None:
-            continue
-
-        if current_extra == "__header__":
-            # Look for: extra_name = [ ... ] (could be multi-line)
-            if "=" in line and not in_list:
-                key_part, rest = line.split("=", 1)
-                key = key_part.strip()
-                rest = rest.strip()
-
-                if rest.startswith("["):
-                    current_extra = key
-                    extras.setdefault(current_extra, {})
-                    in_list = True
-                    list_content = rest[1:].strip()
-
-                    # Single-line list: [ "foo", "bar" ]
-                    if list_content.endswith("]"):
-                        list_content = list_content[:-1].strip()
-                        _parse_list_line(list_content, extras[current_extra])
-                        in_list = False
-                    else:
-                        # Multi-line list – start buffering
-                        if list_content:
-                            list_buffer.append(list_content)
-                    continue
-            continue
-
-        # We're inside a specific extra's list
-        if in_list:
-            if line.endswith("]"):
-                # Last line of multi-line list
-                content = line[:-1].strip().rstrip(",")
-                if content:
-                    list_buffer.append(content)
-                _parse_list_line(",".join(list_buffer), extras[current_extra])
-                list_buffer = []
-                in_list = False
-                current_extra = "__header__"
-            else:
-                # Middle line of multi-line list
-                content = line.rstrip(",").strip()
-                if content:
-                    list_buffer.append(content)
-            continue
-
-        # Not in a list yet – shouldn't happen for key=[...] style
-        # but handle just in case
-        if "=" in line:
-            _key, _val = line.split("=", 1)
-            # skip non-list entries
-            pass
-
-    # Flush any remaining list at EOF
-    if current_extra and in_list and list_buffer:
-        _parse_list_line(",".join(list_buffer), extras[current_extra])
-
-    return extras
+    return result
 
 
-def _parse_list_line(content: str, target: Dict[str, str]) -> None:
-    """Parse one or more PEP 508 requirement specs from a comma-separated line."""
-    # Split on commas, handle quotes
-    import re
-
-    # Simple split – works for our pyproject's simple list format
-    items = re.findall(r'["\']([^"\']+)["\']', content)
-    if not items and content.strip():
-        items = [content.strip().strip(',').strip()]
-
-    for item in items:
-        item = item.strip()
-        if not item:
-            continue
-        pkg, min_ver = _split_spec(item)
-        if pkg:
-            target[pkg] = min_ver
-
-
-def _split_spec(spec: str) -> Tuple[str, str]:
-    """Split a PEP 508 requirement spec into (package_name, min_version).
-
-    Examples::
-
-        "numpy>=1.22"      → ("numpy", "1.22")
-        "kaleido>=1.3.0"   → ("kaleido", "1.3.0")
-        "pandas"           → ("pandas", "")
-        "polars[timezone]" → ("polars", "")
-    """
-    import re
-
-    # Strip extras and markers
-    spec = spec.split(";")[0].strip()
-
-    match = re.match(r"^([A-Za-z0-9_.-]+)(\[.*?\])?\s*(>=|==|~=|>|<|<=)?\s*([0-9A-Za-z.+\-]*)?", spec)
-    if not match:
-        return spec, ""
-
-    pkg = match.group(1)
-    op = match.group(3) or ""
-    ver = match.group(4) or ""
-
-    # Only keep >= versions as "minimum required"
-    if op in (">=", "~=", "==") and ver:
-        return pkg, ver
-    return pkg, ""
+def _canonical_pkg_name(name: str) -> str:
+    """Return the PyPI-canonical form of a package name."""
+    return name.lower().replace("_", "-")
 
 
 def check_pyproject_consistency(
@@ -1310,93 +1196,150 @@ def check_pyproject_consistency(
 ) -> Dict[str, list]:
     """Compare the dependency registry against ``pyproject.toml`` extras.
 
+    Uses real :mod:`tomllib`/:mod:`tomli` parsing and
+    :class:`packaging.requirements.Requirement` so every specifier is
+    compared on a canonical footing.
+
     Returns a dict of issues grouped by severity:
 
-    * ``"mismatch"`` – registered dep has ``min_version`` / ``extra`` that
-      disagree with pyproject.toml.
-    * ``"extra_missing"`` – an extra in pyproject is not represented by any
-      registered dependency's ``extra`` field.
-    * ``"dep_extra_missing"`` – a registered dep claims an extra that doesn't
-      exist in pyproject.toml.
-    * ``"unregistered_package"`` – a package mentioned in pyproject extras
-      has no :class:`Dependency` registration at all.
+    * ``"mismatch_min_version"`` – a registered ``Dependency.min_version``
+      disagrees with the version specifier declared in pyproject.toml.
+    * ``"mismatch_dist_name"`` – the registered ``dist_name`` /
+      ``import_name`` does not map to any package in pyproject.toml.
+    * ``"dep_extra_missing"`` – a registered Dependency claims an ``extra``
+      that does not exist in ``pyproject.toml``.
+    * ``"capability_missing_dep"`` – a :class:`_Capability` references a
+      dependency name that is not registered.
+    * ``"unregistered_package"`` – a package that appears in a user-facing
+      extra has no :class:`Dependency` registration at all.
+
+    User-facing extras are defined as all extras *except* those whose name
+    starts with ``dev_`` (internal build/test extras).
     """
     if registry is None:
         from _plotly_utils.dependencies import deps as registry
 
     extras = _parse_pyproject_extras(pyproject_path)
-
     issues: Dict[str, list] = {
-        "mismatch": [],
-        "extra_missing": [],
+        "mismatch_min_version": [],
+        "mismatch_dist_name": [],
         "dep_extra_missing": [],
+        "capability_missing_dep": [],
         "unregistered_package": [],
     }
 
-    # Collect registered deps by (extra, package_name)
-    registered_by_pkg: Dict[str, Dependency] = {}
-    for dep in registry.values():
-        pkg = dep.dist_name or dep.import_name
-        registered_by_pkg[pkg] = dep
-
-    # Also index by import_name for packages where dist_name differs
-    for dep in registry.values():
-        if dep.import_name not in registered_by_pkg:
-            registered_by_pkg[dep.import_name] = dep
-
-    # Walk every extra in pyproject
-    all_pyproject_pkgs: set = set()
-    for extra_name, pkgs in extras.items():
-        for pkg_name, min_ver in pkgs.items():
-            all_pyproject_pkgs.add(pkg_name)
-
-            if pkg_name not in registered_by_pkg:
-                # Try case-insensitive
-                found = None
-                for reg_pkg, dep in registered_by_pkg.items():
-                    if reg_pkg.lower() == pkg_name.lower():
-                        found = dep
-                        break
-                if found is None:
-                    issues["unregistered_package"].append(
-                        f"Package '{pkg_name}' in extra '{extra_name}' "
-                        "has no Dependency registration"
-                    )
-                    continue
-                else:
-                    dep = found
-            else:
-                dep = registered_by_pkg[pkg_name]
-
-            # Check min_version consistency
-            if min_ver and dep.min_version:
-                if min_ver != dep.min_version:
-                    issues["mismatch"].append(
-                        f"{dep.name}: min_version in registry is "
-                        f"'{dep.min_version}' but pyproject extra "
-                        f"'{extra_name}' specifies '{min_ver}'"
-                    )
-
-            # Check extra consistency
-            if dep.extra and dep.extra != extra_name:
-                # A dep can only be "assigned" to one primary extra.
-                # If it appears in multiple extras, the primary one should match.
-                # We only flag if the dep's declared extra doesn't exist at all.
-                pass
-
-    # Check that every dep with an extra references a known extra
     known_extras = set(extras.keys())
+
+    # ----- Index registered deps by canonical package name -----
+    reg_by_canonical: Dict[str, Dependency] = {}
+    for dep in registry.values():
+        names = {dep.import_name}
+        if dep.dist_name:
+            names.add(dep.dist_name)
+        for n in names:
+            reg_by_canonical.setdefault(_canonical_pkg_name(n), dep)
+
+    # ----- 1. Walk every package in every user-facing extra -----
+    user_extras = {name: pkgs for name, pkgs in extras.items()
+                   if not name.startswith("dev_")}
+
+    for extra_name, reqs in user_extras.items():
+        for canonical_pkg, req in reqs.items():
+            dep = reg_by_canonical.get(canonical_pkg)
+
+            # --- 1a. Completely unregistered? ---
+            if dep is None:
+                issues["unregistered_package"].append(
+                    f"Package '{req.name}' in extra '{extra_name}' has no "
+                    "Dependency registration"
+                )
+                continue
+
+            # --- 1b. Version mismatch? ---
+            if dep.min_version is not None and req.specifier:
+                # Requirement may carry multiple specifiers – pull out the
+                # first >=, ~=, or == bound as the effective "minimum".
+                min_from_pyproject: Optional[str] = None
+                for spec in req.specifier:
+                    if spec.operator in (">=", "~=", "=="):
+                        min_from_pyproject = spec.version
+                        break
+                if min_from_pyproject and min_from_pyproject != dep.min_version:
+                    issues["mismatch_min_version"].append(
+                        f"{dep.name}: registry min_version='{dep.min_version}' "
+                        f"but pyproject extra '{extra_name}' declares "
+                        f"'{min_from_pyproject}' (full spec: {str(req)})"
+                    )
+
+            # --- 1c. Extra name on dep points somewhere nonexistent? ---
+            if dep.extra and dep.extra not in known_extras:
+                issues["dep_extra_missing"].append(
+                    f"{dep.name} declares extra='{dep.extra}' "
+                    "but that extra is not in pyproject.toml"
+                )
+
+    # ----- 2. Walk every registered dep with an explicit extra -----
     for dep in registry.values():
         if dep.extra and dep.extra not in known_extras:
-            # Check if it's a compound dep (e.g. "plotly[express]" inside dev_optional)
-            if dep.extra.startswith("plotly[") and dep.extra.endswith("]"):
-                continue  # compound spec – fine
-            issues["dep_extra_missing"].append(
-                f"{dep.name} declares extra='{dep.extra}' but that extra "
-                "is not in pyproject.toml"
+            # Avoid double-reporting the same dep we flagged above under
+            # dep_extra_missing for a *user* extra.  Here we just make sure
+            # every explicitly declared extra actually exists.
+            already = any(dep.name in item for item in issues["dep_extra_missing"])
+            if not already:
+                issues["dep_extra_missing"].append(
+                    f"{dep.name} declares extra='{dep.extra}' "
+                    "but that extra is not in pyproject.toml"
+                )
+
+    # ----- 3. Sanity-check every capability references a real dep -----
+    for cap_name, cap in registry._caps.items():
+        if cap.dep_name not in registry._deps:
+            issues["capability_missing_dep"].append(
+                f"Capability '{cap_name}' references unknown dep '{cap.dep_name}'"
             )
 
     return issues
+
+
+# ---------------------------------------------------------------------------
+# Top-level capability convenience functions
+# ---------------------------------------------------------------------------
+
+def require_capability(name: str) -> None:
+    """Guard a code path against a missing semantic capability.
+
+    Alias for ``deps.require(name)`` – kept as a free-standing function
+    so business modules can import a single, descriptive name that clearly expresses intent::
+
+        from plotly.optional_imports import require_capability
+        require_capability("trendline.ols")
+
+    Raises
+    ------
+    ImportError
+        If the capability's backing dependency is not installed or below its
+        ``min_version``.  the error message includes the capability's
+        human-readable ``feature_label`` and the install hint.
+    KeyError
+        If *name* is not a registered capability name.
+    """
+    from _plotly_utils.dependencies import deps
+    deps.require(name)
+
+
+def available_capability(name: str) -> bool:
+    """Return ``True`` if a semantic capability is available."""
+    from _plotly_utils.dependencies import deps
+    return deps.available(name)
+
+
+def capability_module(name: str):
+    """Return the module object backing a semantic capability, or ``None``.
+
+    Equivalent to ``deps.module(name)``.
+    """
+    from _plotly_utils.dependencies import deps
+    return deps.module(name)
 
 
 # ---------------------------------------------------------------------
@@ -1413,4 +1356,7 @@ __all__ = [
     "fallback_function",
     "check_pyproject_consistency",
     "_Capability",
+    "require_capability",
+    "available_capability",
+    "capability_module",
 ]

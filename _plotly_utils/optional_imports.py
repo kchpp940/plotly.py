@@ -19,6 +19,10 @@ from _plotly_utils.dependencies import (
     requires,
     skip_if_missing,
     fallback_function,
+    check_pyproject_consistency,
+    require_capability,
+    available_capability,
+    capability_module,
 )
 
 _not_importable = set()  # mirror of the original – keeps exploding_module sticky
@@ -71,4 +75,8 @@ __all__ = [
     "requires",
     "skip_if_missing",
     "fallback_function",
+    "check_pyproject_consistency",
+    "require_capability",
+    "available_capability",
+    "capability_module",
 ]

@@ -5,9 +5,9 @@
 for rapid data exploration and figure generation. Learn more at https://plotly.com/python/plotly-express/
 """
 
-from plotly.optional_imports import deps
+from plotly.optional_imports import available_capability
 
-if not deps.numpy.available:
+if not available_capability("core.numpy"):
     raise ImportError(
         """\
 Plotly Express requires numpy to be installed. You can install numpy using pip with:

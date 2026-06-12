@@ -3,7 +3,15 @@ from numbers import Number as Num
 from unittest import TestCase
 import plotly.io as pio
 
-from _plotly_utils.dependencies import deps, requires, skip_if_missing
+from _plotly_utils.dependencies import (
+    deps,
+    requires,
+    skip_if_missing,
+    require_capability,
+    available_capability,
+    capability_module,
+    check_pyproject_consistency,
+)
 
 
 def pytest_missing_dep_marker(dep_name: str, min_version=None, *, feature=None):
@@ -23,6 +31,18 @@ def pytest_missing_dep_marker(dep_name: str, min_version=None, *, feature=None):
     return requires(dep_name, min_version, feature=feature)
 
 
+def pytest_missing_capability_marker(cap_name: str):
+    """Return a pytest mark that skips a test when a **semantic capability**
+    is unavailable.
+
+    Example::
+
+        @pytest_missing_capability_marker("trendline.ols")
+        def test_ols_trendline(): ...
+    """
+    return requires(deps.capability(cap_name).dep_name, feature=cap_name)
+
+
 __all__ = [
     "TestCaseNoTemplate",
     "compare_dict",
@@ -33,7 +53,12 @@ __all__ = [
     "deps",
     "requires",
     "skip_if_missing",
+    "require_capability",
+    "available_capability",
+    "capability_module",
+    "check_pyproject_consistency",
     "pytest_missing_dep_marker",
+    "pytest_missing_capability_marker",
 ]
 
 

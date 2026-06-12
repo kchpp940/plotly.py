@@ -1,8 +1,12 @@
 # ruff: noqa: E402
 
-from plotly.optional_imports import deps, fallback_function
+from plotly.optional_imports import (
+    require_capability,
+    available_capability,
+    fallback_function,
+)
 
-deps.numpy.require("the plotly.figure_factory module")
+require_capability("core.numpy")
 
 from plotly.figure_factory._2d_density import create_2d_density
 from plotly.figure_factory._annotated_heatmap import create_annotated_heatmap
@@ -20,7 +24,7 @@ from plotly.figure_factory._table import create_table
 from plotly.figure_factory._trisurf import create_trisurf
 from plotly.figure_factory._violin import create_violin
 
-if deps.pandas.available:
+if available_capability("dataframe.pandas"):
     from plotly.figure_factory._county_choropleth import create_choropleth
     from plotly.figure_factory._hexbin_map import (
         create_hexbin_map,
@@ -32,7 +36,7 @@ else:
     create_hexbin_mapbox = fallback_function("pandas", "`create_hexbin_mapbox`")
 
 
-if deps.skimage.available:
+if available_capability("ff.skimage"):
     from plotly.figure_factory._ternary_contour import create_ternary_contour
 else:
     create_ternary_contour = fallback_function("skimage", "`create_ternary_contour`")

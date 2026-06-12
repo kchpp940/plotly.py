@@ -1,20 +1,45 @@
 """
 Optional dependency imports for Plotly.
 
-Exposes the **unified dependency capability layer** (``deps``, ``get_module``,
-``requires``, ``skip_if_missing``, ``fallback_function``).
+Exposes the **unified dependency capability layer** with two complementary
+interfaces:
 
-Quick reference
----------------
-* Check availability – ``deps.pandas.available`` / ``deps.pandas.installed``
-* Get the module – ``deps.pandas.module`` / ``deps.get_module("scipy.stats")``
-* Guard a code path – ``deps.scipy.require("create_distplot")``
-* Version query – ``deps.numpy.version`` / ``deps.kaleido.version_obj_installed.major``
-* Build a fallback stub – ``fallback_function("pandas", "`create_choropleth`")``
-* Skip a pytest test – ``@requires("pandas")`` / ``@skip_if_missing("kaleido")``
+* **Semantic capability layer (recommended for new code)** – declare *what*
+  you need, not *which module* to import::
 
-``get_module(name, should_load=True)`` preserves 100% backwards compatibility
-with legacy call sites but is now backed by the unified registry.
+      from plotly.optional_imports import require_capability
+      require_capability("trendline.ols")
+
+      from plotly.optional_imports import available_capability
+      if available_capability("image.kaleido"): ...
+
+      from plotly.optional_imports import capability_module
+      pd = capability_module("dataframe.pandas")
+
+* **Package-centric layer (for advanced use)** – per-package metadata::
+
+      from plotly.optional_imports import deps
+      if deps.pandas.available: ...
+      deps.scipy.require("create_distplot")
+
+Quick reference – semantic capabilities
+----------------------------------------
+* ``core.narwhals`` – DataFrame interoperability
+* ``core.numpy`` – numerical array support
+* ``dataframe.pandas`` / ``dataframe.polars`` / ``dataframe.pyarrow`` / ``dataframe.xarray``
+* ``trendline.ols`` / ``trendline.lowess`` / ``trendline.rolling`` / ``trendline.ewm`` / ``trendline.expanding``
+* ``stats.scipy`` – scipy scientific computing
+* ``image.kaleido`` – Kaleido v1 static image export
+* ``render.ipython`` / ``render.nbformat`` / ``render.ipywidgets`` / ``render.notebook`` / ``render.jupyterlab``
+* ``io.orjson`` / ``io.psutil`` / ``io.chart_studio``
+* ``geo.geopandas`` / ``geo.shapely`` / ``geo.shapefile``
+* ``ff.skimage`` / ``ff.pillow`` – figure-factory extras
+* ``widget.anywidget`` / ``plot.matplotlib`` / ``colors.colorcet``
+
+Backwards compatibility
+-----------------------
+``get_module(name, should_load=True)`` preserves 100% of the legacy behaviour
+but is now backed by the unified registry so caching and error paths are shared.
 """
 
 from _plotly_utils.optional_imports import (  # noqa: F401
@@ -25,6 +50,10 @@ from _plotly_utils.optional_imports import (  # noqa: F401
     requires,
     skip_if_missing,
     fallback_function,
+    check_pyproject_consistency,
+    require_capability,
+    available_capability,
+    capability_module,
 )
 
 __all__ = [
@@ -35,4 +64,8 @@ __all__ = [
     "requires",
     "skip_if_missing",
     "fallback_function",
+    "check_pyproject_consistency",
+    "require_capability",
+    "available_capability",
+    "capability_module",
 ]

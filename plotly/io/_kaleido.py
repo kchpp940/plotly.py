@@ -7,7 +7,7 @@ import warnings
 import plotly
 from plotly.io._utils import validate_coerce_fig_to_dict, broadcast_args_to_dicts
 from plotly.io._defaults import defaults
-from plotly.optional_imports import deps
+from plotly.optional_imports import deps, require_capability, available_capability
 
 ENGINE_SUPPORT_TIMELINE = "September 2025"
 ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS = True
@@ -639,8 +639,8 @@ def write_images(
     """
 
     # Raise informative error message if Kaleido v1 is not installed
-    if not deps.kaleido.available:
-        deps.kaleido.require("`write_images()`")
+    if not available_capability("image.kaleido"):
+        require_capability("image.kaleido")
 
     # Broadcast arguments into correct format for passing to Kaleido
     arg_dicts = broadcast_args_to_dicts(
