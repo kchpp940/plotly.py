@@ -522,10 +522,119 @@ class AggregationPlan:
         return None
 
     # ------------------------------------------------------------------
-    # Phase 1.5: build_dataframe marks count column intent
+    # Phase 1.5: build_dataframe count column handling (unified API)
     # ------------------------------------------------------------------
-    def ensure_count_column(self, args, df_output, count_name, value_role):
-        """在 df_output 中创建 count 列，并记录意图供 resolve() 消费。"""
+    def process_dataframe(
+        self,
+        args,
+        df_output,
+        count_name,
+        wide_mode,
+        hist1d_orientation,
+        missing_bar_dim,
+        constructor,
+        orient_v,
+        value_name,
+    ):
+        """build_dataframe 中聚合图表的统一入口。
+
+        处理内容：
+        - 判断是否需要创建 count 列
+        - 创建 count 列并更新 args
+        - 返回更新后的 df_output
+        """
+        if self.chart_kind == AggregationChartKind.BAR:
+            return self._process_bar_dataframe(
+                args,
+                df_output,
+                count_name,
+                wide_mode,
+                missing_bar_dim,
+                constructor,
+                orient_v,
+                value_name,
+            )
+        if self.chart_kind == AggregationChartKind.HISTOGRAM_2D:
+            return self._process_hist2d_dataframe(
+                args, df_output, count_name
+            )
+        if self.chart_kind == AggregationChartKind.ECDF:
+            return self._process_ecdf_dataframe(
+                args, df_output, count_name, hist1d_orientation, constructor
+            )
+        if self.chart_kind == AggregationChartKind.HISTOGRAM_1D:
+            return self._process_hist1d_dataframe(
+                args, df_output, count_name, hist1d_orientation, constructor
+            )
+        return df_output
+
+    def _process_bar_dataframe(
+        self,
+        args,
+        df_output,
+        count_name,
+        wide_mode,
+        missing_bar_dim,
+        constructor,
+        orient_v,
+        value_name,
+    ):
+        if not wide_mode and missing_bar_dim and constructor == go.Bar:
+            other_dim = "x" if missing_bar_dim == "y" else "y"
+            if not _is_continuous(df_output, args[other_dim]):
+                return self.create_count_column(args, df_output, count_name)
+            else:
+                if args["orientation"] is None:
+                    args["orientation"] = "v" if missing_bar_dim == "x" else "h"
+
+        if wide_mode and constructor == go.Bar and not _is_continuous(df_output, value_name):
+            return self.create_count_column(args, df_output, count_name)
+
+        return df_output
+
+    def _process_hist2d_dataframe(self, args, df_output, count_name):
+        if args.get("z") is None:
+            return self.create_count_column(args, df_output, count_name)
+        return df_output
+
+    def _process_ecdf_dataframe(
+        self, args, df_output, count_name, hist1d_orientation, constructor
+    ):
+        if hist1d_orientation and constructor == go.Scatter:
+            if args["x"] is not None and args["y"] is not None:
+                args["histfunc"] = "sum"
+            elif args["x"] is None:
+                args["histfunc"] = None
+                args["orientation"] = "h"
+                return self.create_count_column(args, df_output, count_name)
+            else:
+                args["histfunc"] = None
+                args["orientation"] = "v"
+                return self.create_count_column(args, df_output, count_name)
+        return df_output
+
+    def _process_hist1d_dataframe(
+        self, args, df_output, count_name, hist1d_orientation, constructor
+    ):
+        if hist1d_orientation and constructor == go.Scatter:
+            if args["x"] is not None and args["y"] is not None:
+                args["histfunc"] = "sum"
+            elif args["x"] is None:
+                args["histfunc"] = None
+                args["orientation"] = "h"
+                return self.create_count_column(args, df_output, count_name)
+            else:
+                args["histfunc"] = None
+                args["orientation"] = "v"
+                return self.create_count_column(args, df_output, count_name)
+        return df_output
+
+    def create_count_column(self, args, df_output, count_name):
+        """创建 count 列并记录意图，返回更新后的 DataFrame。
+
+        build_dataframe 调用此方法前必须先调用 process_dataframe。
+        """
+        value_role = self._get_count_column_value_role(args)
         self._pending_count = {
             "count_name": count_name,
             "value_role": value_role,
@@ -534,6 +643,23 @@ class AggregationPlan:
         args["_count_column_created"] = count_name
         args["_count_column_role"] = value_role
         return df_output.with_columns(nw.lit(1).alias(count_name))
+
+    def _get_count_column_value_role(self, args):
+        """如果需要创建 count 列，返回它应该绑定的 value_role。"""
+        if self.chart_kind == AggregationChartKind.HISTOGRAM_2D:
+            return "z"
+        if self.chart_kind == AggregationChartKind.ECDF:
+            return "y"
+        orientation = args.get("orientation") or self._guess_orientation(args)
+        return "x" if orientation == "h" else "y"
+
+    def _guess_orientation(self, args):
+        if self.chart_kind == AggregationChartKind.HISTOGRAM_1D:
+            has_x = args.get("x") is not None
+            has_y = args.get("y") is not None
+            if has_y and not has_x:
+                return "h"
+        return "v"
 
     # ------------------------------------------------------------------
     # Phase 2: Resolve (after build_dataframe, using real data)
@@ -2672,22 +2798,62 @@ def build_dataframe(args, constructor):
             _col_map[_semantic_value_name] = value_name
 
     count_name = _escape_col_name(df_output.columns, "count", [var_name, value_name])
-    if not wide_mode and missing_bar_dim and constructor == go.Bar:
-        other_dim = "x" if missing_bar_dim == "y" else "y"
-        if not _is_continuous(df_output, args[other_dim]):
-            aggregation_plan = args.get("_aggregation_plan")
-            if aggregation_plan is not None:
-                df_output = aggregation_plan.ensure_count_column(
-                    args, df_output, count_name, value_role=missing_bar_dim
-                )
-            else:
+
+    aggregation_plan = args.get("_aggregation_plan")
+    if aggregation_plan is not None:
+        df_output = aggregation_plan.process_dataframe(
+            args,
+            df_output,
+            count_name,
+            wide_mode,
+            hist1d_orientation,
+            missing_bar_dim,
+            constructor,
+            orient_v if wide_mode else None,
+            value_name if wide_mode else None,
+        )
+    else:
+        if not wide_mode and missing_bar_dim and constructor == go.Bar:
+            other_dim = "x" if missing_bar_dim == "y" else "y"
+            if not _is_continuous(df_output, args[other_dim]):
                 args[missing_bar_dim] = count_name
                 df_output = df_output.with_columns(nw.lit(1).alias(count_name))
                 args["_count_column_created"] = count_name
                 args["_count_column_role"] = missing_bar_dim
-        else:
-            if args["orientation"] is None:
-                args["orientation"] = "v" if missing_bar_dim == "x" else "h"
+            else:
+                if args["orientation"] is None:
+                    args["orientation"] = "v" if missing_bar_dim == "x" else "h"
+
+        if wide_mode and constructor == go.Bar and not _is_continuous(df_output, value_name):
+            args["y" if orient_v else "x"] = count_name
+            df_output = df_output.with_columns(nw.lit(1).alias(count_name))
+            args["_count_column_created"] = count_name
+            args["_count_column_role"] = "y" if orient_v else "x"
+
+        if hist1d_orientation and constructor == go.Scatter:
+            if args["x"] is not None and args["y"] is not None:
+                args["histfunc"] = "sum"
+            elif args["x"] is None:
+                args["histfunc"] = None
+                args["orientation"] = "h"
+                args["x"] = count_name
+                df_output = df_output.with_columns(nw.lit(1).alias(count_name))
+                args["_count_column_created"] = count_name
+                args["_count_column_role"] = "x"
+            else:
+                args["histfunc"] = None
+                args["orientation"] = "v"
+                args["y"] = count_name
+                df_output = df_output.with_columns(nw.lit(1).alias(count_name))
+                args["_count_column_created"] = count_name
+                args["_count_column_role"] = "y"
+
+    if constructor in hist2d_types and aggregation_plan is None:
+        if args.get("z") is None:
+            args["z"] = count_name
+            df_output = df_output.with_columns(nw.lit(1).alias(count_name))
+            args["_count_column_created"] = count_name
+            args["_count_column_role"] = "z"
 
     if constructor in hist2d_types:
         del args["orientation"]
@@ -2783,19 +2949,6 @@ def build_dataframe(args, constructor):
                     args["color"] = _semantic_var_name
             else:
                 args["x" if orient_v else "y"] = _semantic_value_name
-                aggregation_plan = args.get("_aggregation_plan")
-                if aggregation_plan is not None:
-                    df_output = aggregation_plan.ensure_count_column(
-                        args,
-                        df_output,
-                        count_name,
-                        value_role=("y" if orient_v else "x"),
-                    )
-                else:
-                    args["y" if orient_v else "x"] = count_name
-                    df_output = df_output.with_columns(nw.lit(1).alias(count_name))
-                    args["_count_column_created"] = count_name
-                    args["_count_column_role"] = "y" if orient_v else "x"
                 if args["color"] is None and _semantic_var_name is not None:
                     args["color"] = _semantic_var_name
         elif constructor in [go.Violin, go.Box]:
@@ -2806,35 +2959,23 @@ def build_dataframe(args, constructor):
             )
             args["y" if orient_v else "x"] = _semantic_value_name
 
-    if hist1d_orientation and constructor == go.Scatter:
+    if aggregation_plan is None and hist1d_orientation and constructor == go.Scatter:
         if args["x"] is not None and args["y"] is not None:
             args["histfunc"] = "sum"
         elif args["x"] is None:
             args["histfunc"] = None
             args["orientation"] = "h"
-            aggregation_plan = args.get("_aggregation_plan")
-            if aggregation_plan is not None:
-                df_output = aggregation_plan.ensure_count_column(
-                    args, df_output, count_name, value_role="x"
-                )
-            else:
-                args["x"] = count_name
-                df_output = df_output.with_columns(nw.lit(1).alias(count_name))
-                args["_count_column_created"] = count_name
-                args["_count_column_role"] = "x"
+            args["x"] = count_name
+            df_output = df_output.with_columns(nw.lit(1).alias(count_name))
+            args["_count_column_created"] = count_name
+            args["_count_column_role"] = "x"
         else:
             args["histfunc"] = None
             args["orientation"] = "v"
-            aggregation_plan = args.get("_aggregation_plan")
-            if aggregation_plan is not None:
-                df_output = aggregation_plan.ensure_count_column(
-                    args, df_output, count_name, value_role="y"
-                )
-            else:
-                args["y"] = count_name
-                df_output = df_output.with_columns(nw.lit(1).alias(count_name))
-                args["_count_column_created"] = count_name
-                args["_count_column_role"] = "y"
+            args["y"] = count_name
+            df_output = df_output.with_columns(nw.lit(1).alias(count_name))
+            args["_count_column_created"] = count_name
+            args["_count_column_role"] = "y"
 
     if no_color:
         args["color"] = None
@@ -3248,30 +3389,32 @@ def infer_config(args, constructor, trace_patch, layout_patch):
 
     aggregation_plan = args.get("_aggregation_plan")
 
-    if "orientation" in args:
-        if aggregation_plan is None:
-            has_x = args["x"] is not None
-            has_y = args["y"] is not None
-            if args["orientation"] is None:
-                if constructor in [go.Histogram, go.Scatter]:
-                    if has_y and not has_x:
-                        args["orientation"] = "h"
-                elif constructor in [go.Violin, go.Box, go.Bar, go.Funnel]:
-                    if has_x and not has_y:
-                        args["orientation"] = "h"
-
-            if args["orientation"] is None and has_x and has_y:
-                x_is_continuous = _is_continuous(df, args["x"])
-                y_is_continuous = _is_continuous(df, args["y"])
-                if x_is_continuous and not y_is_continuous:
+    if aggregation_plan is not None:
+        aggregation_plan.apply_to_trace_patch(trace_patch, args)
+        aggregation_plan.apply_to_layout_patch(layout_patch, args)
+    elif "orientation" in args:
+        has_x = args["x"] is not None
+        has_y = args["y"] is not None
+        if args["orientation"] is None:
+            if constructor in [go.Histogram, go.Scatter]:
+                if has_y and not has_x:
                     args["orientation"] = "h"
-                if y_is_continuous and not x_is_continuous:
-                    args["orientation"] = "v"
+            elif constructor in [go.Violin, go.Box, go.Bar, go.Funnel]:
+                if has_x and not has_y:
+                    args["orientation"] = "h"
 
-            if args["orientation"] is None:
+        if args["orientation"] is None and has_x and has_y:
+            x_is_continuous = _is_continuous(df, args["x"])
+            y_is_continuous = _is_continuous(df, args["y"])
+            if x_is_continuous and not y_is_continuous:
+                args["orientation"] = "h"
+            if y_is_continuous and not x_is_continuous:
                 args["orientation"] = "v"
 
-            trace_patch["orientation"] = args["orientation"]
+        if args["orientation"] is None:
+            args["orientation"] = "v"
+
+        trace_patch["orientation"] = args["orientation"]
 
         if constructor in [go.Violin, go.Box]:
             mode = "boxmode" if constructor == go.Box else "violinmode"
@@ -3283,11 +3426,14 @@ def infer_config(args, constructor, trace_patch, layout_patch):
             if layout_patch[mode] is None:
                 layout_patch[mode] = "group"
 
-    if aggregation_plan is not None:
-        aggregation_plan.apply_to_trace_patch(trace_patch, args)
-        aggregation_plan.apply_to_layout_patch(layout_patch, args)
-
-    if constructor in [go.Histogram2d, go.Densitymap, go.Densitymapbox]:
+    if aggregation_plan is not None and constructor in [
+        go.Histogram2d,
+        go.Densitymap,
+        go.Densitymapbox,
+    ]:
+        show_colorbar = True
+        trace_patch["coloraxis"] = "coloraxis1"
+    elif constructor in [go.Histogram2d, go.Densitymap, go.Densitymapbox]:
         show_colorbar = True
         trace_patch["coloraxis"] = "coloraxis1"
 
