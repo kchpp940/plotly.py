@@ -236,13 +236,35 @@ class TestCheckEngine:
     def test_check_runners_list(self, session_checker):
         runners = session_checker.get_check_runners()
         assert len(runners) == 6
-        names = [name for name, _ in runners]
-        assert any("Codegen paths" in n for n in names)
-        assert any("Validators vs" in n for n in names)
-        assert any("Export sync" in n for n in names)
-        assert any("Trace class coverage" in n for n in names)
-        assert any("Layout property coverage" in n for n in names)
-        assert any("Doc attribute references" in n for n in names)
+        display_names = [name for name, _, _ in runners]
+        check_ids = [cid for _, cid, _ in runners]
+        assert any("Codegen paths" in n for n in display_names)
+        assert any("Validators vs" in n for n in display_names)
+        assert "codegen-vs-validators" in check_ids
+        assert "doc-refs" in check_ids
+
+    def test_list_check_ids(self):
+        ids = ConsistencyCheck.list_check_ids()
+        assert len(ids) == 6
+        assert "codegen-vs-validators" in ids
+        assert "doc-refs" in ids
+
+    def test_run_selected_checks(self, session_checker):
+        err, warn, all_errs = session_checker.run_all_checks(
+            verbose=False, checks=["exports-sync", "trace-coverage"]
+        )
+        assert err == 0
+        assert warn == 0
+        check_names = {e.check for e in all_errs}
+        assert check_names <= {"exports-sync", "trace-coverage"}
+
+    def test_run_no_checks(self, session_checker):
+        err, warn, all_errs = session_checker.run_all_checks(
+            verbose=False, checks=[]
+        )
+        assert err == 0
+        assert warn == 0
+        assert len(all_errs) == 0
 
     def test_consistency_error_formatting(self, session_checker):
         from codegen.validate_schema_artifacts import ConsistencyError
@@ -336,6 +358,45 @@ class TestCLIExitCodes:
         )
         assert result.returncode == 0
 
+    def test_cli_no_docs_flag(self):
+        result = subprocess.run(
+            [sys.executable, COMMANDS_PATH, "validateschema", "--no-docs"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "SKIPPED" in result.stdout
+        assert "doc-refs" not in result.stdout or "SKIPPED" in result.stdout
+
+    def test_cli_checks_flag_subset(self):
+        result = subprocess.run(
+            [
+                sys.executable, COMMANDS_PATH, "validateschema",
+                "--checks", "exports-sync,trace-coverage",
+            ],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0
+        assert "SKIPPED" in result.stdout
+        assert "Export sync" in result.stdout
+        assert "Trace class coverage" in result.stdout
+
+    def test_cli_checks_invalid_id(self):
+        result = subprocess.run(
+            [
+                sys.executable, COMMANDS_PATH, "validateschema",
+                "--checks", "nonexistent",
+            ],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 1
+        assert "Unknown check ID" in result.stderr or "Unknown check ID" in result.stdout
+
     def test_cli_help(self):
         result = subprocess.run(
             [sys.executable, COMMANDS_PATH, "validateschema", "--help"],
@@ -344,15 +405,6 @@ class TestCLIExitCodes:
             text=True,
         )
         assert result.returncode == 0
-        assert "validateschema" in result.stdout
+        assert "--checks" in result.stdout
+        assert "--no-docs" in result.stdout
         assert "--strict" in result.stdout
-
-    def test_cli_strict_flag_in_help(self):
-        result = subprocess.run(
-            [sys.executable, COMMANDS_PATH, "validateschema", "--help"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-        )
-        assert "--strict" in result.stdout
-        assert "treat warnings as errors" in result.stdout

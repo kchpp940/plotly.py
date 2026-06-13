@@ -487,6 +487,20 @@ def make_parser():
         action="store_true",
         help="treat warnings as errors (non-zero exit code)",
     )
+    p_validate.add_argument(
+        "--checks",
+        default=None,
+        help=(
+            "comma-separated check IDs to run (default: all). "
+            "Available: codegen-vs-validators,validators-vs-graph_objects,"
+            "exports-sync,trace-coverage,layout-coverage,doc-refs"
+        ),
+    )
+    p_validate.add_argument(
+        "--no-docs",
+        action="store_true",
+        help="shorthand: skip doc-refs check (equivalent to --checks without doc-refs)",
+    )
 
     p_update_dev = subparsers.add_parser(
         "updateplotlyjsdev", help="update plotly.js for development"
@@ -530,7 +544,24 @@ def main():
         lint_code(outdir)
 
     elif args.cmd == "validateschema":
-        error_count, warn_count, _ = run_all_checks(verbose=True)
+        from codegen.validate_schema_artifacts import ConsistencyCheck
+
+        checks_arg = None
+        if args.checks:
+            checks_arg = [c.strip() for c in args.checks.split(",") if c.strip()]
+            valid_ids = set(ConsistencyCheck.list_check_ids())
+            invalid = [c for c in checks_arg if c not in valid_ids]
+            if invalid:
+                print(f"ERROR: Unknown check ID(s): {', '.join(invalid)}")
+                print(f"Available: {', '.join(sorted(valid_ids))}")
+                sys.exit(1)
+        elif args.no_docs:
+            all_ids = ConsistencyCheck.list_check_ids()
+            checks_arg = [c for c in all_ids if c != "doc-refs"]
+
+        error_count, warn_count, _ = run_all_checks(
+            verbose=True, checks=checks_arg
+        )
         if args.strict:
             total = error_count + warn_count
         else:

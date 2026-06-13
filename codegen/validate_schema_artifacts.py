@@ -1214,21 +1214,47 @@ class ConsistencyCheck:
 
     # ----- Runner -----
 
-    def get_check_runners(self) -> List[Tuple[str, Callable[[], List[ConsistencyError]]]]:
-        """Return ordered list of (display_name, check_fn) tuples."""
+    _CHECK_REGISTRY: List[Tuple[str, str, Callable]] = None
+
+    def get_check_runners(
+        self,
+    ) -> List[Tuple[str, str, Callable[[], List[ConsistencyError]]]]:
+        """Return ordered list of (display_name, check_id, check_fn) tuples.
+
+        check_id is the internal identifier used in ConsistencyError.check
+        and in CLI ``--checks`` filtering (e.g. ``codegen-vs-validators``).
+        """
         return [
-            ("1. Codegen paths vs _validators.json", self.check_codegen_vs_validators),
-            ("2. Validators vs graph_objects _valid_props", self.check_validators_vs_graph_objects),
-            ("3. Export sync (graph_objs <-> graph_objects)", self.check_graph_objs_exports),
-            ("4. Trace class coverage", self.check_trace_class_coverage),
-            ("5. Layout property coverage", self.check_layout_valid_props),
-            ("6. Doc attribute references", self.check_doc_attribute_refs),
+            ("1. Codegen paths vs _validators.json", "codegen-vs-validators", self.check_codegen_vs_validators),
+            ("2. Validators vs graph_objects _valid_props", "validators-vs-graph_objects", self.check_validators_vs_graph_objects),
+            ("3. Export sync (graph_objs <-> graph_objects)", "exports-sync", self.check_graph_objs_exports),
+            ("4. Trace class coverage", "trace-coverage", self.check_trace_class_coverage),
+            ("5. Layout property coverage", "layout-coverage", self.check_layout_valid_props),
+            ("6. Doc attribute references", "doc-refs", self.check_doc_attribute_refs),
         ]
 
+    @classmethod
+    def list_check_ids(cls) -> List[str]:
+        """Return all available check identifiers."""
+        dummy = cls.__new__(cls)
+        return [cid for _, cid, _ in dummy.get_check_runners()]
+
     def run_all_checks(
-        self, verbose: bool = False
+        self,
+        verbose: bool = False,
+        checks: Optional[List[str]] = None,
     ) -> Tuple[int, int, List[ConsistencyError]]:
-        """Run all enabled checks and return (error_count, warn_count, all_errors).
+        """Run checks and return (error_count, warn_count, all_errors).
+
+        Parameters
+        ----------
+        verbose : bool
+            Print progress and results to stdout.
+        checks : list[str] or None
+            Subset of check IDs to run.  When *None*, runs all enabled
+            checks (respecting ``ValidationConfig.checks.*.enabled``).
+            When non-empty, *only* the listed IDs are executed regardless
+            of their enabled flag.
 
         Maintains backward compatibility with the old run_all_checks() API.
         """
@@ -1239,9 +1265,17 @@ class ConsistencyCheck:
             print("Schema Artifact Consistency Check")
             print("=" * 70)
 
-        for check_name, check_fn in self.get_check_runners():
+        requested = set(checks) if checks else None
+
+        for display_name, check_id, check_fn in self.get_check_runners():
+            if requested is not None and check_id not in requested:
+                if verbose:
+                    print(f"\n--- {display_name} ---")
+                    print("  SKIPPED (not in --checks)")
+                continue
+
             if verbose:
-                print(f"\n--- {check_name} ---")
+                print(f"\n--- {display_name} ---")
             try:
                 errors = check_fn()
             except Exception as e:
@@ -1250,7 +1284,7 @@ class ConsistencyCheck:
                 traceback.print_exc()
                 errors = [
                     ConsistencyError(
-                        check_name,
+                        check_id,
                         f"Check failed with exception: {e}",
                     )
                 ]
@@ -1286,16 +1320,27 @@ class ConsistencyCheck:
 
 
 def run_all_checks(
-    verbose: bool = False, config: Optional[ValidationConfig] = None
+    verbose: bool = False,
+    config: Optional[ValidationConfig] = None,
+    checks: Optional[List[str]] = None,
 ) -> Tuple[int, int, List[ConsistencyError]]:
-    """Backward-compatible wrapper: build indices and run all checks.
+    """Backward-compatible wrapper: build indices and run checks.
+
+    Parameters
+    ----------
+    verbose : bool
+        Print progress and results to stdout.
+    config : ValidationConfig or None
+        Configuration.  Uses DEFAULT_CONFIG when None.
+    checks : list[str] or None
+        Subset of check IDs to run.  None means "all enabled".
 
     This matches the signature of the previous module-level run_all_checks()
     so that callers in commands.py and codegen/__init__.py keep working.
     """
     checker = ConsistencyCheck(config=config or DEFAULT_CONFIG)
     checker.build_indices()
-    return checker.run_all_checks(verbose=verbose)
+    return checker.run_all_checks(verbose=verbose, checks=checks)
 
 
 if __name__ == "__main__":
