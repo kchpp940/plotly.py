@@ -35,7 +35,7 @@ jobs:
       - name: Test core (excluding nodev)
         run: |
           source .venv/bin/activate
-          python commands.py test core -m "not nodev"
+          pytest -k 'not nodev' tests/test_core
       - name: Build source distribution packages
         run: |
           source .venv/bin/activate

@@ -1,4 +1,5 @@
 from .basedatatypes import BaseFigure
+from _plotly_utils.error_messages import ErrorCode, build_error_message, format_install_hint
 
 
 class FigureWidget(BaseFigure):
@@ -10,4 +11,10 @@ class FigureWidget(BaseFigure):
     """
 
     def __init__(self, *args, **kwargs):
-        raise ImportError("Please install anywidget to use the FigureWidget class")
+        raise ImportError(
+            build_error_message(
+                ErrorCode.DEPENDENCY_MISSING,
+                "The FigureWidget class requires the anywidget package",
+                install_hint=format_install_hint("anywidget"),
+            )
+        )

@@ -8,35 +8,8 @@ on:
     types: [opened, reopened, synchronize]
 
 jobs:
-  test-smoke:
-    name: Smoke (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
-        with:
-          python-version: ${{ matrix.python-version }}
-      - name: Set up uv
-        uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57  # v8.0.0
-      - name: Install (dev_core)
-        run: |
-          uv venv
-          source .venv/bin/activate
-          uv lock --check
-          uv sync --extra dev_core
-          python --version
-      - name: Run smoke tests
-        run: |
-          source .venv/bin/activate
-          python commands.py test smoke
-
   test-core:
-    name: Core + Schema (Python ${{ matrix.python-version }})
+    name: Core tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -50,24 +23,20 @@ jobs:
           python-version: ${{ matrix.python-version }}
       - name: Set up uv
         uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57  # v8.0.0
-      - name: Install (dev_core)
+      - name: Install dependencies
         run: |
           uv venv
           source .venv/bin/activate
           uv lock --check
           uv sync --extra dev_core
           python --version
-      - name: Run core tests
+      - name: Test core
         run: |
           source .venv/bin/activate
-          python commands.py test core
-      - name: Run schema/codegen consistency checks
-        run: |
-          source .venv/bin/activate
-          python commands.py test schema
+          python -m pytest tests/test_core
 
   test-optional:
-    name: Optional (Python ${{ matrix.python-version }})
+    name: Optional tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -79,75 +48,43 @@ jobs:
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: ${{ matrix.python-version }}
+      - name: Set up Chrome for Pytest
+        uses: ./.github/actions/setup-chrome-for-pytest
       - name: Set up uv
         uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57  # v8.0.0
-      - name: Install (dev_optional + pandas3 — no express/kaleido)
+      - name: Install dependencies
         run: |
           uv venv
           source .venv/bin/activate
           uv sync --extra dev_optional --extra dev_pandas3
           python --version
-      - name: Run optional-dependency tests
+      - name: Test core
         run: |
           source .venv/bin/activate
-          python commands.py test optional
-
-  test-express:
-    name: Express regression (Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
-        with:
-          python-version: ${{ matrix.python-version }}
-      - name: Set up uv
-        uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57  # v8.0.0
-      - name: Install (dev_optional + pandas3 + express)
-        run: |
-          uv venv
-          source .venv/bin/activate
-          uv sync --extra dev_optional --extra dev_pandas3 --extra express
-          python --version
-      - name: Run Plotly Express regression tests
+          python -m pytest tests/test_core
+      - name: Test optional
         run: |
           source .venv/bin/activate
-          python commands.py test express
-
-  test-image-export:
-    name: Image export (Kaleido, Python ${{ matrix.python-version }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.8", "3.9", "3.10", "3.11", "3.12", "3.13"]
-    steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
-      - name: Set up Python
-        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
-        with:
-          python-version: ${{ matrix.python-version }}
-      - name: Set up Chrome
-        uses: ./.github/actions/setup-chrome-for-pytest
-      - name: Set up uv
-        uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57  # v8.0.0
-      - name: Install (dev_optional + kaleido)
-        run: |
-          uv venv
-          source .venv/bin/activate
-          uv sync --extra dev_optional --extra kaleido
-          python --version
-      - name: Run static image export tests
+          python -m pytest tests/test_optional
+      - name: Test utils
         run: |
           source .venv/bin/activate
-          python commands.py test image-export
+          python -m pytest tests/test_plotly_utils/
+      - name: Test io
+        run: |
+          source .venv/bin/activate
+          python -m pytest tests/test_io
+      - name: Test dependencies not imported
+        run: |
+          source .venv/bin/activate
+          python -m pytest -x test_init/test_dependencies_not_imported.py
+      - name: Test lazy imports
+        run: |
+          source .venv/bin/activate
+          python -m pytest -x test_init/test_lazy_imports.py
 
   test-optional-legacy-pandas:
-    name: Optional + Express (Python ${{ matrix.python-version }}, pandas ${{ matrix.pandas-version }})
+    name: Optional tests (Python ${{ matrix.python-version }}, pandas ${{ matrix.pandas-version }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -163,30 +100,42 @@ jobs:
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
         with:
           python-version: ${{ matrix.python-version }}
-      - name: Set up Chrome
+      - name: Set up Chrome for browser tests
         uses: ./.github/actions/setup-chrome-for-pytest
       - name: Set up uv
         uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57  # v8.0.0
-      - name: Install (dev_optional + pandas${{ matrix.pandas-version }} + express + kaleido)
+      - name: Install dependencies
         run: |
           uv venv
           source .venv/bin/activate
-          uv sync --extra dev_optional --extra dev_pandas${{ matrix.pandas-version }} --extra express --extra kaleido
-      - name: Run optional-dependency tests
+          uv sync --extra dev_optional --extra dev_pandas${{ matrix.pandas-version }}
+      - name: Test core
         run: |
           source .venv/bin/activate
-          python commands.py test optional
-      - name: Run Plotly Express regression tests
+          python -m pytest tests/test_core
+      - name: Test optional
         run: |
           source .venv/bin/activate
-          python commands.py test express
-      - name: Run static image export tests
+          python -m pytest tests/test_optional
+      - name: Test utils
         run: |
           source .venv/bin/activate
-          python commands.py test image-export
+          python -m pytest tests/test_plotly_utils/
+      - name: Test io
+        run: |
+          source .venv/bin/activate
+          python -m pytest tests/test_io
+      - name: Test dependencies not imported
+        run: |
+          source .venv/bin/activate
+          python -m pytest -x test_init/test_dependencies_not_imported.py
+      - name: Test lazy imports
+        run: |
+          source .venv/bin/activate
+          python -m pytest -x test_init/test_lazy_imports.py
 
   test-kaleido-v0:
-    name: Image export (Kaleido v0, Python 3.12)
+    name: Optional tests (Kaleido only), Kaleido v0 (Python 3.12, kaleido 0.2.1)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
@@ -200,7 +149,7 @@ jobs:
           install-chromedriver: true
       - name: Set up uv
         uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57  # v8.0.0
-      - name: Install (dev_optional + pinned kaleido 0.2.1)
+      - name: Install dependencies
         run: |
           uv venv
           source .venv/bin/activate
@@ -208,7 +157,7 @@ jobs:
           uv pip uninstall kaleido
           uv pip install kaleido==0.2.1
           python --version
-      - name: Run image export tests with Kaleido v0
+      - name: Test plotly.io image output with Kaleido v0
         run: |
           source .venv/bin/activate
-          python commands.py test image-export
+          python -m pytest tests/test_optional/test_kaleido

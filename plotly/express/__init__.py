@@ -6,22 +6,23 @@ for rapid data exploration and figure generation. Learn more at https://plotly.c
 """
 
 from plotly import optional_imports
+from _plotly_utils.error_messages import ErrorCode, build_error_message, format_install_hint
 
 np = optional_imports.get_module("numpy")
 if np is None:
     raise ImportError(
-        """\
-Plotly Express requires numpy to be installed. You can install numpy using pip with:
-
-$ pip install numpy
-
-Or install Plotly Express and its dependencies directly with:
-
-$ pip install "plotly[express]"
-
-You can also use Plotly Graph Objects to create a large number of charts without installing
-numpy. See examples here: https://plotly.com/python/graph-objects/
-"""
+        build_error_message(
+            ErrorCode.DEPENDENCY_MISSING,
+            "Plotly Express requires numpy to be installed",
+            install_hint=format_install_hint("plotly", pip_extras="express"),
+            detail=(
+                "You can also install numpy separately with:\n"
+                "$ pip install numpy\n\n"
+                "You can also use Plotly Graph Objects to create a large number of charts "
+                "without installing numpy. See examples here: "
+                "https://plotly.com/python/graph-objects/"
+            ),
+        )
     )
 
 from ._imshow import imshow

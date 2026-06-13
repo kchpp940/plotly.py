@@ -213,108 +213,21 @@ We use [pytest](https://docs.pytest.org/) for managing and running tests.
 You are strongly encouraged to write or modify tests whenever you add or change functionality;
 we are more likely to review and merge PRs with tests than ones without.
 
-#### Test Categories
-
-Tests are organised into categories using pytest markers and exposed as
-stable subcommands through `python commands.py test <preset>`.
-
-**Every preset below is a stable, always-pass entry point** — if one of them
-fails, it is a real regression (or a missing dependency), not an expected or
-known failure. Missing dependencies are caught before pytest starts with a
-friendly `uv sync` hint.
-
-| Preset (`commands.py test …`) | Marker(s) | Required `uv` extras | Typical change to trigger it |
-|---|---|---|---|
-| `smoke` | `smoke` | `dev_core` | Any commit — run this first (~5 s, ~100 tests) |
-| `core` | `core` | `dev_core` | Core graph objects, I/O, validators, subplots (~2000 tests) |
-| `optional` | `optional` (*) | `dev_optional` + `dev_pandas3` | Pandas interop, figure factory, ternary/splom (~180 tests) |
-| `express` | `express` | `dev_optional` + `dev_pandas3` + `express` | `plotly/express/`, plotly data, Express templates (~1200 tests) |
-| `image-export` | `image_export` | `dev_optional` + `kaleido` (+ Chrome) | `plotly/io/_kaleido/`, static image API (~14 tests) |
-| `matplotlib` | `matplotlib` | `dev_optional` | `plotly/matplotlylib/` |
-| `optional-all` | `optional ∨ express ∨ image_export ∨ matplotlib` (†) | all of the above | One-shot local run of every optional suite |
-| `schema` | `schema` | `dev_core` | `codegen/`, schema regenerations, `plotly/graph_objs/` |
-| `schema-full` | `schema_full` | `dev_core` | Major schema upgrades / codegen refactors (includes known failures) |
-| `all` | all stable markers except `schema_full` (‡) | all extras | Full CI-equivalent run on a developer machine |
-
-(*) `optional` is **mutually exclusive** with `express`, `image-export`, and
-`matplotlib` — they do not overlap, so you can run them in parallel in CI
-without wasting time on duplicate execution.
-
-(†) `optional-all` is a **commands.py preset only** — it is not a registered
-pytest marker. It expands to `-m "optional or express or image_export or
-matplotlib"` under the hood. Running `pytest -m optional_all` directly will
-collect zero tests; always use `python commands.py test optional-all` instead.
-
-(‡) `all` excludes `schema_full` on purpose: `schema_full` contains known
-failures and is meant for periodic auditing only, not for per-commit gating.
-
-#### Running Tests
-
-Before running tests, create the virtual environment and install the extras
-you need (each preset prints a clear `uv sync` hint if anything is missing):
+If you have installed all the dependencies as explained above,
+you can run all the tests with:
 
 ```bash
-uv venv
-source .venv/bin/activate
-uv sync --extra dev_core                                       # smoke / core / schema
-uv sync --extra dev_optional --extra dev_pandas3               # + optional
-uv sync --extra dev_optional --extra dev_pandas3 --extra express   # + express
-uv sync --extra dev_optional --extra kaleido                   # + image-export
+python -m pytest tests
 ```
 
-**Quick smoke sanity check** (must be green on every commit):
-```bash
-python commands.py test smoke
-```
-
-**Core tests** (no optional dependencies):
-```bash
-python commands.py test core
-```
-
-**Optional-dependency tests only** (excludes Express / image export / matplotlib):
-```bash
-python commands.py test optional
-```
-
-**Plotly Express regression tests** (standalone, no overlap with `optional`):
-```bash
-python commands.py test express
-```
-
-**Static image export tests** (requires Kaleido + Chrome):
-```bash
-python commands.py test image-export
-```
-
-**Schema / codegen consistency** (must be green after any codegen run):
-```bash
-python commands.py test schema
-```
-
-**Full schema audit** (known failures allowed; run periodically before releases):
-```bash
-python commands.py test schema-full
-```
-
-**Every stable preset, in one go** (for developer machines with all extras):
-```bash
-python commands.py test all
-```
-
-You can pass extra pytest arguments **after** the preset name. For example, to
-exclude `nodev` tests or run verbosely:
+During development,
+you can speed things up by running only the tests in a particular file:
 
 ```bash
-python commands.py test core -m "not nodev"
-python commands.py test smoke -v --tb=short -x
-python commands.py test express tests/test_optional/test_px/test_px_violin.py
+python -m pytest tests/test_plotly/test_plot.py
 ```
 
-Under the hood each preset is a thin wrapper that builds a pytest marker
-expression, runs a preflight check, and then invokes pytest; so anything you
-know how to do with `python -m pytest …` continues to work as expected. See
-[pytest's documentation](https://docs.pytest.org/) for more details.
+See [pytest's documentation](https://docs.pytest.org/) for more details.
 
 ## Advanced
 

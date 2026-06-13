@@ -9,51 +9,56 @@ import warnings
 import plotly
 from plotly.io._utils import validate_coerce_fig_to_dict, broadcast_args_to_dicts
 from plotly.io._defaults import defaults
+from _plotly_utils.error_messages import (
+    ErrorCode,
+    build_error_message,
+    format_install_hint,
+)
 
 ENGINE_SUPPORT_TIMELINE = "September 2025"
 ENABLE_KALEIDO_V0_DEPRECATION_WARNINGS = True
 
-PLOTLY_GET_CHROME_ERROR_MSG = """
+PLOTLY_GET_CHROME_ERROR_MSG = build_error_message(
+    ErrorCode.DEPENDENCY_MISSING,
+    "Kaleido requires Google Chrome to be installed.",
+    detail="Either download and install Chrome yourself following Google's instructions for your operating system,\n"
+    "or install it from your terminal by running:\n\n    $ plotly_get_chrome",
+)
 
-Kaleido requires Google Chrome to be installed.
-
-Either download and install Chrome yourself following Google's instructions for your operating system,
-or install it from your terminal by running:
-
-    $ plotly_get_chrome
-
-"""
-
-KALEIDO_DEPRECATION_MSG = f"""
-Support for Kaleido versions less than 1.0.0 is deprecated and will be removed after {ENGINE_SUPPORT_TIMELINE}.
-Please upgrade Kaleido to version 1.0.0 or greater (`pip install 'kaleido>=1.0.0'` or `pip install 'plotly[kaleido]'`).
-"""
-ORCA_DEPRECATION_MSG = f"""
-Support for the Orca engine is deprecated and will be removed after {ENGINE_SUPPORT_TIMELINE}.
-Please install Kaleido (`pip install 'kaleido>=1.0.0'` or `pip install 'plotly[kaleido]'`) to use the Kaleido engine.
-"""
-ENGINE_PARAM_DEPRECATION_MSG = f"""
-Support for the 'engine' argument is deprecated and will be removed after {ENGINE_SUPPORT_TIMELINE}.
-Kaleido will be the only supported engine at that time.
-"""
+KALEIDO_DEPRECATION_MSG = build_error_message(
+    ErrorCode.DEPRECATION,
+    f"Support for Kaleido versions less than 1.0.0 is deprecated and will be removed after {ENGINE_SUPPORT_TIMELINE}.",
+    detail=f"Please upgrade Kaleido to version 1.0.0 or greater (`pip install 'kaleido>=1.0.0'` or `pip install 'plotly[kaleido]'`).",
+)
+ORCA_DEPRECATION_MSG = build_error_message(
+    ErrorCode.DEPRECATION,
+    f"Support for the Orca engine is deprecated and will be removed after {ENGINE_SUPPORT_TIMELINE}.",
+    detail=f"Please install Kaleido (`pip install 'kaleido>=1.0.0'` or `pip install 'plotly[kaleido]'`) to use the Kaleido engine.",
+)
+ENGINE_PARAM_DEPRECATION_MSG = build_error_message(
+    ErrorCode.DEPRECATION,
+    f"Support for the 'engine' argument is deprecated and will be removed after {ENGINE_SUPPORT_TIMELINE}.",
+    detail="Kaleido will be the only supported engine at that time.",
+)
 
 _KALEIDO_AVAILABLE = None
 _KALEIDO_MAJOR = None
 
 
 def kaleido_scope_default_warning_func(x):
-    return f"""
-Use of plotly.io.kaleido.scope.{x} is deprecated and support will be removed after {ENGINE_SUPPORT_TIMELINE}.
-Please use plotly.io.defaults.{x} instead.
-"""
+    return build_error_message(
+        ErrorCode.DEPRECATION,
+        f"Use of plotly.io.kaleido.scope.{x} is deprecated and support will be removed after {ENGINE_SUPPORT_TIMELINE}.",
+        detail=f"Please use plotly.io.defaults.{x} instead.",
+    )
 
 
 def bad_attribute_error_msg_func(x):
-    return f"""
-Attribute plotly.io.defaults.{x} is not valid.
-Also, use of plotly.io.kaleido.scope.* is deprecated and support will be removed after {ENGINE_SUPPORT_TIMELINE}.
-Please use plotly.io.defaults.* instead.
-"""
+    return build_error_message(
+        ErrorCode.CONFIG_ERROR,
+        f"Attribute plotly.io.defaults.{x} is not valid.",
+        detail=f"Also, use of plotly.io.kaleido.scope.* is deprecated and support will be removed after {ENGINE_SUPPORT_TIMELINE}.\nPlease use plotly.io.defaults.* instead.",
+    )
 
 
 def kaleido_available() -> bool:
@@ -82,7 +87,13 @@ def kaleido_major() -> int:
     if _KALEIDO_MAJOR is not None:
         return _KALEIDO_MAJOR
     if not kaleido_available():
-        raise ValueError("Kaleido is not installed.")
+        raise ValueError(
+            build_error_message(
+                ErrorCode.DEPENDENCY_MISSING,
+                "Kaleido is not installed.",
+                install_hint=format_install_hint("kaleido"),
+            )
+        )
     else:
         _KALEIDO_MAJOR = Version(importlib_metadata.version("kaleido")).major
     return _KALEIDO_MAJOR
@@ -210,14 +221,14 @@ def infer_format(path: Union[Path, None], format: Union[str, None]) -> Union[str
             format = ext.lstrip(".")
         else:
             raise ValueError(
-                f"""
-Cannot infer image type from output path '{path}'.
-Please specify the type using the format parameter, or add a file extension.
-For example:
-
-    >>> import plotly.io as pio
-    >>> pio.write_image(fig, file_path, format='png')
-"""
+                build_error_message(
+                    ErrorCode.INVALID_FORMAT,
+                    f"Cannot infer image type from output path '{path}'.",
+                    detail="Please specify the type using the format parameter, or add a file extension.\n"
+                    "For example:\n\n"
+                    "    >>> import plotly.io as pio\n"
+                    "    >>> pio.write_image(fig, file_path, format='png')",
+                )
             )
     return format
 
@@ -338,17 +349,21 @@ def to_image(
             validate=validate,
         )
     elif engine != "kaleido":
-        raise ValueError(f"Invalid image export engine specified: {repr(engine)}")
+        raise ValueError(
+            build_error_message(
+                ErrorCode.INVALID_ENGINE,
+                f"Invalid image export engine specified: {repr(engine)}",
+            )
+        )
 
     # Raise informative error message if Kaleido is not installed
     if not kaleido_available():
         raise ValueError(
-            """
-Image export using the "kaleido" engine requires the Kaleido package,
-which can be installed using pip:
-
-    $ pip install --upgrade kaleido
-"""
+            build_error_message(
+                ErrorCode.DEPENDENCY_MISSING,
+                'Image export using the "kaleido" engine requires the Kaleido package.',
+                install_hint=format_install_hint("kaleido"),
+            )
         )
 
     # Convert figure to dict (and validate if requested)
@@ -360,12 +375,12 @@ which can be installed using pip:
         # Check if trying to export to EPS format, which is not supported in Kaleido v1
         if format == "eps":
             raise ValueError(
-                f"""
-EPS export is not supported by Kaleido v1. Please use SVG or PDF instead.
-You can also downgrade to Kaleido v0, but support for Kaleido v0 will be removed after {ENGINE_SUPPORT_TIMELINE}.
-To downgrade to Kaleido v0, run:
-    $ pip install 'kaleido<1.0.0'
-"""
+                build_error_message(
+                    ErrorCode.INVALID_FORMAT,
+                    "EPS export is not supported by Kaleido v1. Please use SVG or PDF instead.",
+                    detail=f"You can also downgrade to Kaleido v0, but support for Kaleido v0 will be removed after {ENGINE_SUPPORT_TIMELINE}.\n"
+                    "To downgrade to Kaleido v0, run:\n    $ pip install 'kaleido<1.0.0'",
+                )
             )
         from kaleido.errors import ChromeNotFoundError
 
@@ -547,9 +562,10 @@ def write_image(
         except AttributeError:
             pass
         raise ValueError(
-            f"""
-The 'file' argument '{file}' is not a string, pathlib.Path object, or file descriptor.
-"""
+            build_error_message(
+                ErrorCode.INVALID_PARAM,
+                f"The 'file' argument '{file}' is not a string, pathlib.Path object, or file descriptor.",
+            )
         )
     else:
         # We previously succeeded in interpreting `file` as a pathlib object.
@@ -651,22 +667,20 @@ def write_images(
     # Raise informative error message if Kaleido v1 is not installed
     if not kaleido_available():
         raise ValueError(
-            """
-The `write_images()` function requires the Kaleido package,
-which can be installed using pip:
-
-    $ pip install --upgrade kaleido
-"""
+            build_error_message(
+                ErrorCode.DEPENDENCY_MISSING,
+                "The `write_images()` function requires the Kaleido package.",
+                install_hint=format_install_hint("kaleido"),
+            )
         )
     elif kaleido_major() < 1:
         raise ValueError(
-            f"""
-You have Kaleido version {Version(importlib_metadata.version("kaleido"))} installed.
-The `write_images()` function requires the Kaleido package version 1.0.0 or greater,
-which can be installed using pip:
-
-    $ pip install 'kaleido>=1.0.0'
-"""
+            build_error_message(
+                ErrorCode.DEPENDENCY_MISSING,
+                f"You have Kaleido version {Version(importlib_metadata.version('kaleido'))} installed.",
+                detail="The `write_images()` function requires the Kaleido package version 1.0.0 or greater.",
+                install_hint=format_install_hint("kaleido>=1.0.0"),
+            )
         )
 
     # Broadcast arguments into correct format for passing to Kaleido
@@ -757,12 +771,11 @@ def full_figure_for_development(
     # Raise informative error message if Kaleido is not installed
     if not kaleido_available():
         raise ValueError(
-            """
-Full figure generation requires the Kaleido package,
-which can be installed using pip:
-
-    $ pip install --upgrade kaleido
-"""
+            build_error_message(
+                ErrorCode.DEPENDENCY_MISSING,
+                "Full figure generation requires the Kaleido package.",
+                install_hint=format_install_hint("kaleido"),
+            )
         )
 
     if warn:
@@ -819,10 +832,11 @@ Options:
 
     if not kaleido_available() or kaleido_major() < 1:
         raise ValueError(
-            """
-This command requires Kaleido v1.0.0 or greater.
-Install it using `pip install 'kaleido>=1.0.0'` or `pip install 'plotly[kaleido]'`."
-"""
+            build_error_message(
+                ErrorCode.DEPENDENCY_MISSING,
+                "This command requires Kaleido v1.0.0 or greater.",
+                install_hint=format_install_hint("kaleido>=1.0.0", pip_extras="kaleido"),
+            )
         )
 
     # Handle command line arguments
@@ -879,10 +893,11 @@ def get_chrome(path: Union[str, Path, None] = None) -> Path:
     """
     if not kaleido_available() or kaleido_major() < 1:
         raise ValueError(
-            """
-This command requires Kaleido v1.0.0 or greater.
-Install it using `pip install 'kaleido>=1.0.0'` or `pip install 'plotly[kaleido]'`."
-"""
+            build_error_message(
+                ErrorCode.DEPENDENCY_MISSING,
+                "This command requires Kaleido v1.0.0 or greater.",
+                install_hint=format_install_hint("kaleido>=1.0.0", pip_extras="kaleido"),
+            )
         )
 
     # Use default download path if no path was specified
@@ -900,20 +915,21 @@ Install it using `pip install 'kaleido>=1.0.0'` or `pip install 'plotly[kaleido]
     if user_specified_path:
         if not chrome_install_path.exists():
             raise ValueError(
-                f"""
-The specified install path '{chrome_install_path}' does not exist.
-Please specify a path to an existing directory using the --path argument,
-or omit the --path argument to use the default download path.
-"""
+                build_error_message(
+                    ErrorCode.INVALID_PARAM,
+                    f"The specified install path '{chrome_install_path}' does not exist.",
+                    detail="Please specify a path to an existing directory using the --path argument,\n"
+                    "or omit the --path argument to use the default download path.",
+                )
             )
-        # Make sure the path is a directory
         if not chrome_install_path.is_dir():
             raise ValueError(
-                f"""
-The specified install path '{chrome_install_path}' already exists but is not a directory.
-Please specify a path to an existing directory using the --path argument,
-or omit the --path argument to use the default download path.
-"""
+                build_error_message(
+                    ErrorCode.INVALID_PARAM,
+                    f"The specified install path '{chrome_install_path}' already exists but is not a directory.",
+                    detail="Please specify a path to an existing directory using the --path argument,\n"
+                    "or omit the --path argument to use the default download path.",
+                )
             )
 
     return kaleido.get_chrome_sync(path=chrome_install_path)

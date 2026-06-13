@@ -18,6 +18,7 @@ import plotly
 from plotly.files import PLOTLY_DIR, ensure_writable_plotly_dir
 from plotly.io._utils import validate_coerce_fig_to_dict
 from plotly.optional_imports import get_module
+from _plotly_utils.error_messages import ErrorCode, build_error_message, format_install_hint
 
 psutil = get_module("psutil")
 
@@ -31,15 +32,14 @@ format_conversions.update({"jpg": "jpeg"})
 # Utility functions
 # -----------------
 def raise_format_value_error(val):
+    msg = (
+        "Invalid value of type {typ} receive as an image format specification.\n"
+        "    Received value: {v}\n\n"
+        "An image format must be specified as one of the following string values:\n"
+        "    {valid_formats}"
+    ).format(typ=type(val), v=val, valid_formats=sorted(format_conversions.keys()))
     raise ValueError(
-        """
-Invalid value of type {typ} receive as an image format specification.
-    Received value: {v}
-
-An image format must be specified as one of the following string values:
-    {valid_formats}""".format(
-            typ=type(val), v=val, valid_formats=sorted(format_conversions.keys())
-        )
+        build_error_message(ErrorCode.INVALID_FORMAT, msg)
     )
 
 
@@ -208,11 +208,13 @@ class OrcaConfig(object):
         """
         # Combine d and kwargs
         if not isinstance(d, dict):
+            msg = (
+                "The first argument to update must be a dict, "
+                "but received value of type {typ}l\n"
+                "    Received value: {val}"
+            ).format(typ=type(d), val=d)
             raise ValueError(
-                """
-The first argument to update must be a dict, \
-but received value of type {typ}l
-    Received value: {val}""".format(typ=type(d), val=d)
+                build_error_message(ErrorCode.INVALID_PARAM, msg)
             )
 
         updates = copy(d)
@@ -221,7 +223,12 @@ but received value of type {typ}l
         # Validate keys
         for k in updates:
             if k not in self._props:
-                raise ValueError("Invalid property name: {k}".format(k=k))
+                raise ValueError(
+                    build_error_message(
+                        ErrorCode.INVALID_PARAM,
+                        "Invalid property name: {k}".format(k=k),
+                    )
+                )
 
         # Apply keys
         for k, v in updates.items():

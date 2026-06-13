@@ -1,13 +1,17 @@
 # ruff: noqa: E402
 
 from plotly import optional_imports
+from _plotly_utils.error_messages import ErrorCode, build_error_message, format_install_hint
 
 # Require that numpy exists for figure_factory
 np = optional_imports.get_module("numpy")
 if np is None:
     raise ImportError(
-        """\
-The figure factory module requires the numpy package"""
+        build_error_message(
+            ErrorCode.DEPENDENCY_MISSING,
+            "The figure factory module requires the numpy package",
+            install_hint=format_install_hint("numpy"),
+        )
     )
 
 
@@ -36,13 +40,31 @@ if optional_imports.get_module("pandas") is not None:
 else:
 
     def create_choropleth(*args, **kwargs):
-        raise ImportError("Please install pandas to use `create_choropleth`")
+        raise ImportError(
+            build_error_message(
+                ErrorCode.DEPENDENCY_MISSING,
+                "The create_choropleth function requires the pandas package",
+                install_hint=format_install_hint("pandas"),
+            )
+        )
 
     def create_hexbin_map(*args, **kwargs):
-        raise ImportError("Please install pandas to use `create_hexbin_map`")
+        raise ImportError(
+            build_error_message(
+                ErrorCode.DEPENDENCY_MISSING,
+                "The create_hexbin_map function requires the pandas package",
+                install_hint=format_install_hint("pandas"),
+            )
+        )
 
     def create_hexbin_mapbox(*args, **kwargs):
-        raise ImportError("Please install pandas to use `create_hexbin_mapbox`")
+        raise ImportError(
+            build_error_message(
+                ErrorCode.DEPENDENCY_MISSING,
+                "The create_hexbin_mapbox function requires the pandas package",
+                install_hint=format_install_hint("pandas"),
+            )
+        )
 
 
 if optional_imports.get_module("skimage") is not None:
@@ -50,7 +72,13 @@ if optional_imports.get_module("skimage") is not None:
 else:
 
     def create_ternary_contour(*args, **kwargs):
-        raise ImportError("Please install scikit-image to use `create_ternary_contour`")
+        raise ImportError(
+            build_error_message(
+                ErrorCode.DEPENDENCY_MISSING,
+                "The create_ternary_contour function requires the scikit-image package",
+                install_hint=format_install_hint("scikit-image"),
+            )
+        )
 
 
 __all__ = [
