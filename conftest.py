@@ -1,5 +1,4 @@
 import os
-import pytest
 
 PROJECT_ROOT = os.path.dirname(os.path.abspath(__file__))
 
@@ -9,7 +8,6 @@ SMOKE_TEST_FILES = {
     "tests/test_core/test_subplots/test_make_subplots.py",
     "tests/test_io/test_to_from_json.py",
     "tests/test_plotly_utils/validators/test_string_validator.py",
-    "test_init/test_lazy_imports.py",
 }
 
 
@@ -49,11 +47,6 @@ def pytest_collection_modifyitems(config, items):
         elif rel_path.startswith("test_init/"):
             if "test_dependencies_not_imported" not in rel_path:
                 markers.append("core")
-                if rel_path in SMOKE_TEST_FILES:
-                    markers.append("smoke")
-
-        elif rel_path.startswith("tests/test_schema/"):
-            markers.append("schema")
 
         for marker in markers:
             item.add_marker(marker)

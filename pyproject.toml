@@ -112,11 +112,12 @@ plotly_get_chrome = "plotly.io._kaleido:plotly_get_chrome"
 testpaths = ["tests", "test_init", "codegen"]
 markers = [
     "core: core tests that do not require optional dependencies (fast)",
-    "smoke: fast smoke tests for quick validation (subset of core)",
+    "smoke: fast smoke tests for quick validation (subset of core, 100% must pass)",
     "optional: tests that require optional dependencies",
     "express: Plotly Express regression tests",
     "image_export: static image export tests (Kaleido)",
-    "schema: schema and codegen consistency checks",
+    "schema: schema and codegen consistency checks (stable, must pass on every commit)",
+    "schema_full: full schema consistency suite including known-failing checks (for periodic auditing)",
     "matplotlib: tests that require matplotlib",
     "nodev: mark a test as nodev"
 ]

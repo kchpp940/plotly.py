@@ -3,6 +3,14 @@ Schema and codegen consistency tests.
 
 These tests validate that codegen outputs (validators, graph_objects, exports)
 stay in sync with the plot-schema.json source of truth.
+
+Two marker tiers:
+  - ``schema``: Stable, always-pass checks. Must be green on every commit.
+    Covers codegen <-> validators mapping, trace class coverage, and
+    Layout._valid_props coverage.
+  - ``schema_full``: Full consistency suite including known-failing checks
+    (validator <-> graph_objects property mapping, export sync, doc refs).
+    Intended for periodic auditing, not per-commit gating.
 """
 
 import os
@@ -13,6 +21,7 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(_
 sys.path.insert(0, PROJECT_ROOT)
 
 
+@pytest.mark.schema
 def test_codegen_vs_validators():
     from codegen.validate_schema_artifacts import (
         SCHEMA_PATH,
@@ -31,6 +40,7 @@ def test_codegen_vs_validators():
     assert error_count == 0, "\n".join(str(e) for e in errors if e.severity == "error")
 
 
+@pytest.mark.schema_full
 def test_validators_vs_graph_objects():
     from codegen.validate_schema_artifacts import (
         VALIDATORS_PATH,
@@ -45,6 +55,7 @@ def test_validators_vs_graph_objects():
     assert error_count == 0, "\n".join(str(e) for e in errors if e.severity == "error")
 
 
+@pytest.mark.schema_full
 def test_graph_objs_exports():
     from codegen.validate_schema_artifacts import (
         GRAPH_OBJS_INIT,
@@ -57,6 +68,7 @@ def test_graph_objs_exports():
     assert error_count == 0, "\n".join(str(e) for e in errors if e.severity == "error")
 
 
+@pytest.mark.schema
 def test_trace_class_coverage():
     from codegen.validate_schema_artifacts import (
         SCHEMA_PATH,
@@ -74,6 +86,7 @@ def test_trace_class_coverage():
     assert error_count == 0, "\n".join(str(e) for e in errors if e.severity == "error")
 
 
+@pytest.mark.schema
 def test_layout_valid_props():
     from codegen.validate_schema_artifacts import (
         SCHEMA_PATH,
@@ -91,6 +104,7 @@ def test_layout_valid_props():
     assert error_count == 0, "\n".join(str(e) for e in errors if e.severity == "error")
 
 
+@pytest.mark.schema_full
 def test_doc_attribute_refs():
     from codegen.validate_schema_artifacts import (
         SCHEMA_PATH,

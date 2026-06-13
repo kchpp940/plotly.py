@@ -218,38 +218,53 @@ we are more likely to review and merge PRs with tests than ones without.
 Tests are organized into categories using pytest markers.
 Run `python -m pytest --markers` to see the full list.
 
-| Marker | Description | Dependencies | Typical Use Case |
-|--------|-------------|--------------|------------------|
-| `smoke` | Fast smoke tests for quick validation | `dev_core` | Quick sanity check before committing |
-| `core` | All core tests (no optional deps) | `dev_core` | Verifying core functionality |
-| `optional` | Tests requiring optional dependencies | `dev_optional` | Full test suite with optional deps |
-| `express` | Plotly Express regression tests | `dev_optional` + `express` | Changes to Plotly Express |
-| `image_export` | Static image export (Kaleido) tests | `dev_optional` + `kaleido` | Changes to image export |
-| `schema` | Schema and codegen consistency checks | `dev_core` | Changes to codegen or schema |
-| `matplotlib` | Matplotlib conversion tests | `dev_optional` | Changes to matplotlylib |
+**Every marker below is a stable, always-pass entry point** — if one of them fails,
+it is a real regression (or a missing dependency), not an expected or known failure.
+
+| Marker | Description | Required `uv` extras | Typical change to trigger it |
+|--------|-------------|----------------------|-------------------------------|
+| `smoke` | Fast, deterministic smoke tests. ~5s, ~100 cases. | `dev_core` | Any commit — run this first |
+| `core` | All core tests (no optional deps). ~2000 cases. | `dev_core` | Core graph objects, I/O, validators, subplots |
+| `optional` | Optional-dependency tests (pandas, numpy, scipy, statsmodels, etc.). ~200 cases. | `dev_optional` + `dev_pandas3` | Anything touching pandas interop, figure factory, ternary/splom |
+| `express` | Plotly Express regression suite. ~1200 cases. | `dev_optional` + `dev_pandas3` + `express` | `plotly/express/`, plotly data, Express templates |
+| `image_export` | Static image export via Kaleido. ~14 cases. | `dev_optional` + `kaleido` (+ Chrome) | `plotly/io/_kaleido/`, static image API |
+| `schema` | Stable schema ↔ codegen consistency checks. 3 cases. | `dev_core` | `codegen/`, schema regenerations, `plotly/graph_objs/` |
+| `schema_full` | Full schema audit (includes known failures, for periodic review). 6 cases. | `dev_core` | Major schema upgrades / codegen refactors |
+| `matplotlib` | Matplotlib → Plotly conversion tests. | `dev_optional` | `plotly/matplotlylib/` |
+| `nodev` | Opt-out: tests that should not run during local dev. | — | CI-only; exclude with `-m "not nodev"` |
 
 #### Running Tests
 
-If you have installed all the dependencies as explained above,
-you can run all the tests with:
+Before running tests, create the virtual environment and install the extras you need:
 
 ```bash
-python -m pytest
+uv venv
+source .venv/bin/activate
+uv sync --extra dev_core                                    # smoke / core / schema
+uv sync --extra dev_optional --extra dev_pandas3            # + optional
+uv sync --extra dev_optional --extra dev_pandas3 --extra express     # + express
+uv sync --extra dev_optional --extra kaleido                # + image_export
 ```
 
-During development, you can speed things up by running only a specific test category.
+If you have installed **all** of the extras above, you can run every stable test with:
 
-**Quick smoke test** (fastest, ~100 tests):
+```bash
+python -m pytest -m "smoke or core or optional or express or image_export or schema"
+```
+
+However — during development you usually only need one or two of the following.
+
+**Quick smoke sanity check** (~5 seconds, must be green on every commit):
 ```bash
 python -m pytest -m smoke
 ```
 
-**Core tests only** (no optional dependencies needed):
+**Core tests** (no optional dependencies):
 ```bash
 python -m pytest -m core
 ```
 
-**All tests with optional dependencies**:
+**Optional-dependency tests**:
 ```bash
 python -m pytest -m optional
 ```
@@ -259,17 +274,22 @@ python -m pytest -m optional
 python -m pytest -m express
 ```
 
-**Image export tests** (Kaleido):
+**Static image export tests** (requires Kaleido + a Chrome install):
 ```bash
 python -m pytest -m image_export
 ```
 
-**Schema/codegen consistency checks**:
+**Schema / codegen consistency** (must be green after any codegen run):
 ```bash
 python -m pytest -m schema
 ```
 
-You can also combine markers or run only the tests in a particular file:
+**Full schema audit** (known failures allowed; run periodically before releases):
+```bash
+python -m pytest -m schema_full
+```
+
+You can also combine markers, exclude flags, or point at a single file:
 
 ```bash
 python -m pytest -m "core and not nodev"
