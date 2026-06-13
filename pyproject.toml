@@ -109,9 +109,16 @@ conflicts = [
 plotly_get_chrome = "plotly.io._kaleido:plotly_get_chrome"
 
 [tool.pytest.ini_options]
+testpaths = ["tests", "test_init", "codegen"]
 markers = [
-    "nodev: mark a test as nodev",
-    "matplotlib: mark a test as matplotlib"
+    "core: core tests that do not require optional dependencies (fast)",
+    "smoke: fast smoke tests for quick validation (subset of core)",
+    "optional: tests that require optional dependencies",
+    "express: Plotly Express regression tests",
+    "image_export: static image export tests (Kaleido)",
+    "schema: schema and codegen consistency checks",
+    "matplotlib: tests that require matplotlib",
+    "nodev: mark a test as nodev"
 ]
 
 [tool.hatch.build]

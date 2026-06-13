@@ -35,11 +35,7 @@ jobs:
       - name: Test core (excluding nodev)
         run: |
           source .venv/bin/activate
-          pytest -k 'not nodev' tests/test_core
-      - name: Validate schema artifact consistency
-        run: |
-          source .venv/bin/activate
-          python commands.py validateschema
+          python -m pytest -m "core and not nodev"
       - name: Build source distribution packages
         run: |
           source .venv/bin/activate
@@ -76,7 +72,6 @@ jobs:
           npm ci
           npm run build
           cd ..
-          python commands.py validateschema
           python -m build --sdist --wheel -o dist
           cp -R dist output
           git status

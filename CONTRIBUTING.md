@@ -213,18 +213,67 @@ We use [pytest](https://docs.pytest.org/) for managing and running tests.
 You are strongly encouraged to write or modify tests whenever you add or change functionality;
 we are more likely to review and merge PRs with tests than ones without.
 
+#### Test Categories
+
+Tests are organized into categories using pytest markers.
+Run `python -m pytest --markers` to see the full list.
+
+| Marker | Description | Dependencies | Typical Use Case |
+|--------|-------------|--------------|------------------|
+| `smoke` | Fast smoke tests for quick validation | `dev_core` | Quick sanity check before committing |
+| `core` | All core tests (no optional deps) | `dev_core` | Verifying core functionality |
+| `optional` | Tests requiring optional dependencies | `dev_optional` | Full test suite with optional deps |
+| `express` | Plotly Express regression tests | `dev_optional` + `express` | Changes to Plotly Express |
+| `image_export` | Static image export (Kaleido) tests | `dev_optional` + `kaleido` | Changes to image export |
+| `schema` | Schema and codegen consistency checks | `dev_core` | Changes to codegen or schema |
+| `matplotlib` | Matplotlib conversion tests | `dev_optional` | Changes to matplotlylib |
+
+#### Running Tests
+
 If you have installed all the dependencies as explained above,
 you can run all the tests with:
 
 ```bash
-python -m pytest tests
+python -m pytest
 ```
 
-During development,
-you can speed things up by running only the tests in a particular file:
+During development, you can speed things up by running only a specific test category.
+
+**Quick smoke test** (fastest, ~100 tests):
+```bash
+python -m pytest -m smoke
+```
+
+**Core tests only** (no optional dependencies needed):
+```bash
+python -m pytest -m core
+```
+
+**All tests with optional dependencies**:
+```bash
+python -m pytest -m optional
+```
+
+**Plotly Express regression tests**:
+```bash
+python -m pytest -m express
+```
+
+**Image export tests** (Kaleido):
+```bash
+python -m pytest -m image_export
+```
+
+**Schema/codegen consistency checks**:
+```bash
+python -m pytest -m schema
+```
+
+You can also combine markers or run only the tests in a particular file:
 
 ```bash
-python -m pytest tests/test_plotly/test_plot.py
+python -m pytest -m "core and not nodev"
+python -m pytest tests/test_core/test_graph_objs/test_figure.py
 ```
 
 See [pytest's documentation](https://docs.pytest.org/) for more details.

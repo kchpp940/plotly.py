@@ -40,10 +40,6 @@ jobs:
         pip install
         build
         --user
-    - name: Validate schema artifact consistency
-      run: |
-        source .venv/bin/activate
-        python commands.py validateschema
     - name: Build a binary wheel and a source tarball
       run: python3 -m build
     - name: Store the distribution packages
