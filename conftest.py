@@ -33,16 +33,20 @@ def pytest_collection_modifyitems(config, items):
             markers.append("core")
 
         elif rel_path.startswith("tests/test_optional/"):
-            markers.append("optional")
-
+            # Mutually exclusive sub-markers within optional.
+            # `optional` covers only the "pure" optional-dep tests that are NOT
+            # Express, image export, or matplotlib. The latter three are each
+            # assigned their own standalone markers so CI can run them in
+            # separate jobs without overlap. Use `optional_all` to get
+            # everything (optional + express + image_export + matplotlib).
             if rel_path.startswith("tests/test_optional/test_px/"):
                 markers.append("express")
-
-            if rel_path.startswith("tests/test_optional/test_kaleido/"):
+            elif rel_path.startswith("tests/test_optional/test_kaleido/"):
                 markers.append("image_export")
-
-            if rel_path.startswith("tests/test_optional/test_matplotlylib/"):
+            elif rel_path.startswith("tests/test_optional/test_matplotlylib/"):
                 markers.append("matplotlib")
+            else:
+                markers.append("optional")
 
         elif rel_path.startswith("test_init/"):
             if "test_dependencies_not_imported" not in rel_path:

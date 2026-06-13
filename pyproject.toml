@@ -113,12 +113,13 @@ testpaths = ["tests", "test_init", "codegen"]
 markers = [
     "core: core tests that do not require optional dependencies (fast)",
     "smoke: fast smoke tests for quick validation (subset of core, 100% must pass)",
-    "optional: tests that require optional dependencies",
-    "express: Plotly Express regression tests",
-    "image_export: static image export tests (Kaleido)",
+    "optional: optional-dependency tests EXCLUDING Express / image export / matplotlib",
+    "optional_all: all optional-dependency tests (optional OR express OR image_export OR matplotlib)",
+    "express: Plotly Express regression tests (standalone, not included in 'optional')",
+    "image_export: static image export tests (Kaleido; standalone, not included in 'optional')",
     "schema: schema and codegen consistency checks (stable, must pass on every commit)",
     "schema_full: full schema consistency suite including known-failing checks (for periodic auditing)",
-    "matplotlib: tests that require matplotlib",
+    "matplotlib: tests that require matplotlib (standalone, not included in 'optional')",
     "nodev: mark a test as nodev"
 ]
 

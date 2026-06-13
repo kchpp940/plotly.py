@@ -215,88 +215,99 @@ we are more likely to review and merge PRs with tests than ones without.
 
 #### Test Categories
 
-Tests are organized into categories using pytest markers.
-Run `python -m pytest --markers` to see the full list.
+Tests are organised into categories using pytest markers and exposed as
+stable subcommands through `python commands.py test <preset>`.
 
-**Every marker below is a stable, always-pass entry point** — if one of them fails,
-it is a real regression (or a missing dependency), not an expected or known failure.
+**Every preset below is a stable, always-pass entry point** — if one of them
+fails, it is a real regression (or a missing dependency), not an expected or
+known failure. Missing dependencies are caught before pytest starts with a
+friendly `uv sync` hint.
 
-| Marker | Description | Required `uv` extras | Typical change to trigger it |
-|--------|-------------|----------------------|-------------------------------|
-| `smoke` | Fast, deterministic smoke tests. ~5s, ~100 cases. | `dev_core` | Any commit — run this first |
-| `core` | All core tests (no optional deps). ~2000 cases. | `dev_core` | Core graph objects, I/O, validators, subplots |
-| `optional` | Optional-dependency tests (pandas, numpy, scipy, statsmodels, etc.). ~200 cases. | `dev_optional` + `dev_pandas3` | Anything touching pandas interop, figure factory, ternary/splom |
-| `express` | Plotly Express regression suite. ~1200 cases. | `dev_optional` + `dev_pandas3` + `express` | `plotly/express/`, plotly data, Express templates |
-| `image_export` | Static image export via Kaleido. ~14 cases. | `dev_optional` + `kaleido` (+ Chrome) | `plotly/io/_kaleido/`, static image API |
-| `schema` | Stable schema ↔ codegen consistency checks. 3 cases. | `dev_core` | `codegen/`, schema regenerations, `plotly/graph_objs/` |
-| `schema_full` | Full schema audit (includes known failures, for periodic review). 6 cases. | `dev_core` | Major schema upgrades / codegen refactors |
-| `matplotlib` | Matplotlib → Plotly conversion tests. | `dev_optional` | `plotly/matplotlylib/` |
-| `nodev` | Opt-out: tests that should not run during local dev. | — | CI-only; exclude with `-m "not nodev"` |
+| Preset (`commands.py test …`) | Marker(s) | Required `uv` extras | Typical change to trigger it |
+|---|---|---|---|
+| `smoke` | `smoke` | `dev_core` | Any commit — run this first (~5 s, ~100 tests) |
+| `core` | `core` | `dev_core` | Core graph objects, I/O, validators, subplots (~2000 tests) |
+| `optional` | `optional` (*) | `dev_optional` + `dev_pandas3` | Pandas interop, figure factory, ternary/splom (~180 tests) |
+| `express` | `express` | `dev_optional` + `dev_pandas3` + `express` | `plotly/express/`, plotly data, Express templates (~1200 tests) |
+| `image-export` | `image_export` | `dev_optional` + `kaleido` (+ Chrome) | `plotly/io/_kaleido/`, static image API (~14 tests) |
+| `matplotlib` | `matplotlib` | `dev_optional` | `plotly/matplotlylib/` |
+| `optional-all` | `optional ∨ express ∨ image_export ∨ matplotlib` | all of the above | One-shot local run of every optional suite |
+| `schema` | `schema` | `dev_core` | `codegen/`, schema regenerations, `plotly/graph_objs/` |
+| `schema-full` | `schema_full` | `dev_core` | Major schema upgrades / codegen refactors (includes known failures) |
+| `all` | every stable marker | all extras | Full CI-equivalent run on a developer machine |
+
+(*) `optional` is **mutually exclusive** with `express`, `image-export`, and
+`matplotlib` — they do not overlap, so you can run them in parallel in CI
+without wasting time on duplicate execution. `optional-all` is provided for
+convenience when you want them all at once.
 
 #### Running Tests
 
-Before running tests, create the virtual environment and install the extras you need:
+Before running tests, create the virtual environment and install the extras
+you need (each preset prints a clear `uv sync` hint if anything is missing):
 
 ```bash
 uv venv
 source .venv/bin/activate
-uv sync --extra dev_core                                    # smoke / core / schema
-uv sync --extra dev_optional --extra dev_pandas3            # + optional
-uv sync --extra dev_optional --extra dev_pandas3 --extra express     # + express
-uv sync --extra dev_optional --extra kaleido                # + image_export
+uv sync --extra dev_core                                       # smoke / core / schema
+uv sync --extra dev_optional --extra dev_pandas3               # + optional
+uv sync --extra dev_optional --extra dev_pandas3 --extra express   # + express
+uv sync --extra dev_optional --extra kaleido                   # + image-export
 ```
 
-If you have installed **all** of the extras above, you can run every stable test with:
-
+**Quick smoke sanity check** (must be green on every commit):
 ```bash
-python -m pytest -m "smoke or core or optional or express or image_export or schema"
-```
-
-However — during development you usually only need one or two of the following.
-
-**Quick smoke sanity check** (~5 seconds, must be green on every commit):
-```bash
-python -m pytest -m smoke
+python commands.py test smoke
 ```
 
 **Core tests** (no optional dependencies):
 ```bash
-python -m pytest -m core
+python commands.py test core
 ```
 
-**Optional-dependency tests**:
+**Optional-dependency tests only** (excludes Express / image export / matplotlib):
 ```bash
-python -m pytest -m optional
+python commands.py test optional
 ```
 
-**Plotly Express regression tests**:
+**Plotly Express regression tests** (standalone, no overlap with `optional`):
 ```bash
-python -m pytest -m express
+python commands.py test express
 ```
 
-**Static image export tests** (requires Kaleido + a Chrome install):
+**Static image export tests** (requires Kaleido + Chrome):
 ```bash
-python -m pytest -m image_export
+python commands.py test image-export
 ```
 
 **Schema / codegen consistency** (must be green after any codegen run):
 ```bash
-python -m pytest -m schema
+python commands.py test schema
 ```
 
 **Full schema audit** (known failures allowed; run periodically before releases):
 ```bash
-python -m pytest -m schema_full
+python commands.py test schema-full
 ```
 
-You can also combine markers, exclude flags, or point at a single file:
+**Every stable preset, in one go** (for developer machines with all extras):
+```bash
+python commands.py test all
+```
+
+You can pass extra pytest arguments **after** the preset name. For example, to
+exclude `nodev` tests or run verbosely:
 
 ```bash
-python -m pytest -m "core and not nodev"
-python -m pytest tests/test_core/test_graph_objs/test_figure.py
+python commands.py test core -m "not nodev"
+python commands.py test smoke -v --tb=short -x
+python commands.py test express tests/test_optional/test_px/test_px_violin.py
 ```
 
-See [pytest's documentation](https://docs.pytest.org/) for more details.
+Under the hood each preset is a thin wrapper that builds a pytest marker
+expression, runs a preflight check, and then invokes pytest; so anything you
+know how to do with `python -m pytest …` continues to work as expected. See
+[pytest's documentation](https://docs.pytest.org/) for more details.
 
 ## Advanced
 

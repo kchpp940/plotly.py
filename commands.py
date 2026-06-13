@@ -32,6 +32,147 @@ NPM_PATH = os.pathsep.join(
 )
 
 
+# ---------------------------------------------------------------------------
+# Testing command layer
+# ---------------------------------------------------------------------------
+
+TEST_PRESETS = {
+    # name:            (marker_expr,                    requires_extras,               requires_chrome)
+    "smoke":           ("smoke",                        ["dev_core"],                  False),
+    "core":            ("core",                         ["dev_core"],                  False),
+    "optional":        ("optional",                     ["dev_optional", "dev_pandas3"], False),
+    "express":         ("express",                      ["dev_optional", "dev_pandas3", "express"], False),
+    "image-export":    ("image_export",                 ["dev_optional", "kaleido"],   True),
+    "matplotlib":      ("matplotlib",                   ["dev_optional"],              False),
+    "optional-all":    ("optional or express or image_export or matplotlib",
+                                                         ["dev_optional", "dev_pandas3", "express", "kaleido"],
+                                                                                                     True),
+    "schema":          ("schema",                       ["dev_core"],                  False),
+    "schema-full":     ("schema_full",                  ["dev_core"],                  False),
+    "all":             ("smoke or core or (optional or express or image_export or matplotlib) or schema",
+                                                         ["dev_core", "dev_optional", "dev_pandas3", "express", "kaleido"],
+                                                                                                     True),
+}
+
+
+def _python_in_venv():
+    """Return the path to the current interpreter (we always assume the
+    developer has activated a venv; fall back to sys.executable otherwise).
+    """
+    return sys.executable
+
+
+def _check_extra_available(preset_name):
+    """Quick preflight so we can emit a friendly message instead of a
+    mysterious ImportError from pytest collection."""
+
+    info = TEST_PRESETS[preset_name]
+    _, extras, needs_chrome = info
+
+    missing_mods = []
+
+    def _has(mod):
+        try:
+            __import__(mod)
+            return True
+        except Exception:
+            return False
+
+    # Map high-level extras to a canonical canary import.
+    # If a canary is missing we print the `uv sync --extra ...` hint.
+    canary_by_extra = {
+        "dev_core":       ("plotly",            "--extra dev_core"),
+        "dev_optional":   ("pandas",            "--extra dev_optional"),
+        "dev_pandas1":    ("pandas",            "--extra dev_optional --extra dev_pandas1"),
+        "dev_pandas2":    ("pandas",            "--extra dev_optional --extra dev_pandas2"),
+        "dev_pandas3":    ("pandas",            "--extra dev_optional --extra dev_pandas3"),
+        "express":        ("statsmodels",       "--extra express"),
+        "kaleido":        ("kaleido",           "--extra kaleido"),
+    }
+
+    missing_extras = []
+    for extra in extras:
+        mod, hint = canary_by_extra.get(extra, (None, None))
+        if mod is not None and not _has(mod):
+            missing_extras.append(hint)
+
+    if needs_chrome:
+        # Best-effort: kaleido usually bundles its own chromium, but let's
+        # still warn on missing `plotly_get_chrome` in case the env needs it.
+        try:
+            from plotly.io._kaleido import plotly_get_chrome  # noqa: F401
+        except Exception:
+            missing_extras.append("(Chrome not found — install Chrome or let kaleido bundle it)")
+
+    if missing_extras:
+        sys.stderr.write(
+            "⚠  Missing dependencies for preset `{preset}`.\n"
+            "   Install with:\n"
+            "       uv venv && source .venv/bin/activate\n"
+            "       uv sync {extras}\n"
+            "   Then try again.\n\n".format(
+                preset=preset_name,
+                extras=" ".join(sorted(set(missing_extras))),
+            )
+        )
+        return False
+    return True
+
+
+def run_tests(preset_name, pytest_extra_args):
+    """Run a named test preset through pytest, forwarding the exit code."""
+
+    if preset_name not in TEST_PRESETS:
+        sys.stderr.write(
+            f"unknown test preset `{preset_name}`. "
+            f"Choices: {', '.join(sorted(TEST_PRESETS))}\n"
+        )
+        sys.exit(2)
+
+    if not _check_extra_available(preset_name):
+        sys.exit(3)
+
+    preset_marker, _, _ = TEST_PRESETS[preset_name]
+
+    # If the user passed additional `-m` or `--markers` we want to AND them
+    # with the preset marker, not replace it.
+    import shlex
+
+    final_marker = preset_marker
+    other_args = []
+    i = 0
+    while i < len(pytest_extra_args):
+        a = pytest_extra_args[i]
+        if a == "-m" or a == "--markers":
+            user_marker = pytest_extra_args[i + 1]
+            final_marker = f"({preset_marker}) and ({user_marker})"
+            i += 2
+            continue
+        if a.startswith("-m=") or a.startswith("--markers="):
+            user_marker = a.split("=", 1)[1]
+            final_marker = f"({preset_marker}) and ({user_marker})"
+            i += 1
+            continue
+        other_args.append(a)
+        i += 1
+
+    cmd = [
+        _python_in_venv(),
+        "-m", "pytest",
+        "-m", final_marker,
+        *other_args,
+    ]
+
+    pretty = " ".join(
+        f"'{c}'" if " " in c else c for c in cmd
+    )
+    sys.stderr.write(f"▶  {pretty}\n")
+    sys.stderr.flush()
+
+    completed = subprocess.run(cmd, cwd=PROJECT_ROOT)
+    sys.exit(completed.returncode)
+
+
 def plotly_js_version():
     """Load plotly.js version from js/package.json."""
 
@@ -478,6 +619,30 @@ def make_parser():
 
     subparsers.add_parser("format", help="reformat code")
 
+    # --- test subcommand ---
+    p_test = subparsers.add_parser(
+        "test",
+        help="run a named test preset (smoke / core / optional / express / ...)",
+        description=(
+            "Run a standard test preset. Each preset maps to a pytest marker "
+            "expression and performs a preflight check for required extras.\n"
+            "Presets: " + ", ".join(sorted(TEST_PRESETS)) + "\n\n"
+            "Any extra arguments after the preset name are forwarded to pytest."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    p_test.add_argument(
+        "preset",
+        choices=sorted(TEST_PRESETS),
+        help="test preset to run",
+    )
+    p_test.add_argument(
+        "pytest_args",
+        nargs=argparse.REMAINDER,
+        help="extra arguments forwarded to pytest (e.g. -v, --tb=short, -x)",
+    )
+    # ------------------------------------------------------------------
+
     p_update_dev = subparsers.add_parser(
         "updateplotlyjsdev", help="update plotly.js for development"
     )
@@ -512,6 +677,9 @@ def main():
 
     if args.cmd == "codegen":
         perform_codegen(outdir, noformat=args.noformat)
+
+    elif args.cmd == "test":
+        run_tests(args.preset, args.pytest_args)
 
     elif args.cmd == "format":
         reformat_code(outdir)
