@@ -56,14 +56,10 @@ jobs:
           source .venv/bin/activate
           uv sync --extra dev_optional
           python --version
-      - name: Test codegen
+      - name: Test codegen (schema artifact consistency)
         run: |
           source .venv/bin/activate
           python -m pytest tests/test_codegen -v
-      - name: Run schema consistency check
-        run: |
-          source .venv/bin/activate
-          python commands.py validateschema
 
   test-optional:
     name: Optional tests (Python ${{ matrix.python-version }})
