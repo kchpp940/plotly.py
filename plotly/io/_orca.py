@@ -329,9 +329,13 @@ Failed to write orca configuration file at '{path}'""".format(path=self.config_f
             return
         if not isinstance(val, str):
             raise ValueError(
-                """
-The server_url property must be a string, but received value of type {typ}.
-    Received value: {val}""".format(typ=type(val), val=val)
+                build_error_message(
+                    ErrorCode.INVALID_TYPE,
+                    "The server_url property must be a string, but received value of type {typ}.".format(
+                        typ=type(val)
+                    ),
+                    detail="Received value: {val}".format(val=val),
+                )
             )
 
         if not val.startswith("http://") and not val.startswith("https://"):
@@ -368,9 +372,13 @@ The server_url property must be a string, but received value of type {typ}.
             return
         if not isinstance(val, int):
             raise ValueError(
-                """
-The port property must be an integer, but received value of type {typ}.
-    Received value: {val}""".format(typ=type(val), val=val)
+                build_error_message(
+                    ErrorCode.INVALID_TYPE,
+                    "The port property must be an integer, but received value of type {typ}.".format(
+                        typ=type(val)
+                    ),
+                    detail="Received value: {val}".format(val=val),
+                )
             )
 
         self._props["port"] = val
@@ -412,9 +420,13 @@ The port property must be an integer, but received value of type {typ}.
         else:
             if not isinstance(val, str):
                 raise ValueError(
-                    """
-The executable property must be a string, but received value of type {typ}.
-    Received value: {val}""".format(typ=type(val), val=val)
+                    build_error_message(
+                        ErrorCode.INVALID_TYPE,
+                        "The executable property must be a string, but received value of type {typ}.".format(
+                            typ=type(val)
+                        ),
+                        detail="Received value: {val}".format(val=val),
+                    )
                 )
             if isinstance(val, str):
                 val = [val]
@@ -453,9 +465,13 @@ The executable property must be a string, but received value of type {typ}.
         else:
             if not isinstance(val, (int, float)):
                 raise ValueError(
-                    """
-The timeout property must be a number, but received value of type {typ}.
-    Received value: {val}""".format(typ=type(val), val=val)
+                    build_error_message(
+                        ErrorCode.INVALID_TYPE,
+                        "The timeout property must be a number, but received value of type {typ}.".format(
+                            typ=type(val)
+                        ),
+                        detail="Received value: {val}".format(val=val),
+                    )
                 )
             self._props["timeout"] = val
 
@@ -482,9 +498,13 @@ The timeout property must be a number, but received value of type {typ}.
             return
         if not isinstance(val, int):
             raise ValueError(
-                """
-The default_width property must be an int, but received value of type {typ}.
-    Received value: {val}""".format(typ=type(val), val=val)
+                build_error_message(
+                    ErrorCode.INVALID_TYPE,
+                    "The default_width property must be an int, but received value of type {typ}.".format(
+                        typ=type(val)
+                    ),
+                    detail="Received value: {val}".format(val=val),
+                )
             )
         self._props["default_width"] = val
 
@@ -508,9 +528,13 @@ The default_width property must be an int, but received value of type {typ}.
             return
         if not isinstance(val, int):
             raise ValueError(
-                """
-The default_height property must be an int, but received value of type {typ}.
-    Received value: {val}""".format(typ=type(val), val=val)
+                build_error_message(
+                    ErrorCode.INVALID_TYPE,
+                    "The default_height property must be an int, but received value of type {typ}.".format(
+                        typ=type(val)
+                    ),
+                    detail="Received value: {val}".format(val=val),
+                )
             )
         self._props["default_height"] = val
 
@@ -565,9 +589,13 @@ The default_height property must be an int, but received value of type {typ}.
             return
         if not isinstance(val, (int, float)):
             raise ValueError(
-                """
-The default_scale property must be a number, but received value of type {typ}.
-    Received value: {val}""".format(typ=type(val), val=val)
+                build_error_message(
+                    ErrorCode.INVALID_TYPE,
+                    "The default_scale property must be a number, but received value of type {typ}.".format(
+                        typ=type(val)
+                    ),
+                    detail="Received value: {val}".format(val=val),
+                )
             )
         self._props["default_scale"] = val
 
@@ -591,9 +619,13 @@ The default_scale property must be a number, but received value of type {typ}.
         else:
             if not isinstance(val, str):
                 raise ValueError(
-                    """
-The topojson property must be a string, but received value of type {typ}.
-    Received value: {val}""".format(typ=type(val), val=val)
+                    build_error_message(
+                        ErrorCode.INVALID_TYPE,
+                        "The topojson property must be a string, but received value of type {typ}.".format(
+                            typ=type(val)
+                        ),
+                        detail="Received value: {val}".format(val=val),
+                    )
                 )
             self._props["topojson"] = val
 
@@ -621,9 +653,13 @@ The topojson property must be a string, but received value of type {typ}.
         else:
             if not isinstance(val, str):
                 raise ValueError(
-                    """
-The mathjax property must be a string, but received value of type {typ}.
-    Received value: {val}""".format(typ=type(val), val=val)
+                    build_error_message(
+                        ErrorCode.INVALID_TYPE,
+                        "The mathjax property must be a string, but received value of type {typ}.".format(
+                            typ=type(val)
+                        ),
+                        detail="Received value: {val}".format(val=val),
+                    )
                 )
             self._props["mathjax"] = val
 
@@ -648,10 +684,13 @@ The mathjax property must be a string, but received value of type {typ}.
         else:
             if not isinstance(val, str):
                 raise ValueError(
-                    """
-The mapbox_access_token property must be a string, \
-but received value of type {typ}.
-    Received value: {val}""".format(typ=type(val), val=val)
+                    build_error_message(
+                        ErrorCode.INVALID_TYPE,
+                        "The mapbox_access_token property must be a string, but received value of type {typ}.".format(
+                            typ=type(val)
+                        ),
+                        detail="Received value: {val}".format(val=val),
+                    )
                 )
             self._props["mapbox_access_token"] = val
 
@@ -671,10 +710,14 @@ but received value of type {typ}.
         else:
             if val not in valid_vals:
                 raise ValueError(
-                    """
-The use_xvfb property must be one of {valid_vals}
-    Received value of type {typ}: {val}""".format(
-                        valid_vals=valid_vals, typ=type(val), val=repr(val)
+                    build_error_message(
+                        ErrorCode.INVALID_VALUE,
+                        "The use_xvfb property must be one of {valid_vals}".format(
+                            valid_vals=valid_vals
+                        ),
+                        detail="Received value of type {typ}: {val}".format(
+                            typ=type(val), val=repr(val)
+                        ),
                     )
                 )
 
