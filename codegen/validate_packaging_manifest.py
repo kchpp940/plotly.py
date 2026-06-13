@@ -564,13 +564,12 @@ def check_type_hints() -> list[CheckResult]:
 
     py_typed = PLOTLY_PKG / "py.typed"
     if not py_typed.is_file():
-        results.append(_warn(
+        results.append(_err(
             "type-hints",
-            "plotly/py.typed missing — PEP 561 marker not present",
-            "Type hints will not be distributed with the package. "
-            "Create empty plotly/py.typed to enable PEP 561 support. "
-            "Note: hatch's default include for /plotly* will pick up py.typed "
-            "if it exists in the plotly/ directory.",
+            "plotly/py.typed missing — PEP 561 type hint marker required",
+            "Plotly has inline type annotations and must ship py.typed so type "
+            "checkers can discover them. Create empty plotly/py.typed to enable "
+            "PEP 561 support. Hatch's /plotly* include glob will pick it up.",
         ))
     else:
         if py_typed.stat().st_size > 100:
@@ -582,12 +581,12 @@ def check_type_hints() -> list[CheckResult]:
 
     utils_typed = PLOTLY_UTILS / "py.typed"
     if not utils_typed.is_file():
-        results.append(_warn(
+        results.append(_err(
             "type-hints",
             "_plotly_utils/py.typed missing",
-            "_plotly_utils is a separate package namespace. "
-            "If it needs type hints distribution, create _plotly_utils/py.typed. "
-            "Note: hatch's /_plotly* include will pick it up.",
+            "_plotly_utils is a separate package namespace. Since _plotly_utils "
+            "has inline type annotations, it also needs py.typed for PEP 561 "
+            "compliance. Hatch's /_plotly* include glob will pick it up.",
         ))
     else:
         results.append(_ok("type-hints", "_plotly_utils/py.typed marker present"))
@@ -601,8 +600,8 @@ def check_type_hints() -> list[CheckResult]:
     else:
         results.append(_warn(
             "type-hints",
-            "No .pyi stub files found — relying on inline type annotations",
-            "If using inline hints only, ensure all public APIs are annotated. "
+            "No .pyi stub files — using inline type annotations only",
+            "All public APIs should have inline type hints if no stub files exist. "
             "hatch's /plotly* glob will include any .pyi files under plotly/.",
         ))
 

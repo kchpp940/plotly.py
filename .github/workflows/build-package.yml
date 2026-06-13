@@ -36,11 +36,19 @@ jobs:
         run: |
           source .venv/bin/activate
           pytest -k 'not nodev' tests/test_core
-      - name: Build source distribution packages
+      - name: Validate packaging manifest (pre-build)
         run: |
           source .venv/bin/activate
           uv sync --extra dev_build
-          python -m build --sdist --wheel -o dist
+          python commands.py validatepackaging
+      - name: Build source distribution packages
+        run: |
+          source .venv/bin/activate
+          PLOTLY_SKIP_PACKAGING_CHECK=1 python -m build --sdist --wheel -o dist
+      - name: Validate distribution artifacts (post-build)
+        run: |
+          source .venv/bin/activate
+          python commands.py validatedist dist/
       - name: Upload dist artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
@@ -63,18 +71,26 @@ jobs:
           node-version: "22"
       - name: Set up uv
         uses: astral-sh/setup-uv@cec208311dfd045dd5311c1add060b2062131d57  # v8.0.0
-      - name: PyPI Build
+      - name: Validate packaging manifest (pre-build)
         run: |
           uv venv
           source .venv/bin/activate
           uv sync --extra dev_build
+          python commands.py validatepackaging
+      - name: PyPI Build
+        run: |
+          source .venv/bin/activate
           cd js
           npm ci
           npm run build
           cd ..
-          python -m build --sdist --wheel -o dist
+          PLOTLY_SKIP_PACKAGING_CHECK=1 python -m build --sdist --wheel -o dist
           cp -R dist output
           git status
+      - name: Validate distribution artifacts (post-build)
+        run: |
+          source .venv/bin/activate
+          python commands.py validatedist dist/
       - name: Zip output
         run: |
           tar czf output.tgz output

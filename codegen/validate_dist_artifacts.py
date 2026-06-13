@@ -65,8 +65,8 @@ def _warn(name: str, msg: str, detail: str = "") -> CheckResult:
     return CheckResult(name, "WARN", msg, detail)
 
 
-def _ok(name: str, msg: str) -> CheckResult:
-    return CheckResult(name, "OK", msg)
+def _ok(name: str, msg: str, detail: str = "") -> CheckResult:
+    return CheckResult(name, "OK", msg, detail)
 
 
 @dataclass
@@ -149,6 +149,8 @@ def _find_archives(dist_path: Path) -> list[Path]:
 WHEEL_REQUIRED_FILES = [
     ("plotly/__init__.py", "Top-level plotly package __init__"),
     ("_plotly_utils/__init__.py", "_plotly_utils package __init__"),
+    ("plotly/py.typed", "PEP 561 type hint marker for plotly"),
+    ("_plotly_utils/py.typed", "PEP 561 type hint marker for _plotly_utils"),
     ("plotly/validators/_validators.json", "Validators JSON data"),
     ("plotly/graph_objs/__init__.py", "graph_objs __init__ exports"),
     ("plotly/graph_objects/__init__.py", "graph_objects __init__ exports"),
@@ -173,9 +175,7 @@ WHEEL_REQUIRED_FILES = [
 ]
 
 WHEEL_OPTIONAL_FILES = [
-    ("plotly/py.typed", "PEP 561 type hint marker"),
-    ("_plotly_utils/py.typed", "PEP 561 type hint marker for _plotly_utils"),
-    ("plotly/**/*.pyi", "Type stub files"),
+    ("plotly/**/*.pyi", "Type stub files (inline annotations used instead)"),
     ("plotly/matplotlylib/__init__.py", "matplotlylib package (optional)"),
 ]
 
@@ -186,6 +186,8 @@ SDIST_REQUIRED_FILES = [
     ("*/LICENSE.txt", "License"),
     ("*/plotly/__init__.py", "Top-level plotly package __init__"),
     ("*/_plotly_utils/__init__.py", "_plotly_utils package __init__"),
+    ("*/plotly/py.typed", "PEP 561 type hint marker for plotly"),
+    ("*/_plotly_utils/py.typed", "PEP 561 type hint marker for _plotly_utils"),
     ("*/plotly/validators/_validators.json", "Validators JSON data"),
     ("*/plotly/graph_objs/__init__.py", "graph_objs __init__"),
     ("*/plotly/graph_objects/__init__.py", "graph_objects __init__"),
@@ -193,11 +195,15 @@ SDIST_REQUIRED_FILES = [
     ("*/plotly/package_data/widgetbundle.js", "FigureWidget bundle"),
     ("*/plotly/package_data/templates/plotly.json", "Plotly template"),
     ("*/plotly/package_data/datasets/gapminder.csv.gz", "Gapminder dataset"),
-    ("*/codegen/resources/plot-schema.json", "Source plot-schema.json"),
     ("*/js/install.json", "Jupyter install.json for extension"),
     ("*/plotly/labextension/package.json", "Labextension package.json"),
     ("*/plotly/labextension/static/*.js", "Labextension static JS assets"),
-    ("*/codegen/validate_packaging_manifest.py", "Packaging validator"),
+]
+
+SDIST_OPTIONAL_FILES = [
+    ("*/codegen/resources/plot-schema.json", "Source plot-schema.json (dev tool)"),
+    ("*/codegen/validate_packaging_manifest.py", "Packaging validator (dev tool)"),
+    ("*/doc/python/*.md", "Doc examples (dev tool)"),
 ]
 
 WHEEL_METADATA_REQUIRED = [
@@ -224,7 +230,7 @@ def check_required_files(pkg: ExtractedPackage) -> list[CheckResult]:
         optional = WHEEL_OPTIONAL_FILES
     else:
         required = SDIST_REQUIRED_FILES
-        optional = []
+        optional = SDIST_OPTIONAL_FILES
 
     for pattern, description in required:
         if not pkg.contains(pattern):
@@ -237,12 +243,13 @@ def check_required_files(pkg: ExtractedPackage) -> list[CheckResult]:
             matches = pkg.find_all(pattern)
             if len(matches) == 1:
                 size = (pkg.extract_dir / matches[0]).stat().st_size
-                if size == 0 and "js" not in pattern:
+                is_zero_ok = matches[0].endswith("py.typed")
+                if size == 0 and not is_zero_ok and "js" not in pattern:
                     results.append(_warn(
                         "required-files",
                         f"File is 0 bytes: {matches[0]}",
                     ))
-                elif size == 0:
+                elif size == 0 and "js" in pattern:
                     results.append(_err(
                         "required-files",
                         f"Critical JS file is 0 bytes: {matches[0]}",
@@ -408,10 +415,20 @@ def check_anti_pollution(pkg: ExtractedPackage) -> list[CheckResult]:
     ]
 
     if pkg.pkg_type == "wheel":
-        forbidden_patterns.append(("js/", "Top-level js/ directory (namespace conflict)"))
+        has_top_level_js = any(f.split("/")[0] == "js" for f in pkg.file_list)
+        if has_top_level_js:
+            js_count = sum(1 for f in pkg.file_list if f.split("/")[0] == "js")
+            results.append(_err(
+                "anti-pollution",
+                f"Top-level js/ directory found in wheel: {js_count} files",
+                "Causes namespace collision with plotly.js package. "
+                "Check hatch exclude rules — js/ should not be in the wheel.",
+            ))
+        else:
+            results.append(_ok("anti-pollution", "No top-level js/ directory in wheel"))
 
     for pattern, description in forbidden_patterns:
-        matches = pkg.find_all(f"*{pattern}*")
+        matches = [f for f in pkg.file_list if _pattern_match(f, pattern)]
         if matches:
             results.append(_err(
                 "anti-pollution",
@@ -422,6 +439,12 @@ def check_anti_pollution(pkg: ExtractedPackage) -> list[CheckResult]:
             results.append(_ok("anti-pollution", f"No {description} in package"))
 
     return results
+
+
+def _pattern_match(path: str, pattern: str) -> bool:
+    if pattern.startswith("*") and pattern.endswith("/"):
+        return pattern.strip("*") + "/" in path
+    return fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(path.split("/")[-1], pattern)
 
 
 def check_labextension_assets(pkg: ExtractedPackage) -> list[CheckResult]:
