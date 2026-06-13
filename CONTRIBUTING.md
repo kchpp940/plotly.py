@@ -231,15 +231,22 @@ friendly `uv sync` hint.
 | `express` | `express` | `dev_optional` + `dev_pandas3` + `express` | `plotly/express/`, plotly data, Express templates (~1200 tests) |
 | `image-export` | `image_export` | `dev_optional` + `kaleido` (+ Chrome) | `plotly/io/_kaleido/`, static image API (~14 tests) |
 | `matplotlib` | `matplotlib` | `dev_optional` | `plotly/matplotlylib/` |
-| `optional-all` | `optional ∨ express ∨ image_export ∨ matplotlib` | all of the above | One-shot local run of every optional suite |
+| `optional-all` | `optional ∨ express ∨ image_export ∨ matplotlib` (†) | all of the above | One-shot local run of every optional suite |
 | `schema` | `schema` | `dev_core` | `codegen/`, schema regenerations, `plotly/graph_objs/` |
 | `schema-full` | `schema_full` | `dev_core` | Major schema upgrades / codegen refactors (includes known failures) |
-| `all` | every stable marker | all extras | Full CI-equivalent run on a developer machine |
+| `all` | all stable markers except `schema_full` (‡) | all extras | Full CI-equivalent run on a developer machine |
 
 (*) `optional` is **mutually exclusive** with `express`, `image-export`, and
 `matplotlib` — they do not overlap, so you can run them in parallel in CI
-without wasting time on duplicate execution. `optional-all` is provided for
-convenience when you want them all at once.
+without wasting time on duplicate execution.
+
+(†) `optional-all` is a **commands.py preset only** — it is not a registered
+pytest marker. It expands to `-m "optional or express or image_export or
+matplotlib"` under the hood. Running `pytest -m optional_all` directly will
+collect zero tests; always use `python commands.py test optional-all` instead.
+
+(‡) `all` excludes `schema_full` on purpose: `schema_full` contains known
+failures and is meant for periodic auditing only, not for per-commit gating.
 
 #### Running Tests
 

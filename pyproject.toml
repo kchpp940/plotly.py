@@ -114,7 +114,6 @@ markers = [
     "core: core tests that do not require optional dependencies (fast)",
     "smoke: fast smoke tests for quick validation (subset of core, 100% must pass)",
     "optional: optional-dependency tests EXCLUDING Express / image export / matplotlib",
-    "optional_all: all optional-dependency tests (optional OR express OR image_export OR matplotlib)",
     "express: Plotly Express regression tests (standalone, not included in 'optional')",
     "image_export: static image export tests (Kaleido; standalone, not included in 'optional')",
     "schema: schema and codegen consistency checks (stable, must pass on every commit)",

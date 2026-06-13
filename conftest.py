@@ -37,8 +37,10 @@ def pytest_collection_modifyitems(config, items):
             # `optional` covers only the "pure" optional-dep tests that are NOT
             # Express, image export, or matplotlib. The latter three are each
             # assigned their own standalone markers so CI can run them in
-            # separate jobs without overlap. Use `optional_all` to get
-            # everything (optional + express + image_export + matplotlib).
+            # separate jobs without overlap.
+            # To run all four categories at once, use the commands.py preset:
+            #   python commands.py test optional-all
+            # which expands to: -m "optional or express or image_export or matplotlib"
             if rel_path.startswith("tests/test_optional/test_px/"):
                 markers.append("express")
             elif rel_path.startswith("tests/test_optional/test_kaleido/"):
