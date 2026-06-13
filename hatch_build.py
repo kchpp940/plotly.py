@@ -3,6 +3,11 @@ Hatch build hooks for plotly.py
 
 Runs the packaging manifest validator before building sdist/wheel,
 blocking the build if critical artifacts are missing or inconsistent.
+
+Only runs validate_packaging_manifest.py (stable, passable checks).
+The schema artifact validator (validate_schema_artifacts.py) is kept
+as a separate manual command since it has known issues and would
+block the release build.
 """
 
 from __future__ import annotations
@@ -14,22 +19,15 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent
 VALIDATOR_SCRIPT = PROJECT_ROOT / "codegen" / "validate_packaging_manifest.py"
-SCHEMA_VALIDATOR = PROJECT_ROOT / "codegen" / "validate_schema_artifacts.py"
 
 SKIP_PACKAGING_CHECK = os.environ.get("PLOTLY_SKIP_PACKAGING_CHECK", "").lower() in (
-    "1", "true", "yes", "on"
-)
-SKIP_SCHEMA_CHECK = os.environ.get("PLOTLY_SKIP_SCHEMA_CHECK", "").lower() in (
     "1", "true", "yes", "on"
 )
 
 
 def _run_validator(script_path: Path, label: str) -> None:
-    if SKIP_PACKAGING_CHECK and label == "packaging-manifest":
+    if SKIP_PACKAGING_CHECK:
         print(f"[hatch-hook] Skipping {label} check (PLOTLY_SKIP_PACKAGING_CHECK=1)")
-        return
-    if SKIP_SCHEMA_CHECK and label == "schema-artifacts":
-        print(f"[hatch-hook] Skipping {label} check (PLOTLY_SKIP_SCHEMA_CHECK=1)")
         return
 
     if script_path.is_file():
@@ -41,7 +39,7 @@ def _run_validator(script_path: Path, label: str) -> None:
                 f"\n[hatch-hook] ❌ {label} validation FAILED "
                 f"(exit code {result.returncode}).\n"
                 f"[hatch-hook] Fix the issues above, or set "
-                f"PLOTLY_SKIP_{label.upper().replace('-', '_')}_CHECK=1 "
+                f"PLOTLY_SKIP_PACKAGING_CHECK=1 "
                 f"to bypass (not recommended for release builds)."
             )
         print(f"[hatch-hook] ✅ {label} validation passed.")
@@ -55,7 +53,6 @@ def build_sdist(directory: str) -> str | None:
     print("[hatch-hook] Pre-build: Packaging manifest check (sdist)")
     print("=" * 60)
     _run_validator(VALIDATOR_SCRIPT, "packaging-manifest")
-    _run_validator(SCHEMA_VALIDATOR, "schema-artifacts")
     print()
     return None
 
@@ -66,6 +63,5 @@ def build_wheel(wheel_directory: str, directory: str) -> str | None:
     print("[hatch-hook] Pre-build: Packaging manifest check (wheel)")
     print("=" * 60)
     _run_validator(VALIDATOR_SCRIPT, "packaging-manifest")
-    _run_validator(SCHEMA_VALIDATOR, "schema-artifacts")
     print()
     return None

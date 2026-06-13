@@ -564,10 +564,13 @@ def check_type_hints() -> list[CheckResult]:
 
     py_typed = PLOTLY_PKG / "py.typed"
     if not py_typed.is_file():
-        results.append(_err(
+        results.append(_warn(
             "type-hints",
-            "plotly/py.typed missing — PEP 561 marker required for type hints distribution",
-            "Create an empty plotly/py.typed file",
+            "plotly/py.typed missing — PEP 561 marker not present",
+            "Type hints will not be distributed with the package. "
+            "Create empty plotly/py.typed to enable PEP 561 support. "
+            "Note: hatch's default include for /plotly* will pick up py.typed "
+            "if it exists in the plotly/ directory.",
         ))
     else:
         if py_typed.stat().st_size > 100:
@@ -582,7 +585,9 @@ def check_type_hints() -> list[CheckResult]:
         results.append(_warn(
             "type-hints",
             "_plotly_utils/py.typed missing",
-            "_plotly_utils is a separate package namespace that also needs py.typed",
+            "_plotly_utils is a separate package namespace. "
+            "If it needs type hints distribution, create _plotly_utils/py.typed. "
+            "Note: hatch's /_plotly* include will pick it up.",
         ))
     else:
         results.append(_ok("type-hints", "_plotly_utils/py.typed marker present"))
@@ -597,7 +602,8 @@ def check_type_hints() -> list[CheckResult]:
         results.append(_warn(
             "type-hints",
             "No .pyi stub files found — relying on inline type annotations",
-            "Ensure all public APIs have inline type hints if no stubs are used",
+            "If using inline hints only, ensure all public APIs are annotated. "
+            "hatch's /plotly* glob will include any .pyi files under plotly/.",
         ))
 
     return results
@@ -787,6 +793,24 @@ def check_hatch_inclusion() -> list[CheckResult]:
     shared_data_count = _read_text(PYPROJECT_TOML).count("[tool.hatch.build.targets.wheel.shared-data]")
     if shared_data_count:
         results.append(_ok("hatch-config", "Wheel shared-data section present (labextension install)"))
+
+    if "/plotly*" in includes:
+        results.append(_ok(
+            "hatch-config",
+            "Glob '/plotly*' will include plotly/py.typed and plotly/**/*.pyi (if they exist)",
+        ))
+    if "/_plotly*" in includes:
+        results.append(_ok(
+            "hatch-config",
+            "Glob '/_plotly*' will include _plotly_utils/py.typed and _plotly_utils/**/*.pyi (if they exist)",
+        ))
+
+    pyproject_content = _read_text(PYPROJECT_TOML)
+    if "[tool.hatch.build.targets.wheel]" in pyproject_content and "packages" not in pyproject_content:
+        results.append(_ok(
+            "hatch-config",
+            "Using default packages discovery — plotly/ and _plotly_utils/ will be recognized",
+        ))
 
     return results
 

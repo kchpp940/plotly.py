@@ -486,6 +486,20 @@ def validate_schema(args):
     sys.exit(result.returncode)
 
 
+def validate_dist(args):
+    """Run the post-build distribution artifact validator."""
+    import subprocess
+
+    script = os.path.join(PROJECT_ROOT, "codegen", "validate_dist_artifacts.py")
+    cmd = [sys.executable, script]
+    if args.quiet:
+        cmd.append("-q")
+    if args.path:
+        cmd.append(args.path)
+    result = subprocess.run(cmd, cwd=PROJECT_ROOT)
+    sys.exit(result.returncode)
+
+
 def make_parser():
     """Make argument parser."""
 
@@ -534,6 +548,22 @@ def make_parser():
         help="validate schema artifact consistency (validators vs graph_objs vs docs)",
     )
 
+    p_validate_dist = subparsers.add_parser(
+        "validatedist",
+        help="validate built wheel/sdist archives in dist/ by extracting and checking contents",
+    )
+    p_validate_dist.add_argument(
+        "-q", "--quiet",
+        action="store_true",
+        help="suppress per-check output",
+    )
+    p_validate_dist.add_argument(
+        "path",
+        nargs="?",
+        default=None,
+        help="path to dist/ directory or a specific .whl/.tar.gz file (default: dist/)",
+    )
+
     return parser
 
 
@@ -576,6 +606,9 @@ def main():
 
     elif args.cmd == "validateschema":
         validate_schema(args)
+
+    elif args.cmd == "validatedist":
+        validate_dist(args)
 
     elif args.cmd is None:
         parser.print_help()
