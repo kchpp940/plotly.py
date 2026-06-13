@@ -9,12 +9,6 @@ from ._special_inputs import IdentityMap, Constant, Range
 from .trendline_functions import ols, lowess, rolling, expanding, ewm
 
 from _plotly_utils.basevalidators import ColorscaleValidator
-from _plotly_utils.error_messages import (
-    ErrorCode,
-    build_error_message,
-    format_install_hint,
-    format_path,
-)
 from plotly.colors import qualitative, sequential
 import math
 
@@ -598,12 +592,8 @@ class AggregationPlan:
         ecdfnorm = args.get("ecdfnorm", "probability")
         if ecdfnorm not in [None, "percent", "probability"]:
             raise ValueError(
-                build_error_message(
-                    ErrorCode.INVALID_PARAM,
-                    "`ecdfnorm` must be one of None, 'percent' or 'probability'.",
-                    detail="'%s' was provided." % ecdfnorm,
-                    path=format_path(["ecdfnorm"]),
-                )
+                "`ecdfnorm` must be one of None, 'percent' or 'probability'. "
+                + "'%s' was provided." % ecdfnorm
             )
         args["histnorm"] = ecdfnorm
         self.histnorm = ecdfnorm
@@ -939,20 +929,11 @@ def _to_unix_epoch_seconds(s: nw.Series) -> nw.Series:
         elif dtype.time_unit == "ns":
             return s.dt.timestamp("ns") / 1_000_000_000
         else:
-            raise ValueError(
-                build_error_message(
-                    ErrorCode.CONFIG_ERROR,
-                    "Unexpected dtype, please report a bug",
-                )
-            )
+            msg = "Unexpected dtype, please report a bug"
+            raise ValueError(msg)
     else:
-        raise TypeError(
-            build_error_message(
-                ErrorCode.INVALID_TYPE,
-                "Expected Date or Datetime",
-                detail=f"Got {dtype}",
-            )
-        )
+        msg = f"Expected Date or Datetime, got {dtype}"
+        raise TypeError(msg)
 
 
 def _generate_temporary_column_name(n_bytes, columns) -> str:
@@ -970,18 +951,14 @@ def _generate_temporary_column_name(n_bytes, columns) -> str:
 
         counter += 1
         if counter > 100:
-            raise AssertionError(
-                build_error_message(
-                    ErrorCode.CONFIG_ERROR,
-                    "Internal Error: Plotly was not able to generate a column name",
-                    detail=(
-                        f"{n_bytes=} and not in {columns}.\n"
-                        "Please report this to "
-                        "https://github.com/plotly/plotly.py/issues/new and we will try to "
-                        "replicate and fix it."
-                    ),
-                )
+            msg = (
+                "Internal Error: Plotly was not able to generate a column name with "
+                f"{n_bytes=} and not in {columns}.\n"
+                "Please report this to "
+                "https://github.com/plotly/plotly.py/issues/new and we will try to "
+                "replicate and fix it."
             )
+            raise AssertionError(msg)
 
 
 def get_decorated_label(args, column, role):
@@ -1182,15 +1159,9 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
                             x = x.cast(nw.Float64())
                         except ValueError:
                             raise ValueError(
-                                build_error_message(
-                                    ErrorCode.DATA_CONVERSION,
-                                    "Could not convert value of 'x' into a numeric type.",
-                                    detail=(
-                                        "If 'x' contains stringified dates, please convert to a datetime column.\n"
-                                        "Column: '%s'" % args["x"]
-                                    ),
-                                    path=format_path(["x"]),
-                                )
+                                "Could not convert value of 'x' ('%s') into a numeric type. "
+                                "If 'x' contains stringified dates, please convert to a datetime column."
+                                % args["x"]
                             )
 
                     if not y.dtype.is_numeric():
@@ -1198,11 +1169,7 @@ def make_trace_kwargs(args, trace_spec, trace_data, mapping_labels, sizeref):
                             y = y.cast(nw.Float64())
                         except ValueError:
                             raise ValueError(
-                                build_error_message(
-                                    ErrorCode.DATA_CONVERSION,
-                                    "Could not convert value of 'y' into a numeric type.",
-                                    path=format_path(["y"]),
-                                )
+                                "Could not convert value of 'y' into a numeric type."
                             )
 
                     # preserve original values of "x" in case they're dates
@@ -2031,13 +1998,8 @@ def to_named_series(x, name=None, native_namespace=None):
 
             return nw.new_series(name=name, values=x, native_namespace=pd)
         except ImportError:
-            raise NotImplementedError(
-                build_error_message(
-                    ErrorCode.DEPENDENCY_MISSING,
-                    "Pandas installation is required if no dataframe is provided.",
-                    install_hint=format_install_hint("pandas"),
-                )
-            )
+            msg = "Pandas installation is required if no dataframe is provided."
+            raise NotImplementedError(msg)
 
 
 def process_args_into_dataframe(
@@ -2068,11 +2030,7 @@ def process_args_into_dataframe(
     if "dimensions" in args and args["dimensions"] is None:
         if not df_provided:
             raise ValueError(
-                build_error_message(
-                    ErrorCode.INVALID_PARAM,
-                    "No data were provided.",
-                    detail="Please provide data either with the `data_frame` or with the `dimensions` argument.",
-                )
+                "No data were provided. Please provide data either with the `data_frame` or with the `dimensions` argument."
             )
         else:
             df_output = {col: df_input.get_column(col) for col in df_input.columns}
@@ -2092,12 +2050,8 @@ def process_args_into_dataframe(
                 args["hover_data"][k] = (args["hover_data"][k], None)
             if df_provided and args["hover_data"][k][1] is not None and k in df_input:
                 raise ValueError(
-                    build_error_message(
-                        ErrorCode.AMBIGUOUS_INPUT,
-                        "Values appear both in hover_data and data_frame",
-                        detail="Column: '%s'" % k,
-                        path=format_path(["hover_data", k]),
-                    )
+                    "Ambiguous input: values for '%s' appear both in hover_data and data_frame"
+                    % k
                 )
     # Loop over possible arguments
     for field_name in all_attrables:
@@ -2135,12 +2089,9 @@ def process_args_into_dataframe(
             # Case of multiindex
             if is_pd_like and isinstance(argument, native_namespace.MultiIndex):
                 raise TypeError(
-                    build_error_message(
-                        ErrorCode.INVALID_TYPE,
-                        f"{native_namespace.__name__} MultiIndex is not supported by plotly express at the moment.",
-                        detail=f"Argument '{field}' is a {native_namespace.__name__} MultiIndex.",
-                        path=format_path([field]),
-                    )
+                    f"Argument '{field}' is a {native_namespace.__name__} MultiIndex. "
+                    f"{native_namespace.__name__} MultiIndex is not supported by plotly "
+                    "express at the moment."
                 )
             # ----------------- argument is a special value ----------------------
             if isinstance(argument, (Constant, Range)):
@@ -2172,20 +2123,14 @@ def process_args_into_dataframe(
                                 )
                             else:
                                 raise ValueError(
-                                    build_error_message(
-                                        ErrorCode.LENGTH_MISMATCH,
-                                        "All arguments should have the same length.",
-                                        detail=(
-                                            "The length of hover_data key `%s` is %d, whereas the "
-                                            "length of previously-processed arguments %s is %d"
-                                            % (
-                                                argument,
-                                                real_length,
-                                                str(list(df_output.keys())),
-                                                length,
-                                            )
-                                        ),
-                                        path=format_path(["hover_data", argument]),
+                                    "All arguments should have the same length. "
+                                    "The length of hover_data key `%s` is %d, whereas the "
+                                    "length of previously-processed arguments %s is %d"
+                                    % (
+                                        argument,
+                                        real_length,
+                                        str(list(df_output.keys())),
+                                        length,
                                     )
                                 )
                     if col_name not in wide_deferred_data:
@@ -2194,49 +2139,34 @@ def process_args_into_dataframe(
                         )
                 elif not df_provided:
                     raise ValueError(
-                        build_error_message(
-                            ErrorCode.INVALID_PARAM,
-                            "String or int arguments are only possible when a DataFrame or an array is provided in the `data_frame` argument.",
-                            detail="No DataFrame was provided, but argument '%s' is of type str or int." % field,
-                            path=format_path([field]),
-                        )
+                        "String or int arguments are only possible when a "
+                        "DataFrame or an array is provided in the `data_frame` "
+                        "argument. No DataFrame was provided, but argument "
+                        "'%s' is of type str or int." % field
                     )
                 # Check validity of column name
                 elif argument not in df_input.columns:
                     if wide_mode and argument in (value_name, var_name):
                         continue
                     else:
-                        err_detail = (
+                        err_msg = (
                             "Value of '%s' is not the name of a column in 'data_frame'. "
                             "Expected one of %s but received: %s"
                             % (field, str(list(df_input.columns)), argument)
                         )
                         if argument == "index":
-                            err_detail += "\n To use the index, pass it in directly as `df.index`."
-                        raise ValueError(
-                            build_error_message(
-                                ErrorCode.INVALID_VALUE,
-                                "Column not found in data_frame.",
-                                detail=err_detail,
-                                path=format_path([field]),
-                            )
-                        )
+                            err_msg += "\n To use the index, pass it in directly as `df.index`."
+                        raise ValueError(err_msg)
                 elif length and (actual_len := len(df_input)) != length:
                     raise ValueError(
-                        build_error_message(
-                            ErrorCode.LENGTH_MISMATCH,
-                            "All arguments should have the same length.",
-                            detail=(
-                                "The length of column argument `df[%s]` is %d, whereas the "
-                                "length of previously-processed arguments %s is %d"
-                                % (
-                                    field,
-                                    actual_len,
-                                    str(list(df_output.keys())),
-                                    length,
-                                )
-                            ),
-                            path=format_path([field]),
+                        "All arguments should have the same length. "
+                        "The length of column argument `df[%s]` is %d, whereas the "
+                        "length of previously-processed arguments %s is %d"
+                        % (
+                            field,
+                            actual_len,
+                            str(list(df_output.keys())),
+                            length,
                         )
                     )
                 else:
@@ -2280,16 +2210,10 @@ def process_args_into_dataframe(
                             )
                         else:
                             raise ValueError(
-                                build_error_message(
-                                    ErrorCode.LENGTH_MISMATCH,
-                                    "All arguments should have the same length.",
-                                    detail=(
-                                        "The length of argument `%s` is %d, whereas the "
-                                        "length of previously-processed arguments %s is %d"
-                                        % (field, len_arg, str(list(df_output.keys())), length)
-                                    ),
-                                    path=format_path([field]),
-                                )
+                                "All arguments should have the same length. "
+                                "The length of argument `%s` is %d, whereas the "
+                                "length of previously-processed arguments %s is %d"
+                                % (field, len_arg, str(list(df_output.keys())), length)
                             )
 
                 if str(col_name) not in wide_deferred_data:
@@ -2323,13 +2247,8 @@ def process_args_into_dataframe(
 
             native_namespace = pd
         except ImportError:
-            raise NotImplementedError(
-                build_error_message(
-                    ErrorCode.DEPENDENCY_MISSING,
-                    "Pandas installation is required if no dataframe is provided.",
-                    install_hint=format_install_hint("pandas"),
-                )
-            )
+            msg = "Pandas installation is required if no dataframe is provided."
+            raise NotImplementedError(msg)
 
     if ranges:
         import numpy as np
@@ -2361,13 +2280,8 @@ def process_args_into_dataframe(
         try:
             import pandas as pd
         except ImportError:
-            raise NotImplementedError(
-                build_error_message(
-                    ErrorCode.DEPENDENCY_MISSING,
-                    "Pandas installation is required.",
-                    install_hint=format_install_hint("pandas"),
-                )
-            )
+            msg = "Pandas installation is required."
+            raise NotImplementedError(msg)
         df_output = nw.from_native(pd.DataFrame({}), eager_only=True)
     return df_output, wide_id_vars, wide_deferred_data
 
@@ -2501,31 +2415,20 @@ def build_dataframe(args, constructor):
                     columns = args["data_frame"].columns
                     is_pd_like = True
                 except Exception:
-                    raise NotImplementedError(
-                        build_error_message(
-                            ErrorCode.INVALID_TYPE,
-                            "Unable to convert data_frame to pandas DataFrame.",
-                            detail=(
-                                f"Type: {type(args['data_frame'])}. "
-                                "Please provide a supported dataframe type "
-                                "or a type that can be passed to pd.DataFrame."
-                            ),
-                            path=format_path(["data_frame"]),
-                        )
+                    msg = (
+                        f"Unable to convert data_frame of type {type(args['data_frame'])} "
+                        "to pandas DataFrame. Please provide a supported dataframe type "
+                        "or a type that can be passed to pd.DataFrame."
                     )
+
+                    raise NotImplementedError(msg)
             except ImportError:
-                raise NotImplementedError(
-                    build_error_message(
-                        ErrorCode.DEPENDENCY_MISSING,
-                        "Pandas is not installed, cannot convert data_frame.",
-                        detail=(
-                            f"Attempting to convert data_frame of type {type(args['data_frame'])} "
-                            "to pandas DataFrame. Convert it to supported dataframe type or install pandas."
-                        ),
-                        install_hint=format_install_hint("pandas"),
-                        path=format_path(["data_frame"]),
-                    )
+                msg = (
+                    f"Attempting to convert data_frame of type {type(args['data_frame'])} "
+                    "to pandas DataFrame, but Pandas is not installed. "
+                    "Convert it to supported dataframe type or install pandas."
                 )
+                raise NotImplementedError(msg)
 
     # data_frame is not provided
     else:
@@ -2570,21 +2473,15 @@ def build_dataframe(args, constructor):
     if constructor in cartesians:
         if wide_x and wide_y:
             raise ValueError(
-                build_error_message(
-                    ErrorCode.INVALID_PARAM,
-                    "Cannot accept list of column references or list of columns for both `x` and `y`.",
-                )
+                "Cannot accept list of column references or list of columns for both `x` and `y`."
             )
         if df_provided and no_x and no_y:
             wide_mode = True
             if is_pd_like and isinstance(columns, native_namespace.MultiIndex):
                 raise TypeError(
-                    build_error_message(
-                        ErrorCode.INVALID_TYPE,
-                        f"{native_namespace.__name__} MultiIndex is not supported by plotly express at the moment.",
-                        detail=f"Data frame columns is a {native_namespace.__name__} MultiIndex.",
-                        path=format_path(["data_frame", "columns"]),
-                    )
+                    f"Data frame columns is a {native_namespace.__name__} MultiIndex. "
+                    f"{native_namespace.__name__} MultiIndex is not supported by plotly "
+                    "express at the moment."
                 )
             args["wide_variable"] = list(columns)
             var_name = _df_columns_name if _df_columns_name is not None else None
@@ -2688,12 +2585,9 @@ def build_dataframe(args, constructor):
             if df_provided and is_pd_like and index is not None:
                 if isinstance(index, native_namespace.MultiIndex):
                     raise TypeError(
-                        build_error_message(
-                            ErrorCode.INVALID_TYPE,
-                            f"{native_namespace.__name__} MultiIndex is not supported by plotly express at the moment.",
-                            detail=f"Data frame index is a {native_namespace.__name__} MultiIndex.",
-                            path=format_path(["data_frame", "index"]),
-                        )
+                        f"Data frame index is a {native_namespace.__name__} MultiIndex. "
+                        f"{native_namespace.__name__} MultiIndex is not supported by "
+                        "plotly express at the moment."
                     )
                 args["wide_cross"] = index
                 _intended_wide_cross_name = (
@@ -2782,10 +2676,7 @@ def build_dataframe(args, constructor):
                 dtype = v_dtype
             elif dtype != v_dtype:
                 raise ValueError(
-                    build_error_message(
-                        ErrorCode.INVALID_VALUE,
-                        "Plotly Express cannot process wide-form data with columns of different type.",
-                    )
+                    "Plotly Express cannot process wide-form data with columns of different type."
                 )
         df_output = df_output.unpivot(
             index=wide_id_vars,
@@ -2908,11 +2799,8 @@ def _check_dataframe_all_leaves(df: nw.DataFrame) -> None:
             if nw.to_py_scalar(null_entries_with_non_null_children.any()):
                 row_idx = null_entries_with_non_null_children.to_list().index(True)
                 raise ValueError(
-                    build_error_message(
-                        ErrorCode.INVALID_VALUE,
-                        "None entries cannot have not-None children",
-                        detail=f"Row data: {df_sorted.row(row_idx)}",
-                    )
+                    "None entries cannot have not-None children",
+                    df_sorted.row(row_idx),
                 )
 
     fill_series = nw.new_series(
@@ -2943,11 +2831,9 @@ def _check_dataframe_all_leaves(df: nw.DataFrame) -> None:
     ):
         if (next_row in current_row) and (i in null_indices):
             raise ValueError(
-                build_error_message(
-                    ErrorCode.INVALID_VALUE,
-                    "Non-leaves rows are not permitted in the dataframe",
-                    detail=f"Row {df_sorted.row(i)} is not a leaf.",
-                )
+                "Non-leaves rows are not permitted in the dataframe \n",
+                df_sorted.row(i),
+                "is not a leaf.",
             )
 
 
@@ -2976,12 +2862,8 @@ def process_dataframe_hierarchy(args):
 
         except Exception:  # pandas, Polars and pyarrow exception types are different
             raise ValueError(
-                build_error_message(
-                    ErrorCode.DATA_CONVERSION,
-                    "Column could not be converted to a numerical data type.",
-                    detail="Column: `%s`" % args["values"],
-                    path=format_path(["values"]),
-                )
+                "Column `%s` of `df` could not be converted to a numerical data type."
+                % args["values"]
             )
 
         if args["color"] and args["color"] == args["values"]:
@@ -3174,12 +3056,7 @@ def process_dataframe_timeline(args):
     """
     args["is_timeline"] = True
     if args["x_start"] is None or args["x_end"] is None:
-        raise ValueError(
-            build_error_message(
-                ErrorCode.INVALID_PARAM,
-                "Both x_start and x_end are required",
-            )
-        )
+        raise ValueError("Both x_start and x_end are required")
 
     df: nw.DataFrame = args["data_frame"]
     schema = df.schema
@@ -3194,10 +3071,7 @@ def process_dataframe_timeline(args):
             df = df.with_columns(nw.col(to_convert_to_datetime).str.to_datetime())
         except Exception as exc:
             raise TypeError(
-                build_error_message(
-                    ErrorCode.INVALID_TYPE,
-                    "Both x_start and x_end must refer to data convertible to datetimes.",
-                )
+                "Both x_start and x_end must refer to data convertible to datetimes."
             ) from exc
 
     # note that we are not adding any columns to the data frame here, so no risk of overwrite
@@ -3422,13 +3296,8 @@ def infer_config(args, constructor, trace_patch, layout_patch):
     if "trendline" in args and args["trendline"] is not None:
         if args["trendline"] not in trendline_functions:
             raise ValueError(
-                build_error_message(
-                    ErrorCode.INVALID_PARAM,
-                    "Invalid value for `trendline`",
-                    detail="Value '%s' must be one of %s"
-                    % (args["trendline"], list(trendline_functions.keys())),
-                    path=format_path(["trendline"]),
-                )
+                "Value '%s' for `trendline` must be one of %s"
+                % (args["trendline"], trendline_functions.keys())
             )
 
     if "trendline_options" in args and args["trendline_options"] is None:

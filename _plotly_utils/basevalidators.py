@@ -10,11 +10,6 @@ import sys
 import narwhals.stable.v1 as nw
 
 from _plotly_utils.optional_imports import get_module
-from _plotly_utils.error_messages import (
-    ErrorCode,
-    build_error_message,
-    format_prop_path,
-)
 
 
 # back-port of fullmatch from Py3.4+
@@ -164,10 +159,7 @@ def copy_to_readonly_numpy_array(v, kind=None, force_numeric=False):
     # --------------------------
     if force_numeric and new_v.dtype.kind not in numeric_kinds:
         raise ValueError(
-            build_error_message(
-                ErrorCode.INVALID_VALUE,
-                "Input value is not numeric and force_numeric parameter set to True",
-            )
+            "Input value is not numeric and force_numeric parameter set to True"
         )
 
     if "U" not in kind:
@@ -312,36 +304,37 @@ class BaseValidator(object):
         -------
         ValueError
         """
-        name, parent = format_prop_path(self.plotly_name, self.parent_name, inds)
+        name = self.plotly_name
+        if inds:
+            for i in inds:
+                name += "[" + str(i) + "]"
 
         raise ValueError(
-            build_error_message(
-                ErrorCode.INVALID_VALUE,
-                "\n    Invalid value of type {typ} received for the '{name}' property of {pname}\n"
-                "        Received value: {v}\n\n"
-                "{valid_clr_desc}".format(
-                    name=name,
-                    pname=parent,
-                    typ=type_str(v),
-                    v=repr(v),
-                    valid_clr_desc=self.description(),
-                ),
+            """
+    Invalid value of type {typ} received for the '{name}' property of {pname}
+        Received value: {v}
+
+{valid_clr_desc}""".format(
+                name=name,
+                pname=self.parent_name,
+                typ=type_str(v),
+                v=repr(v),
+                valid_clr_desc=self.description(),
             )
         )
 
     def raise_invalid_elements(self, invalid_els):
         if invalid_els:
             raise ValueError(
-                build_error_message(
-                    ErrorCode.INVALID_ELEMENT,
-                    "\n    Invalid element(s) received for the '{name}' property of {pname}\n"
-                    "        Invalid elements include: {invalid}\n\n"
-                    "{valid_clr_desc}".format(
-                        name=self.plotly_name,
-                        pname=self.parent_name,
-                        invalid=invalid_els[:10],
-                        valid_clr_desc=self.description(),
-                    ),
+                """
+    Invalid element(s) received for the '{name}' property of {pname}
+        Invalid elements include: {invalid}
+
+{valid_clr_desc}""".format(
+                    name=self.plotly_name,
+                    pname=self.parent_name,
+                    invalid=invalid_els[:10],
+                    valid_clr_desc=self.description(),
                 )
             )
 
@@ -1763,12 +1756,7 @@ class SubplotidValidator(BaseValidator):
         self, plotly_name, parent_name, dflt=None, regex=None, array_ok=False, **kwargs
     ):
         if dflt is None and regex is None:
-            raise ValueError(
-                build_error_message(
-                    ErrorCode.INVALID_PARAM,
-                    "One or both of regex and deflt must be specified",
-                )
-            )
+            raise ValueError("One or both of regex and deflt must be specified")
 
         super(SubplotidValidator, self).__init__(
             plotly_name=plotly_name, parent_name=parent_name, **kwargs
@@ -2265,11 +2253,9 @@ class LiteralValidator(BaseValidator):
     def validate_coerce(self, v):
         if v != self.val:
             raise ValueError(
-                build_error_message(
-                    ErrorCode.READ_ONLY_PROPERTY,
-                    "\n    The '{plotly_name}' property of {parent_name} is read-only".format(
-                        plotly_name=self.plotly_name, parent_name=self.parent_name
-                    ),
+                """\
+    The '{plotly_name}' property of {parent_name} is read-only""".format(
+                    plotly_name=self.plotly_name, parent_name=self.parent_name
                 )
             )
         else:

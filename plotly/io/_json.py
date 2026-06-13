@@ -26,12 +26,8 @@ class JsonConfig(object):
     def default_engine(self, val):
         if val not in JsonConfig._valid_engines:
             raise ValueError(
-                build_error_message(
-                    ErrorCode.INVALID_ENGINE,
-                    "Supported JSON engines include {valid}".format(
-                        valid=JsonConfig._valid_engines
-                    ),
-                    detail="Received {val}".format(val=val),
+                "Supported JSON engines include {valid}\n    Received {val}".format(
+                    valid=JsonConfig._valid_engines, val=val
                 )
             )
 
@@ -44,13 +40,7 @@ class JsonConfig(object):
     def validate_orjson(cls):
         orjson = get_module("orjson")
         if orjson is None:
-            raise ValueError(
-                build_error_message(
-                    ErrorCode.DEPENDENCY_MISSING,
-                    "The orjson engine requires the orjson package",
-                    install_hint=format_install_hint("orjson"),
-                )
-            )
+            raise ValueError("The orjson engine requires the orjson package")
 
 
 config = JsonConfig()
@@ -129,11 +119,7 @@ def to_json_plotly(plotly_object, pretty=False, engine=None):
         else:
             engine = "json"
     elif engine not in ["orjson", "json"]:
-        raise ValueError(
-            build_error_message(
-                ErrorCode.INVALID_ENGINE, "Invalid json engine: %s" % engine
-            )
-        )
+        raise ValueError("Invalid json engine: %s" % engine)
 
     modules = {
         "sage_all": get_module("sage.all", should_load=False),
@@ -303,12 +289,9 @@ def write_json(fig, file, validate=True, pretty=False, remove_uids=True, engine=
         except AttributeError:
             pass
         raise ValueError(
-            build_error_message(
-                ErrorCode.INVALID_PARAM,
-                "The 'file' argument '{file}' is not a string, pathlib.Path object, or file descriptor.".format(
-                    file=file
-                ),
-            )
+            """
+The 'file' argument '{file}' is not a string, pathlib.Path object, or file descriptor.
+""".format(file=file)
         )
     else:
         # We previously succeeded in interpreting `file` as a pathlib object.
@@ -349,13 +332,9 @@ def from_json_plotly(value, engine=None):
     # --------------
     if not isinstance(value, (str, bytes)):
         raise ValueError(
-            build_error_message(
-                ErrorCode.INVALID_PARAM,
-                "from_json_plotly requires a string or bytes argument but received value of type {typ}".format(
-                    typ=type(value)
-                ),
-                detail="Received value: {value}".format(value=value),
-            )
+            """
+from_json_plotly requires a string or bytes argument but received value of type {typ}
+    Received value: {value}""".format(typ=type(value), value=value)
         )
 
     # Determine json engine
@@ -368,11 +347,7 @@ def from_json_plotly(value, engine=None):
         else:
             engine = "json"
     elif engine not in ["orjson", "json"]:
-        raise ValueError(
-            build_error_message(
-                ErrorCode.INVALID_ENGINE, "Invalid json engine: %s" % engine
-            )
-        )
+        raise ValueError("Invalid json engine: %s" % engine)
 
     if engine == "orjson":
         JsonConfig.validate_orjson()

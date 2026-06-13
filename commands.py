@@ -463,6 +463,29 @@ def bump_version(args):
     )
 
 
+def validate_packaging(args):
+    """Run the packaging manifest validator before building."""
+    import subprocess
+
+    script = os.path.join(PROJECT_ROOT, "codegen", "validate_packaging_manifest.py")
+    cmd = [sys.executable, script]
+    if args.quiet:
+        cmd.append("-q")
+    if args.check:
+        cmd.extend(["--check", args.check])
+    result = subprocess.run(cmd, cwd=PROJECT_ROOT)
+    sys.exit(result.returncode)
+
+
+def validate_schema(args):
+    """Run the schema artifacts consistency validator."""
+    import subprocess
+
+    script = os.path.join(PROJECT_ROOT, "codegen", "validate_schema_artifacts.py")
+    result = subprocess.run([sys.executable, script], cwd=PROJECT_ROOT)
+    sys.exit(result.returncode)
+
+
 def make_parser():
     """Make argument parser."""
 
@@ -492,6 +515,24 @@ def make_parser():
     p_bump_version = subparsers.add_parser("bumpversion", help="bump plotly.py version")
     # Add a positional argument for the version
     p_bump_version.add_argument("version", help="version number")
+
+    p_validate_pkg = subparsers.add_parser(
+        "validatepackaging",
+        help="validate packaging manifest before building sdist/wheel",
+    )
+    p_validate_pkg.add_argument(
+        "-q", "--quiet", action="store_true", help="suppress per-check output"
+    )
+    p_validate_pkg.add_argument(
+        "--check",
+        default=None,
+        help="run only a single check by prefix (e.g. schema, validators, type)",
+    )
+
+    subparsers.add_parser(
+        "validateschema",
+        help="validate schema artifact consistency (validators vs graph_objs vs docs)",
+    )
 
     return parser
 
@@ -529,6 +570,12 @@ def main():
 
     elif args.cmd == "bumpversion":
         bump_version(args)
+
+    elif args.cmd == "validatepackaging":
+        validate_packaging(args)
+
+    elif args.cmd == "validateschema":
+        validate_schema(args)
 
     elif args.cmd is None:
         parser.print_help()

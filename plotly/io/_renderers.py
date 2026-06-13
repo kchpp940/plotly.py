@@ -4,7 +4,6 @@ import os
 from packaging.version import Version
 import warnings
 
-from _plotly_utils.error_messages import ErrorCode, build_error_message, format_install_hint
 from plotly import optional_imports
 
 from plotly.io._base_renderers import (
@@ -93,10 +92,9 @@ class RenderersConfig(object):
     def __setitem__(self, key, value):
         if not isinstance(value, (MimetypeRenderer, ExternalRenderer)):
             raise ValueError(
-                build_error_message(
-                    ErrorCode.INVALID_RENDERER,
-                    f"Mimetype renderer {value!r} is not registered",
-                )
+                """\
+Renderer must be a subclass of MimetypeRenderer or ExternalRenderer.
+    Received value with type: {typ}""".format(typ=type(value))
             )
 
         self._renderers[key] = value
@@ -236,21 +234,14 @@ class RenderersConfig(object):
         """
         # Validate value
         if not isinstance(renderers_string, str):
-            raise ValueError(
-                build_error_message(
-                    ErrorCode.INVALID_RENDERER,
-                    "Renderer must be specified as a string",
-                )
-            )
+            raise ValueError("Renderer must be specified as a string")
 
         renderer_names = renderers_string.split("+")
         invalid = [name for name in renderer_names if name not in self]
         if invalid:
             raise ValueError(
-                build_error_message(
-                    ErrorCode.INVALID_RENDERER,
-                    f"\nInvalid named renderer(s) received: {invalid}",
-                )
+                """
+Invalid named renderer(s) received: {}""".format(str(invalid))
             )
 
         return renderer_names
@@ -417,20 +408,12 @@ def show(fig, renderer=None, validate=True, **kwargs):
     if bundle:
         if not ipython_display:
             raise ValueError(
-                build_error_message(
-                    ErrorCode.DEPENDENCY_MISSING,
-                    "Mime type rendering requires ipython but it is not installed",
-                    install_hint=format_install_hint("ipython"),
-                )
+                "Mime type rendering requires ipython but it is not installed"
             )
 
         if not nbformat or Version(nbformat.__version__) < Version("4.2.0"):
             raise ValueError(
-                build_error_message(
-                    ErrorCode.DEPENDENCY_MISSING,
-                    "Mime type rendering requires nbformat>=4.2.0 but it is not installed",
-                    install_hint=format_install_hint("nbformat"),
-                )
+                "Mime type rendering requires nbformat>=4.2.0 but it is not installed"
             )
 
         display_jupyter_version_warnings()
@@ -496,10 +479,9 @@ if env_renderer:
         renderers._validate_coerce_renderers(env_renderer)
     except ValueError:
         raise ValueError(
-            build_error_message(
-                ErrorCode.INVALID_RENDERER,
-                f"Invalid named renderer(s) specified in the 'PLOTLY_RENDERER' environment variable: {env_renderer}",
-            )
+            """
+Invalid named renderer(s) specified in the 'PLOTLY_RENDERER'
+environment variable: {env_renderer}""".format(env_renderer=env_renderer)
         )
 
     default_renderer = env_renderer

@@ -6,7 +6,6 @@ import os
 from os.path import isdir
 
 from plotly import optional_imports
-from _plotly_utils.error_messages import ErrorCode, build_error_message, format_install_hint
 from plotly.io import to_json, to_image, write_image, write_html
 from plotly.io._utils import plotly_cdn_url
 from plotly.offline.offline import _get_jconfig, get_plotlyjs
@@ -267,12 +266,8 @@ class HtmlRenderer(MimetypeRenderer):
         if self.global_init:
             if not ipython_display:
                 raise ValueError(
-                    build_error_message(
-                        ErrorCode.DEPENDENCY_MISSING,
-                        "The {cls} class requires ipython but it is not installed".format(
-                            cls=self.__class__.__name__
-                        ),
-                        install_hint=format_install_hint("ipython"),
+                    "The {cls} class requires ipython but it is not installed".format(
+                        cls=self.__class__.__name__
                     )
                 )
 
@@ -753,12 +748,9 @@ class DatabricksRenderer(ExternalRenderer):
 
             if self._displayHTML is None:
                 raise EnvironmentError(
-                    build_error_message(
-                        ErrorCode.DEPENDENCY_MISSING,
-                        "Unable to detect the Databricks displayHTML function. "
-                        "The 'databricks' renderer is only supported when called from "
-                        "within the Databricks notebook environment.",
-                    )
+                    """
+Unable to detect the Databricks displayHTML function. The 'databricks' renderer is only
+supported when called from within the Databricks notebook environment."""
                 )
 
         return self._displayHTML
@@ -846,13 +838,9 @@ class SphinxGalleryOrcaRenderer(ExternalRenderer):
             write_image(figure, filename_png)
         except (ValueError, ImportError):
             raise ImportError(
-                build_error_message(
-                    ErrorCode.DEPENDENCY_MISSING,
-                    "orca and psutil are required to use the `sphinx-gallery-orca` renderer.",
-                    install_hint=format_install_hint("psutil"),
-                    detail="See https://plotly.com/python/static-image-export/ for instructions on "
-                    "how to install orca. Alternatively, you can use the `sphinx-gallery` "
-                    "renderer (note that png thumbnails can only be generated with "
-                    "the `sphinx-gallery-orca` renderer).",
-                )
+                "orca and psutil are required to use the `sphinx-gallery-orca` renderer. "
+                "See https://plotly.com/python/static-image-export/ for instructions on "
+                "how to install orca. Alternatively, you can use the `sphinx-gallery` "
+                "renderer (note that png thumbnails can only be generated with "
+                "the `sphinx-gallery-orca` renderer)."
             )

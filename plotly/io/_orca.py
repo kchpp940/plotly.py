@@ -32,14 +32,15 @@ format_conversions.update({"jpg": "jpeg"})
 # Utility functions
 # -----------------
 def raise_format_value_error(val):
-    msg = (
-        "Invalid value of type {typ} receive as an image format specification.\n"
-        "    Received value: {v}\n\n"
-        "An image format must be specified as one of the following string values:\n"
-        "    {valid_formats}"
-    ).format(typ=type(val), v=val, valid_formats=sorted(format_conversions.keys()))
     raise ValueError(
-        build_error_message(ErrorCode.INVALID_FORMAT, msg)
+        """
+Invalid value of type {typ} receive as an image format specification.
+    Received value: {v}
+
+An image format must be specified as one of the following string values:
+    {valid_formats}""".format(
+            typ=type(val), v=val, valid_formats=sorted(format_conversions.keys())
+        )
     )
 
 
@@ -208,13 +209,11 @@ class OrcaConfig(object):
         """
         # Combine d and kwargs
         if not isinstance(d, dict):
-            msg = (
-                "The first argument to update must be a dict, "
-                "but received value of type {typ}l\n"
-                "    Received value: {val}"
-            ).format(typ=type(d), val=d)
             raise ValueError(
-                build_error_message(ErrorCode.INVALID_PARAM, msg)
+                """
+The first argument to update must be a dict, \
+but received value of type {typ}l
+    Received value: {val}""".format(typ=type(d), val=d)
             )
 
         updates = copy(d)
@@ -223,12 +222,7 @@ class OrcaConfig(object):
         # Validate keys
         for k in updates:
             if k not in self._props:
-                raise ValueError(
-                    build_error_message(
-                        ErrorCode.INVALID_PARAM,
-                        "Invalid property name: {k}".format(k=k),
-                    )
-                )
+                raise ValueError("Invalid property name: {k}".format(k=k))
 
         # Apply keys
         for k, v in updates.items():
@@ -329,13 +323,9 @@ Failed to write orca configuration file at '{path}'""".format(path=self.config_f
             return
         if not isinstance(val, str):
             raise ValueError(
-                build_error_message(
-                    ErrorCode.INVALID_TYPE,
-                    "The server_url property must be a string, but received value of type {typ}.".format(
-                        typ=type(val)
-                    ),
-                    detail="Received value: {val}".format(val=val),
-                )
+                """
+The server_url property must be a string, but received value of type {typ}.
+    Received value: {val}""".format(typ=type(val), val=val)
             )
 
         if not val.startswith("http://") and not val.startswith("https://"):
@@ -372,13 +362,9 @@ Failed to write orca configuration file at '{path}'""".format(path=self.config_f
             return
         if not isinstance(val, int):
             raise ValueError(
-                build_error_message(
-                    ErrorCode.INVALID_TYPE,
-                    "The port property must be an integer, but received value of type {typ}.".format(
-                        typ=type(val)
-                    ),
-                    detail="Received value: {val}".format(val=val),
-                )
+                """
+The port property must be an integer, but received value of type {typ}.
+    Received value: {val}""".format(typ=type(val), val=val)
             )
 
         self._props["port"] = val
@@ -420,13 +406,9 @@ Failed to write orca configuration file at '{path}'""".format(path=self.config_f
         else:
             if not isinstance(val, str):
                 raise ValueError(
-                    build_error_message(
-                        ErrorCode.INVALID_TYPE,
-                        "The executable property must be a string, but received value of type {typ}.".format(
-                            typ=type(val)
-                        ),
-                        detail="Received value: {val}".format(val=val),
-                    )
+                    """
+The executable property must be a string, but received value of type {typ}.
+    Received value: {val}""".format(typ=type(val), val=val)
                 )
             if isinstance(val, str):
                 val = [val]
@@ -465,13 +447,9 @@ Failed to write orca configuration file at '{path}'""".format(path=self.config_f
         else:
             if not isinstance(val, (int, float)):
                 raise ValueError(
-                    build_error_message(
-                        ErrorCode.INVALID_TYPE,
-                        "The timeout property must be a number, but received value of type {typ}.".format(
-                            typ=type(val)
-                        ),
-                        detail="Received value: {val}".format(val=val),
-                    )
+                    """
+The timeout property must be a number, but received value of type {typ}.
+    Received value: {val}""".format(typ=type(val), val=val)
                 )
             self._props["timeout"] = val
 
@@ -498,13 +476,9 @@ Failed to write orca configuration file at '{path}'""".format(path=self.config_f
             return
         if not isinstance(val, int):
             raise ValueError(
-                build_error_message(
-                    ErrorCode.INVALID_TYPE,
-                    "The default_width property must be an int, but received value of type {typ}.".format(
-                        typ=type(val)
-                    ),
-                    detail="Received value: {val}".format(val=val),
-                )
+                """
+The default_width property must be an int, but received value of type {typ}.
+    Received value: {val}""".format(typ=type(val), val=val)
             )
         self._props["default_width"] = val
 
@@ -528,13 +502,9 @@ Failed to write orca configuration file at '{path}'""".format(path=self.config_f
             return
         if not isinstance(val, int):
             raise ValueError(
-                build_error_message(
-                    ErrorCode.INVALID_TYPE,
-                    "The default_height property must be an int, but received value of type {typ}.".format(
-                        typ=type(val)
-                    ),
-                    detail="Received value: {val}".format(val=val),
-                )
+                """
+The default_height property must be an int, but received value of type {typ}.
+    Received value: {val}""".format(typ=type(val), val=val)
             )
         self._props["default_height"] = val
 
@@ -589,13 +559,9 @@ Failed to write orca configuration file at '{path}'""".format(path=self.config_f
             return
         if not isinstance(val, (int, float)):
             raise ValueError(
-                build_error_message(
-                    ErrorCode.INVALID_TYPE,
-                    "The default_scale property must be a number, but received value of type {typ}.".format(
-                        typ=type(val)
-                    ),
-                    detail="Received value: {val}".format(val=val),
-                )
+                """
+The default_scale property must be a number, but received value of type {typ}.
+    Received value: {val}""".format(typ=type(val), val=val)
             )
         self._props["default_scale"] = val
 
@@ -619,13 +585,9 @@ Failed to write orca configuration file at '{path}'""".format(path=self.config_f
         else:
             if not isinstance(val, str):
                 raise ValueError(
-                    build_error_message(
-                        ErrorCode.INVALID_TYPE,
-                        "The topojson property must be a string, but received value of type {typ}.".format(
-                            typ=type(val)
-                        ),
-                        detail="Received value: {val}".format(val=val),
-                    )
+                    """
+The topojson property must be a string, but received value of type {typ}.
+    Received value: {val}""".format(typ=type(val), val=val)
                 )
             self._props["topojson"] = val
 
@@ -653,13 +615,9 @@ Failed to write orca configuration file at '{path}'""".format(path=self.config_f
         else:
             if not isinstance(val, str):
                 raise ValueError(
-                    build_error_message(
-                        ErrorCode.INVALID_TYPE,
-                        "The mathjax property must be a string, but received value of type {typ}.".format(
-                            typ=type(val)
-                        ),
-                        detail="Received value: {val}".format(val=val),
-                    )
+                    """
+The mathjax property must be a string, but received value of type {typ}.
+    Received value: {val}""".format(typ=type(val), val=val)
                 )
             self._props["mathjax"] = val
 
@@ -684,13 +642,10 @@ Failed to write orca configuration file at '{path}'""".format(path=self.config_f
         else:
             if not isinstance(val, str):
                 raise ValueError(
-                    build_error_message(
-                        ErrorCode.INVALID_TYPE,
-                        "The mapbox_access_token property must be a string, but received value of type {typ}.".format(
-                            typ=type(val)
-                        ),
-                        detail="Received value: {val}".format(val=val),
-                    )
+                    """
+The mapbox_access_token property must be a string, \
+but received value of type {typ}.
+    Received value: {val}""".format(typ=type(val), val=val)
                 )
             self._props["mapbox_access_token"] = val
 
@@ -710,14 +665,10 @@ Failed to write orca configuration file at '{path}'""".format(path=self.config_f
         else:
             if val not in valid_vals:
                 raise ValueError(
-                    build_error_message(
-                        ErrorCode.INVALID_VALUE,
-                        "The use_xvfb property must be one of {valid_vals}".format(
-                            valid_vals=valid_vals
-                        ),
-                        detail="Received value of type {typ}: {val}".format(
-                            typ=type(val), val=repr(val)
-                        ),
+                    """
+The use_xvfb property must be one of {valid_vals}
+    Received value of type {typ}: {val}""".format(
+                        valid_vals=valid_vals, typ=type(val), val=repr(val)
                     )
                 )
 
@@ -1013,7 +964,8 @@ https://community.plot.ly/c/api/python
     formatted_path = path.replace(os.pathsep, "\n    ")
 
     if executable is None:
-        msg = """
+        raise ValueError(
+            """
 The orca executable is required to export figures as static images,
 but it could not be found on the system path.
 
@@ -1021,15 +973,9 @@ Searched for executable '{executable}' on the following path:
     {formatted_path}
 
 {instructions}""".format(
-            executable=config.executable,
-            formatted_path=formatted_path,
-            instructions=install_location_instructions,
-        )
-        raise ValueError(
-            build_error_message(
-                ErrorCode.DEPENDENCY_MISSING,
-                msg,
-                install_hint=format_install_hint("plotly-orca"),
+                executable=config.executable,
+                formatted_path=formatted_path,
+                instructions=install_location_instructions,
             )
         )
 
@@ -1046,18 +992,13 @@ Searched for executable '{executable}' on the following path:
         # Use xvfb
         xvfb_run_executable = which("xvfb-run")
         if not xvfb_run_executable:
-            msg = """
+            raise ValueError(
+                """
 The plotly.io.orca.config.use_xvfb property is set to True, but the
 xvfb-run executable could not be found on the system path.
 
 Searched for the executable 'xvfb-run' on the following path:
     {formatted_path}""".format(formatted_path=formatted_path)
-            raise ValueError(
-                build_error_message(
-                    ErrorCode.DEPENDENCY_MISSING,
-                    msg,
-                    install_hint=format_install_hint("xvfb"),
-                )
             )
 
         executable_list = [xvfb_run_executable] + xvfb_args
@@ -1128,40 +1069,26 @@ You can save this configuration for use in future sessions as follows:
 See https://www.x.org/releases/X11R7.6/doc/man/man1/Xvfb.1.xhtml
 for more info on Xvfb
 """
-        raise ValueError(
-            build_error_message(
-                ErrorCode.DEPENDENCY_MISSING,
-                err_msg,
-                install_hint=format_install_hint("plotly-orca"),
-            )
-        )
+        raise ValueError(err_msg)
 
     if not help_result:
-        msg = invalid_executable_msg + """
+        raise ValueError(
+            invalid_executable_msg
+            + """
 The error encountered is that no output was returned by the command
     $ {executable} --help
 """.format(executable=" ".join(executable_list))
-        raise ValueError(
-            build_error_message(
-                ErrorCode.DEPENDENCY_MISSING,
-                msg,
-                install_hint=format_install_hint("plotly-orca"),
-            )
         )
 
     if "Plotly's image-exporting utilities" not in help_result.decode("utf-8"):
-        msg = invalid_executable_msg + """
+        raise ValueError(
+            invalid_executable_msg
+            + """
 The error encountered is that unexpected output was returned by the command
     $ {executable} --help
 
 {help_result}
 """.format(executable=" ".join(executable_list), help_result=help_result)
-        raise ValueError(
-            build_error_message(
-                ErrorCode.DEPENDENCY_MISSING,
-                msg,
-                install_hint=format_install_hint("plotly-orca"),
-            )
         )
 
     # Get orca version
@@ -1177,7 +1104,9 @@ The error encountered is that unexpected output was returned by the command
         version_result, version_error = p.communicate()
 
     if p.returncode != 0:
-        msg = invalid_executable_msg + """
+        raise ValueError(
+            invalid_executable_msg
+            + """
 An error occurred while trying to get the version of the orca executable.
 Here is the command that plotly.py ran to request the version
     $ {executable} --version
@@ -1187,31 +1116,21 @@ This command returned the following error:
 [Return code: {returncode}]
 {err_msg}
         """.format(
-            executable=" ".join(executable_list),
-            err_msg=version_error.decode("utf-8"),
-            returncode=p.returncode,
-        )
-        raise ValueError(
-            build_error_message(
-                ErrorCode.DEPENDENCY_MISSING,
-                msg,
-                install_hint=format_install_hint("plotly-orca"),
+                executable=" ".join(executable_list),
+                err_msg=version_error.decode("utf-8"),
+                returncode=p.returncode,
             )
         )
 
     if not version_result:
-        msg = invalid_executable_msg + """
+        raise ValueError(
+            invalid_executable_msg
+            + """
 The error encountered is that no version was reported by the orca executable.
 Here is the command that plotly.py ran to request the version:
 
     $ {executable} --version
 """.format(executable=" ".join(executable_list))
-        raise ValueError(
-            build_error_message(
-                ErrorCode.DEPENDENCY_MISSING,
-                msg,
-                install_hint=format_install_hint("plotly-orca"),
-            )
         )
     else:
         version_result = version_result.decode()
@@ -1320,7 +1239,8 @@ def ensure_server():
 
     # Validate psutil
     if psutil is None:
-        msg = """\
+        raise ValueError(
+            """\
 Image generation requires the psutil package.
 
 Install using pip:
@@ -1329,17 +1249,12 @@ Install using pip:
 Install using conda:
     $ conda install psutil
 """
-        raise ValueError(
-            build_error_message(
-                ErrorCode.DEPENDENCY_MISSING,
-                msg,
-                install_hint=format_install_hint("psutil"),
-            )
         )
 
     # Validate requests
     if not get_module("requests"):
-        msg = """\
+        raise ValueError(
+            """\
 Image generation requires the requests package.
 
 Install using pip:
@@ -1348,12 +1263,6 @@ Install using pip:
 Install using conda:
     $ conda install requests
 """
-        raise ValueError(
-            build_error_message(
-                ErrorCode.DEPENDENCY_MISSING,
-                msg,
-                install_hint=format_install_hint("requests"),
-            )
         )
 
     if not config.server_url:
@@ -1538,13 +1447,12 @@ def to_image(fig, format=None, width=None, height=None, scale=None, validate=Tru
         status_str = repr(status)
 
         if config.server_url:
-            msg = """
+            raise ValueError(
+                """
 Plotly.py was unable to communicate with the orca server at {server_url}
 
 Please check that the server is running and accessible.
 """.format(server_url=config.server_url)
-            raise ValueError(
-                build_error_message(ErrorCode.DEPENDENCY_MISSING, msg)
             )
 
         else:
@@ -1553,7 +1461,8 @@ Please check that the server is running and accessible.
 
             # Raise error message based on whether the server process existed
             if pid_exists:
-                msg = """
+                raise ValueError(
+                    """
 For some reason plotly.py was unable to communicate with the
 local orca server process, even though the server process seems to be running.
 
@@ -1561,14 +1470,13 @@ Please review the process and connection information below:
 
 {info}
 """.format(info=status_str)
-                raise ValueError(
-                    build_error_message(ErrorCode.DEPENDENCY_MISSING, msg)
                 )
             else:
                 # Reset the status so that if the user tries again, we'll try to
                 # start the server again
                 reset_status()
-                msg = """
+                raise ValueError(
+                    """
 For some reason the orca server process is no longer running.
 
 Please review the process and connection information below:
@@ -1577,8 +1485,6 @@ Please review the process and connection information below:
 plotly.py will attempt to start the local server process again the next time
 an image export operation is performed.
 """.format(info=status_str)
-                raise ValueError(
-                    build_error_message(ErrorCode.DEPENDENCY_MISSING, msg)
                 )
 
     # Check response
@@ -1643,9 +1549,7 @@ install the 'poppler-utils' package.
 
 Unfortunately, we don't yet know of an easy way to install poppler on Windows.
 """
-        raise ValueError(
-            build_error_message(ErrorCode.DEPENDENCY_MISSING, err_message)
-        )
+        raise ValueError(err_message)
 
 
 def write_image(
@@ -1728,7 +1632,8 @@ def write_image(
         if ext:
             format = ext.lstrip(".")
         else:
-            msg = """
+            raise ValueError(
+                """
 Cannot infer image type from output path '{file}'.
 Please add a file extension or specify the type using the format parameter.
 For example:
@@ -1736,8 +1641,6 @@ For example:
     >>> import plotly.io as pio
     >>> pio.write_image(fig, file_path, format='png')
 """.format(file=file)
-            raise ValueError(
-                build_error_message(ErrorCode.INVALID_FORMAT, msg)
             )
 
     # Request image
@@ -1757,11 +1660,10 @@ For example:
             return
         except AttributeError:
             pass
-        msg = """
+        raise ValueError(
+            """
 The 'file' argument '{file}' is not a string, pathlib.Path object, or file descriptor.
 """.format(file=file)
-        raise ValueError(
-            build_error_message(ErrorCode.INVALID_PARAM, msg)
         )
     else:
         # We previously succeeded in interpreting `file` as a pathlib object.
