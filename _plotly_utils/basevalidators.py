@@ -317,12 +317,12 @@ class BaseValidator(object):
         raise ValueError(
             build_error_message(
                 ErrorCode.INVALID_VALUE,
-                "Invalid value of type {typ} received for the '{name}' property of {pname}".format(
+                "\n    Invalid value of type {typ} received for the '{name}' property of {pname}\n"
+                "        Received value: {v}\n\n"
+                "{valid_clr_desc}".format(
                     name=name,
                     pname=parent,
                     typ=type_str(v),
-                ),
-                detail="Received value: {v}\n\n{valid_clr_desc}".format(
                     v=repr(v),
                     valid_clr_desc=self.description(),
                 ),
@@ -334,11 +334,11 @@ class BaseValidator(object):
             raise ValueError(
                 build_error_message(
                     ErrorCode.INVALID_ELEMENT,
-                    "Invalid element(s) received for the '{name}' property of {pname}".format(
+                    "\n    Invalid element(s) received for the '{name}' property of {pname}\n"
+                    "        Invalid elements include: {invalid}\n\n"
+                    "{valid_clr_desc}".format(
                         name=self.plotly_name,
                         pname=self.parent_name,
-                    ),
-                    detail="Invalid elements include: {invalid}\n\n{valid_clr_desc}".format(
                         invalid=invalid_els[:10],
                         valid_clr_desc=self.description(),
                     ),
@@ -2267,7 +2267,7 @@ class LiteralValidator(BaseValidator):
             raise ValueError(
                 build_error_message(
                     ErrorCode.READ_ONLY_PROPERTY,
-                    "The '{plotly_name}' property of {parent_name} is read-only".format(
+                    "\n    The '{plotly_name}' property of {parent_name} is read-only".format(
                         plotly_name=self.plotly_name, parent_name=self.parent_name
                     ),
                 )

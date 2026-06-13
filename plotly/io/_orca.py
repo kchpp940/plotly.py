@@ -970,8 +970,7 @@ https://community.plot.ly/c/api/python
     formatted_path = path.replace(os.pathsep, "\n    ")
 
     if executable is None:
-        raise ValueError(
-            """
+        msg = """
 The orca executable is required to export figures as static images,
 but it could not be found on the system path.
 
@@ -979,9 +978,15 @@ Searched for executable '{executable}' on the following path:
     {formatted_path}
 
 {instructions}""".format(
-                executable=config.executable,
-                formatted_path=formatted_path,
-                instructions=install_location_instructions,
+            executable=config.executable,
+            formatted_path=formatted_path,
+            instructions=install_location_instructions,
+        )
+        raise ValueError(
+            build_error_message(
+                ErrorCode.DEPENDENCY_MISSING,
+                msg,
+                install_hint=format_install_hint("plotly-orca"),
             )
         )
 
@@ -998,13 +1003,18 @@ Searched for executable '{executable}' on the following path:
         # Use xvfb
         xvfb_run_executable = which("xvfb-run")
         if not xvfb_run_executable:
-            raise ValueError(
-                """
+            msg = """
 The plotly.io.orca.config.use_xvfb property is set to True, but the
 xvfb-run executable could not be found on the system path.
 
 Searched for the executable 'xvfb-run' on the following path:
     {formatted_path}""".format(formatted_path=formatted_path)
+            raise ValueError(
+                build_error_message(
+                    ErrorCode.DEPENDENCY_MISSING,
+                    msg,
+                    install_hint=format_install_hint("xvfb"),
+                )
             )
 
         executable_list = [xvfb_run_executable] + xvfb_args
@@ -1075,26 +1085,40 @@ You can save this configuration for use in future sessions as follows:
 See https://www.x.org/releases/X11R7.6/doc/man/man1/Xvfb.1.xhtml
 for more info on Xvfb
 """
-        raise ValueError(err_msg)
+        raise ValueError(
+            build_error_message(
+                ErrorCode.DEPENDENCY_MISSING,
+                err_msg,
+                install_hint=format_install_hint("plotly-orca"),
+            )
+        )
 
     if not help_result:
-        raise ValueError(
-            invalid_executable_msg
-            + """
+        msg = invalid_executable_msg + """
 The error encountered is that no output was returned by the command
     $ {executable} --help
 """.format(executable=" ".join(executable_list))
+        raise ValueError(
+            build_error_message(
+                ErrorCode.DEPENDENCY_MISSING,
+                msg,
+                install_hint=format_install_hint("plotly-orca"),
+            )
         )
 
     if "Plotly's image-exporting utilities" not in help_result.decode("utf-8"):
-        raise ValueError(
-            invalid_executable_msg
-            + """
+        msg = invalid_executable_msg + """
 The error encountered is that unexpected output was returned by the command
     $ {executable} --help
 
 {help_result}
 """.format(executable=" ".join(executable_list), help_result=help_result)
+        raise ValueError(
+            build_error_message(
+                ErrorCode.DEPENDENCY_MISSING,
+                msg,
+                install_hint=format_install_hint("plotly-orca"),
+            )
         )
 
     # Get orca version
@@ -1110,9 +1134,7 @@ The error encountered is that unexpected output was returned by the command
         version_result, version_error = p.communicate()
 
     if p.returncode != 0:
-        raise ValueError(
-            invalid_executable_msg
-            + """
+        msg = invalid_executable_msg + """
 An error occurred while trying to get the version of the orca executable.
 Here is the command that plotly.py ran to request the version
     $ {executable} --version
@@ -1122,21 +1144,31 @@ This command returned the following error:
 [Return code: {returncode}]
 {err_msg}
         """.format(
-                executable=" ".join(executable_list),
-                err_msg=version_error.decode("utf-8"),
-                returncode=p.returncode,
+            executable=" ".join(executable_list),
+            err_msg=version_error.decode("utf-8"),
+            returncode=p.returncode,
+        )
+        raise ValueError(
+            build_error_message(
+                ErrorCode.DEPENDENCY_MISSING,
+                msg,
+                install_hint=format_install_hint("plotly-orca"),
             )
         )
 
     if not version_result:
-        raise ValueError(
-            invalid_executable_msg
-            + """
+        msg = invalid_executable_msg + """
 The error encountered is that no version was reported by the orca executable.
 Here is the command that plotly.py ran to request the version:
 
     $ {executable} --version
 """.format(executable=" ".join(executable_list))
+        raise ValueError(
+            build_error_message(
+                ErrorCode.DEPENDENCY_MISSING,
+                msg,
+                install_hint=format_install_hint("plotly-orca"),
+            )
         )
     else:
         version_result = version_result.decode()
@@ -1245,8 +1277,7 @@ def ensure_server():
 
     # Validate psutil
     if psutil is None:
-        raise ValueError(
-            """\
+        msg = """\
 Image generation requires the psutil package.
 
 Install using pip:
@@ -1255,12 +1286,17 @@ Install using pip:
 Install using conda:
     $ conda install psutil
 """
+        raise ValueError(
+            build_error_message(
+                ErrorCode.DEPENDENCY_MISSING,
+                msg,
+                install_hint=format_install_hint("psutil"),
+            )
         )
 
     # Validate requests
     if not get_module("requests"):
-        raise ValueError(
-            """\
+        msg = """\
 Image generation requires the requests package.
 
 Install using pip:
@@ -1269,6 +1305,12 @@ Install using pip:
 Install using conda:
     $ conda install requests
 """
+        raise ValueError(
+            build_error_message(
+                ErrorCode.DEPENDENCY_MISSING,
+                msg,
+                install_hint=format_install_hint("requests"),
+            )
         )
 
     if not config.server_url:
@@ -1453,12 +1495,13 @@ def to_image(fig, format=None, width=None, height=None, scale=None, validate=Tru
         status_str = repr(status)
 
         if config.server_url:
-            raise ValueError(
-                """
+            msg = """
 Plotly.py was unable to communicate with the orca server at {server_url}
 
 Please check that the server is running and accessible.
 """.format(server_url=config.server_url)
+            raise ValueError(
+                build_error_message(ErrorCode.DEPENDENCY_MISSING, msg)
             )
 
         else:
@@ -1467,8 +1510,7 @@ Please check that the server is running and accessible.
 
             # Raise error message based on whether the server process existed
             if pid_exists:
-                raise ValueError(
-                    """
+                msg = """
 For some reason plotly.py was unable to communicate with the
 local orca server process, even though the server process seems to be running.
 
@@ -1476,13 +1518,14 @@ Please review the process and connection information below:
 
 {info}
 """.format(info=status_str)
+                raise ValueError(
+                    build_error_message(ErrorCode.DEPENDENCY_MISSING, msg)
                 )
             else:
                 # Reset the status so that if the user tries again, we'll try to
                 # start the server again
                 reset_status()
-                raise ValueError(
-                    """
+                msg = """
 For some reason the orca server process is no longer running.
 
 Please review the process and connection information below:
@@ -1491,6 +1534,8 @@ Please review the process and connection information below:
 plotly.py will attempt to start the local server process again the next time
 an image export operation is performed.
 """.format(info=status_str)
+                raise ValueError(
+                    build_error_message(ErrorCode.DEPENDENCY_MISSING, msg)
                 )
 
     # Check response
@@ -1555,7 +1600,9 @@ install the 'poppler-utils' package.
 
 Unfortunately, we don't yet know of an easy way to install poppler on Windows.
 """
-        raise ValueError(err_message)
+        raise ValueError(
+            build_error_message(ErrorCode.DEPENDENCY_MISSING, err_message)
+        )
 
 
 def write_image(
@@ -1638,8 +1685,7 @@ def write_image(
         if ext:
             format = ext.lstrip(".")
         else:
-            raise ValueError(
-                """
+            msg = """
 Cannot infer image type from output path '{file}'.
 Please add a file extension or specify the type using the format parameter.
 For example:
@@ -1647,6 +1693,8 @@ For example:
     >>> import plotly.io as pio
     >>> pio.write_image(fig, file_path, format='png')
 """.format(file=file)
+            raise ValueError(
+                build_error_message(ErrorCode.INVALID_FORMAT, msg)
             )
 
     # Request image
@@ -1666,10 +1714,11 @@ For example:
             return
         except AttributeError:
             pass
-        raise ValueError(
-            """
+        msg = """
 The 'file' argument '{file}' is not a string, pathlib.Path object, or file descriptor.
 """.format(file=file)
+        raise ValueError(
+            build_error_message(ErrorCode.INVALID_PARAM, msg)
         )
     else:
         # We previously succeeded in interpreting `file` as a pathlib object.

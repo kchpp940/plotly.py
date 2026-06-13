@@ -95,8 +95,7 @@ class RenderersConfig(object):
             raise ValueError(
                 build_error_message(
                     ErrorCode.INVALID_RENDERER,
-                    "Renderer must be a subclass of MimetypeRenderer or ExternalRenderer.",
-                    detail=f"Received value with type: {type(value)}",
+                    f"Mimetype renderer {value!r} is not registered",
                 )
             )
 
@@ -250,7 +249,7 @@ class RenderersConfig(object):
             raise ValueError(
                 build_error_message(
                     ErrorCode.INVALID_RENDERER,
-                    f"Invalid named renderer(s) received: {invalid}",
+                    f"\nInvalid named renderer(s) received: {invalid}",
                 )
             )
 
