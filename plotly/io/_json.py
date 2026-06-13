@@ -5,7 +5,7 @@ import warnings
 from pathlib import Path
 
 from plotly.io._utils import validate_coerce_fig_to_dict, validate_coerce_output_type
-from plotly.optional_imports import get_module, available_capability, capability_module
+from _plotly_utils.optional_imports import get_module
 from _plotly_utils.basevalidators import ImageUriValidator
 
 
@@ -37,7 +37,8 @@ class JsonConfig(object):
 
     @classmethod
     def validate_orjson(cls):
-        if not available_capability("io.orjson"):
+        orjson = get_module("orjson")
+        if orjson is None:
             raise ValueError("The orjson engine requires the orjson package")
 
 
@@ -105,7 +106,7 @@ def to_json_plotly(plotly_object, pretty=False, engine=None):
     --------
     to_json : Convert a plotly Figure to JSON with validation
     """
-    orjson = capability_module("io.orjson")
+    orjson = get_module("orjson", should_load=True)
 
     # Determine json engine
     if engine is None:
@@ -324,7 +325,7 @@ def from_json_plotly(value, engine=None):
     --------
     from_json_plotly : Parse JSON with plotly conventions into a dict
     """
-    orjson = capability_module("io.orjson")
+    orjson = get_module("orjson", should_load=True)
 
     # Validate value
     # --------------

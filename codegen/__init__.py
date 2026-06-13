@@ -329,6 +329,26 @@ else:
     else:
         reformat_code(outdir)
 
+    # Run schema artifact consistency check
+    from codegen.validate_schema_artifacts import run_all_checks
+
+    print("\n" + "=" * 70)
+    print("Running post-codegen schema artifact consistency check...")
+    print("=" * 70)
+    error_count, warn_count, _ = run_all_checks(verbose=True)
+
+    if error_count > 0:
+        raise RuntimeError(
+            f"Schema artifact consistency check FAILED with {error_count} error(s) "
+            f"and {warn_count} warning(s). See output above for details."
+        )
+    elif warn_count > 0:
+        print(
+            f"\nSchema artifact consistency check passed with {warn_count} warning(s)."
+        )
+    else:
+        print("\nSchema artifact consistency check PASSED.")
+
 
 if __name__ == "__main__":
     if len(sys.argv) != 2:

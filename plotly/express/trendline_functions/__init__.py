@@ -8,8 +8,6 @@ Note that the functions in this module are not meant to be called directly, and 
 exposed as part of the public API for documentation purposes.
 """
 
-from plotly.optional_imports import require_capability
-
 __all__ = ["ols", "lowess", "rolling", "ewm", "expanding"]
 
 
@@ -41,7 +39,6 @@ def ols(trendline_options, x_raw, x, y, x_label, y_label, non_missing):
                 % (", ".join(valid_options), k)
             )
 
-    require_capability("trendline.ols")
     import statsmodels.api as sm
 
     add_constant = trendline_options.get("add_constant", True)
@@ -103,7 +100,6 @@ def lowess(trendline_options, x_raw, x, y, x_label, y_label, non_missing):
                 % (", ".join(valid_options), k)
             )
 
-    require_capability("trendline.lowess")
     import statsmodels.api as sm
 
     frac = trendline_options.get("frac", 0.6666666)
@@ -115,8 +111,11 @@ def lowess(trendline_options, x_raw, x, y, x_label, y_label, non_missing):
 def _pandas(mode, trendline_options, x_raw, y, non_missing):
     import numpy as np
 
-    require_capability(f"trendline.{mode}")
-    import pandas as pd
+    try:
+        import pandas as pd
+    except ImportError:
+        msg = "Trendline requires pandas to be installed"
+        raise ImportError(msg)
 
     modes = dict(rolling="Rolling", ewm="Exponentially Weighted", expanding="Expanding")
     trendline_options = trendline_options.copy()

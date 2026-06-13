@@ -5,7 +5,6 @@ from packaging.version import Version
 import warnings
 
 from plotly import optional_imports
-from plotly.optional_imports import get_module, available_capability, capability_module
 
 from plotly.io._base_renderers import (
     MimetypeRenderer,
@@ -29,15 +28,15 @@ from plotly.io._base_renderers import (
 )
 from plotly.io._utils import validate_coerce_fig_to_dict
 
-ipython = capability_module("render.ipython")
-ipython_display = get_module("IPython.display") if ipython is not None else None
-nbformat = capability_module("render.nbformat")
+ipython = optional_imports.get_module("IPython")
+ipython_display = optional_imports.get_module("IPython.display")
+nbformat = optional_imports.get_module("nbformat")
 
 
 def display_jupyter_version_warnings():
     parent_process = None
     try:
-        psutil = capability_module("io.psutil")
+        psutil = optional_imports.get_module("psutil")
         if psutil is not None:
             parent_process = psutil.Process().parent().cmdline()[-1]
     except Exception:
@@ -46,14 +45,14 @@ def display_jupyter_version_warnings():
     if parent_process is None:
         return
     elif "jupyter-notebook" in parent_process:
-        jupyter_notebook = capability_module("render.notebook")
+        jupyter_notebook = optional_imports.get_module("notebook")
         if jupyter_notebook is not None and jupyter_notebook.__version__ < "7":
             # Add warning about upgrading notebook
             warnings.warn(
                 f"Plotly version >= 6 requires Jupyter Notebook >= 7 but you have {jupyter_notebook.__version__} installed.\n To upgrade Jupyter Notebook, please run `pip install notebook --upgrade`."
             )
     elif "jupyter-lab" in parent_process:
-        jupyter_lab = capability_module("render.jupyterlab")
+        jupyter_lab = optional_imports.get_module("jupyterlab")
         if jupyter_lab is not None and jupyter_lab.__version__ < "3":
             # Add warning about upgrading jupyterlab
             warnings.warn(
